@@ -13,6 +13,9 @@ namespace MapExpansions.Debug
     /// mxterrain cut x0 z0 x1 z1         punch holes into the placed terrains inside a world rectangle
     /// mxterrain cutmain [margin]        punch holes into the placed terrains wherever a Main terrain lies
     /// mxterrain clip name zmax         shrink a placed object along world z so its bounds end at zmax
+    /// mxterrain hide copy|main name    disable the renderers whose name starts with name, in the copy or in Main
+    /// mxterrain show copy|main name    enable them again
+    /// mxterrain ground name zmax       unbatched quad with the material of a placed renderer, its extent cut at zmax
     /// mxterrain objects z               placed objects whose bounds reach north of z, by size
     /// </summary>
     internal static class TerrainSpike
@@ -33,6 +36,9 @@ namespace MapExpansions.Debug
                 case "cutmain": CutMain(parts.Length > 2 ? F(parts[2]) : 0f); break;
                 case "objects" when parts.Length > 2: Objects(F(parts[2])); break;
                 case "clip" when parts.Length > 3: Clip(parts[2], F(parts[3])); break;
+                case "hide" when parts.Length > 3: Hide(parts[2] == "copy", string.Join(" ", parts.Skip(3)), true); break;
+                case "show" when parts.Length > 3: Hide(parts[2] == "copy", string.Join(" ", parts.Skip(3)), false); break;
+                case "ground" when parts.Length > 3: Ground(parts[2], F(parts[3])); break;
                 default:
                     Core.Log.Warning("[dev] mxterrain list|cut|cutmain|objects (see TerrainSpike docs)");
                     break;
@@ -169,6 +175,52 @@ namespace MapExpansions.Debug
             Bounds after = r.bounds;
             Core.Log.Msg($"[dev] mxterrain clip: '{name}' local axis {axis} x{factor:0.000}, z {before.min.z:0}..{before.max.z:0} -> {after.min.z:0}..{after.max.z:0}, " +
                          $"collider {(r.GetComponent<Collider>() != null ? r.GetComponent<Collider>().bounds.max.z.ToString("0", Ci) : "none")}");
+        }
+
+        private static void Hide(bool copy, string prefix, bool hide)
+        {
+            int n = 0;
+            foreach (var r in Object.FindObjectsOfType<Renderer>(true))
+            {
+                if (IsPlaced(r) != copy || !r.name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+                r.enabled = !hide;
+                n++;
+                Core.Log.Msg($"[dev] mxterrain {(hide ? "hide" : "show")}: '{r.name}' x {r.bounds.min.x:0}..{r.bounds.max.x:0} z {r.bounds.min.z:0}..{r.bounds.max.z:0}");
+            }
+            if (n == 0) Core.Log.Warning($"[dev] mxterrain {(hide ? "hide" : "show")}: no {(copy ? "copy" : "main")} renderer starts with '{prefix}'");
+        }
+
+        private static GameObject _ground;
+
+        /// <summary>
+        /// A statically batched plate cannot be rescaled, so the replacement is a plain quad over the same x range and
+        /// height, ending at <paramref name="zMax"/>.
+        /// </summary>
+        private static void Ground(string name, float zMax)
+        {
+            var root = PlacedRoot;
+            var r = root == null ? null : root.GetComponentsInChildren<Renderer>(true).FirstOrDefault(x => x.name == name);
+            if (r == null)
+            {
+                Core.Log.Warning($"[dev] mxterrain ground: no placed renderer '{name}'");
+                return;
+            }
+            Bounds b = r.bounds;
+            if (_ground != null) Object.Destroy(_ground);
+            _ground = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            _ground.name = "MapExpansions.Ground";
+            var col = _ground.GetComponent<Collider>();
+            if (col != null) Object.Destroy(col);
+            _ground.transform.SetParent(root, true);
+            float zMin = b.min.z;
+            _ground.transform.position = new Vector3(b.center.x, b.center.y, (zMin + zMax) * 0.5f);
+            _ground.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
+            _ground.transform.localScale = new Vector3(b.size.x, zMax - zMin, 1f);
+            _ground.GetComponent<MeshRenderer>().sharedMaterial = r.sharedMaterial;
+            r.enabled = false;
+            var gb = _ground.GetComponent<Renderer>().bounds;
+            Core.Log.Msg($"[dev] mxterrain ground: '{name}' hidden, quad x {gb.min.x:0}..{gb.max.x:0} z {gb.min.z:0}..{gb.max.z:0} y {gb.center.y:0} " +
+                         $"material {(r.sharedMaterial != null ? r.sharedMaterial.name : "none")}");
         }
 
         private static void Objects(float z)
