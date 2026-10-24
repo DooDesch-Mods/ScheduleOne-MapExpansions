@@ -3,7 +3,12 @@ using System.Collections;
 using System.Globalization;
 using HarmonyLib;
 using Il2CppScheduleOne.DevUtilities;
+using Il2CppScheduleOne.FX;
+using Il2CppScheduleOne.Map;
 using Il2CppScheduleOne.PlayerScripts;
+using Il2CppScheduleOne.Weather;
+using MapExpansions.Lifecycle;
+using MapExpansions.Regions;
 using MapExpansions.Source;
 using MelonLoader;
 using UnityEngine;
@@ -12,41 +17,27 @@ using Object = UnityEngine.Object;
 namespace MapExpansions.Debug
 {
     /// <summary>
-    /// Dev console commands for the stage 1 spikes. Compiled out of Release.
+    /// Dev console commands for testing expansions. Compiled out of Release.
     ///
-    /// mxplace [none|root] [dx dy dz [yaw]]  copy the captured world to an offset, turned by yaw degrees clockwise
-    ///                                 seen from above; 'root' points every statically batched renderer at the offset
-    ///                                 root, 'none' only moves the transforms
-    /// mxfind name [copy|main]         renderer bounds and transforms whose name contains name
-    /// mxunplace                       remove the placed copy
-    /// mxlight [off]                   lightmap indices of the placed copy; 'off' clears them
+    /// mxstate                         state of every expansion, its connections, regions and navigation links
+    /// mxwhere                         player position, region and the expansion under it
+    /// mxtp x y z | id:location        teleport the player to a world point or to a named place of an expansion
     /// mxcam ex ey ez tx ty tz | off   park the camera at a world position looking at a world point
     /// mxframe [seconds]               frame time statistics over a sample window
-    /// mxwhere                         player position
-    /// mxtp x y z                      teleport the player
-    /// mxnav ...                       navigation spike, see NavSpike
-    /// mxveh ...                       vehicle AI spike, see VehicleSpike
-    /// mxreg ...                       region 6 spike, see RegionSpike
-    /// mxterrain ...                   terrain overlap, see TerrainSpike
-    /// mxenv ...                       fog and world range, see EnvSpike
+    /// mxfind name [main|exp]          renderers whose name contains name
+    /// mxfog on|off                    the screen fog render feature and the volumetric fog
+    /// mxnav ...                       NPC navigation tests, see NavTest
+    /// mxveh ...                       vehicle navigation tests, see VehicleTest
     /// </summary>
     internal static class DevConsole
     {
         private static readonly CultureInfo Ci = CultureInfo.InvariantCulture;
-        private static readonly Vector3 DefaultOffset = new(0f, 0f, -700f);
-
-        private static GameObject _placed;
-
-        /// <summary>Offset of the placed copy, or the default offset while nothing is placed.</summary>
-        internal static Vector3 PlacedOffset => _placed != null ? _placed.transform.position : DefaultOffset;
-
-        /// <summary>Rotation of the placed copy, identity while nothing is placed.</summary>
-        internal static Quaternion PlacedRotation => _placed != null ? _placed.transform.rotation : Quaternion.identity;
-
-        /// <summary>Root of the placed copy. A replaced root stays findable by name until the frame ends.</summary>
-        internal static Transform PlacedRoot => _placed != null ? _placed.transform : null;
         private static int _lastFrame = -1;
         private static string _lastSig = "";
+
+        internal static float F(string s) => float.Parse(s, Ci);
+
+        internal static Vector3 V(string[] p, int i) => new(F(p[i]), F(p[i + 1]), F(p[i + 2]));
 
         internal static bool TryHandle(string raw)
         {
@@ -78,19 +69,15 @@ namespace MapExpansions.Debug
             {
                 switch (cmd)
                 {
-                    case "mxplace": Place(parts); break;
-                    case "mxunplace": Unplace(); break;
-                    case "mxlight": Light(parts.Length > 1 && parts[1] == "off"); break;
-                    case "mxcam": Cam(parts); break;
-                    case "mxframe": MelonCoroutines.Start(Frame(parts.Length > 1 ? F(parts[1]) : 3f)); break;
+                    case "mxstate": State(); break;
                     case "mxwhere": Where(); break;
                     case "mxtp": Tp(parts); break;
+                    case "mxcam": Cam(parts); break;
+                    case "mxframe": MelonCoroutines.Start(Frame(parts.Length > 1 ? F(parts[1]) : 3f)); break;
                     case "mxfind" when parts.Length > 1: Find(parts[1], parts.Length > 2 ? parts[2] : ""); break;
-                    case "mxnav": NavSpike.Handle(parts); break;
-                    case "mxveh": VehicleSpike.Handle(parts); break;
-                    case "mxreg": RegionSpike.Handle(parts); break;
-                    case "mxterrain": TerrainSpike.Handle(parts); break;
-                    case "mxenv": EnvSpike.Handle(parts); break;
+                    case "mxfog" when parts.Length > 1: Fog(parts[1] == "on"); break;
+                    case "mxnav": NavTest.Handle(parts); break;
+                    case "mxveh": VehicleTest.Handle(parts); break;
                     default:
                         Core.Log.Warning($"[dev] unknown command '{cmd}'");
                         return false;
@@ -103,108 +90,66 @@ namespace MapExpansions.Debug
             return true;
         }
 
-        private static float F(string s) => float.Parse(s, Ci);
-
-        private static void Place(string[] parts)
+        private static void State()
         {
-            string mode = parts.Length > 1 ? parts[1].ToLowerInvariant() : "root";
-            Vector3 offset = parts.Length > 4 ? new Vector3(F(parts[2]), F(parts[3]), F(parts[4])) : DefaultOffset;
-            float yaw = parts.Length > 5 ? F(parts[5]) : 0f;
-            if (mode != "root" && mode != "none")
+            foreach (var id in MapExpansionsApi.Expansions)
             {
-                Core.Log.Warning("[dev] mxplace [none|root] [dx dy dz [yaw]]");
-                return;
-            }
-            if (SourceCapture.Cache == null || SourceCapture.Cache.transform.childCount == 0)
-            {
-                Core.Log.Error("[dev] mxplace: no captured world in the cache");
-                return;
-            }
-            if (_placed != null) Unplace();
-
-            var t = System.Diagnostics.Stopwatch.StartNew();
-            _placed = new GameObject("MapExpansions.Placed");
-            _placed.transform.position = offset;
-            _placed.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
-            var source = SourceCapture.Cache.transform.GetChild(0).gameObject;
-            var copy = Object.Instantiate(source, _placed.transform);
-            copy.name = source.name;
-            long cloneMs = t.ElapsedMilliseconds;
-
-            int batched = 0, rerooted = 0, failed = 0;
-            string firstError = null;
-            foreach (var mr in copy.GetComponentsInChildren<MeshRenderer>(true))
-            {
-                if (!mr.isPartOfStaticBatch) continue;
-                batched++;
-                if (mode != "root") continue;
-                try
+                var b = BuildPipeline.Get(id);
+                string conns = b == null ? "not built" : string.Join(", ", b.Connections.Select(c =>
                 {
-                    mr.staticBatchRootTransform = _placed.transform;
-                    if (mr.staticBatchRootTransform == _placed.transform) rerooted++;
-                    else failed++;
-                }
-                catch (Exception e)
+                    var (from, to) = c.BuiltRange;
+                    return $"{c.Name} {c.Curve.Length:0} m, built {from:0}..{to:0} m, {c.Interior.Count} boxes";
+                }));
+                Core.Log.Msg($"[dev] mxstate: '{id}' {MapExpansionsApi.GetState(id)}; {conns}");
+            }
+            foreach (var r in RegionRegistry.All)
+                Core.Log.Msg($"[dev] mxstate: region {(int)r.Region} '{r.Definition.Name}' of '{r.ExpansionId}', stand-in {r.StandIn}, " +
+                             $"zone {(r.Zone != null ? "present" : "missing")}");
+            Core.Log.Msg($"[dev] mxstate: {NavLinks.Count} NavMesh links, vehicle graph mask extra {Navigation.VehicleNavigation.ExtraMask}");
+        }
+
+        private static void Where()
+        {
+            var p = Player.Local;
+            if (p == null)
+            {
+                Core.Log.Warning("[dev] mxwhere: no local player");
+                return;
+            }
+            var pos = p.transform.position;
+            var map = Singleton<Map>.Instance;
+            string region = map != null ? ((int)map.GetRegionFromPosition(pos)).ToString(Ci) : "no map";
+            string exp = MapExpansionsApi.ExpansionAt(pos) ?? "-";
+            string local = exp != "-" && MapExpansionsApi.TryToLocal(exp, pos, out var l) ? $", local {l}" : "";
+            Core.Log.Msg($"[dev] mxwhere: {pos}, region {region}, player region {(int)p.CurrentRegion}, expansion {exp}{local}");
+        }
+
+        private static void Tp(string[] parts)
+        {
+            Vector3 pos;
+            if (parts.Length == 2 && parts[1].Contains(':'))
+            {
+                var bits = parts[1].Split(':');
+                if (!MapExpansionsApi.TryResolve(new LocationRef(bits[0], bits[1]), out pos, out _))
                 {
-                    failed++;
-                    firstError ??= e.Message;
+                    Core.Log.Warning($"[dev] mxtp: location '{parts[1]}' is unknown or not placed");
+                    return;
                 }
             }
-            string line = $"[dev] mxplace {mode} at {offset} yaw {yaw}: copy in {cloneMs} ms, {batched} batched renderers, " +
-                          $"{rerooted} pointed at the offset root, {failed} failed";
-            if (failed > 0) Core.Log.Error(line + (firstError != null ? $"; first error: {firstError}" : ""));
-            else Core.Log.Msg(line);
-            // A terrain under a turned parent is unsupported by Unity; it keeps world identity and only its data turns.
-            foreach (var terrain in copy.GetComponentsInChildren<Terrain>(true))
-                terrain.transform.rotation = Quaternion.identity;
-            if (yaw != 0f) TerrainSpike.Rotate();
-        }
-
-        private static void Find(string part, string scope)
-        {
-            int n = 0;
-            foreach (var r in Object.FindObjectsOfType<Renderer>())
+            else if (parts.Length >= 4) pos = V(parts, 1);
+            else
             {
-                if (r.name.IndexOf(part, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                bool placed = _placed != null && r.transform.IsChildOf(_placed.transform);
-                if ((scope == "copy" && !placed) || (scope == "main" && placed)) continue;
-                var b = r.bounds;
-                var t = r.transform;
-                Core.Log.Msg($"[dev] mxfind {(placed ? "copy" : "main")} '{r.name}' under '{(t.parent != null ? t.parent.name : "-")}': " +
-                             $"x {b.min.x:0}..{b.max.x:0} y {b.min.y:0}..{b.max.y:0} z {b.min.z:0}..{b.max.z:0}, pos {t.position}, fwd {t.forward}");
-                if (++n >= 25) break;
-            }
-            Core.Log.Msg($"[dev] mxfind '{part}' {scope}: {n} renderers listed");
-        }
-
-        private static void Unplace()
-        {
-            if (_placed == null)
-            {
-                Core.Log.Msg("[dev] mxunplace: nothing placed");
+                Core.Log.Warning("[dev] mxtp x y z | id:location");
                 return;
             }
-            Object.Destroy(_placed);
-            _placed = null;
-            Core.Log.Msg("[dev] mxunplace: placed copy removed");
-        }
-
-        private static void Light(bool clear)
-        {
-            if (_placed == null)
+            var mv = PlayerSingleton<PlayerMovement>.Instance;
+            if (mv == null)
             {
-                Core.Log.Warning("[dev] mxlight: nothing placed");
+                Core.Log.Warning("[dev] mxtp: no PlayerMovement");
                 return;
             }
-            var hist = new Dictionary<int, int>();
-            foreach (var mr in _placed.GetComponentsInChildren<MeshRenderer>(true))
-            {
-                hist.TryGetValue(mr.lightmapIndex, out int n);
-                hist[mr.lightmapIndex] = n + 1;
-                if (clear) mr.lightmapIndex = -1;
-            }
-            string list = string.Join(", ", hist.OrderBy(k => k.Key).Select(k => $"{k.Key}:{k.Value}"));
-            Core.Log.Msg($"[dev] mxlight: lightmapIndex histogram {list}{(clear ? "; all set to -1" : "")}");
+            mv.Teleport(pos, false);
+            Core.Log.Msg($"[dev] mxtp: teleported to {pos}");
         }
 
         private static void Cam(string[] parts)
@@ -226,8 +171,8 @@ namespace MapExpansions.Debug
                 Core.Log.Warning("[dev] mxcam ex ey ez tx ty tz | off");
                 return;
             }
-            var eye = new Vector3(F(parts[1]), F(parts[2]), F(parts[3]));
-            var at = new Vector3(F(parts[4]), F(parts[5]), F(parts[6]));
+            var eye = V(parts, 1);
+            var at = V(parts, 4);
             cam.OverrideTransform(eye, Quaternion.LookRotation(at - eye), 0f, false);
             Core.Log.Msg($"[dev] mxcam: eye {eye} looking at {at}");
         }
@@ -248,40 +193,49 @@ namespace MapExpansions.Debug
                 yield break;
             }
             samples.Sort();
-            float avg = samples.Average();
             float P(float q) => samples[Math.Min(samples.Count - 1, (int)(q * samples.Count))];
-            int placed = _placed != null ? _placed.GetComponentsInChildren<MeshRenderer>(false).Length : 0;
-            Core.Log.Msg($"[dev] mxframe: {samples.Count} frames in {seconds:0.#} s, avg {avg:0.00} ms, p50 {P(0.5f):0.00}, " +
-                         $"p95 {P(0.95f):0.00}, max {samples[samples.Count - 1]:0.00}; placed renderers active {placed}");
+            Core.Log.Msg($"[dev] mxframe: {samples.Count} frames in {seconds:0.#} s, avg {samples.Average():0.00} ms, p50 {P(0.5f):0.00}, " +
+                         $"p95 {P(0.95f):0.00}, max {samples[samples.Count - 1]:0.00}");
         }
 
-        private static void Where()
+        private static void Find(string part, string scope)
         {
-            var p = Player.Local;
-            if (p == null)
+            int n = 0;
+            foreach (var r in Object.FindObjectsOfType<Renderer>(true))
             {
-                Core.Log.Warning("[dev] mxwhere: no local player");
-                return;
+                if (r.name.IndexOf(part, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                string exp = BuildPipeline.All.FirstOrDefault(b => b.IsOurs(r.transform))?.Id;
+                if ((scope == "exp" && exp == null) || (scope == "main" && exp != null)) continue;
+                var b = r.bounds;
+                var t = r.transform;
+                Core.Log.Msg($"[dev] mxfind {exp ?? "main"} '{r.name}' under '{(t.parent != null ? t.parent.name : "-")}' enabled {r.enabled}: " +
+                             $"x {b.min.x:0}..{b.max.x:0} y {b.min.y:0}..{b.max.y:0} z {b.min.z:0}..{b.max.z:0}");
+                if (++n >= 25) break;
             }
-            Core.Log.Msg($"[dev] mxwhere: {p.transform.position}");
+            Core.Log.Msg($"[dev] mxfind '{part}' {scope}: {n} renderers listed");
         }
 
-        private static void Tp(string[] parts)
+        private static void Fog(bool on)
         {
-            if (parts.Length < 4)
+            var env = NetworkSingleton<EnvironmentManager>.Instance;
+            string feature;
+            if (env == null) feature = "no EnvironmentManager";
+            else if (env._fogFeature == null) feature = "no fog feature";
+            else
             {
-                Core.Log.Warning("[dev] mxtp x y z");
-                return;
+                env._fogFeature.SetActive(on);
+                feature = $"fog feature active {env._fogFeature.isActive}";
             }
-            var mv = PlayerSingleton<PlayerMovement>.Instance;
-            if (mv == null)
+            var fx = Singleton<EnvironmentFX>.Instance;
+            string volumetric;
+            if (fx == null) volumetric = "no EnvironmentFX";
+            else if (fx.VolumetricFog == null) volumetric = "no volumetric fog";
+            else
             {
-                Core.Log.Warning("[dev] mxtp: no PlayerMovement");
-                return;
+                fx.VolumetricFog.enabled = on;
+                volumetric = $"volumetric fog enabled {fx.VolumetricFog.enabled}";
             }
-            var pos = new Vector3(F(parts[1]), F(parts[2]), F(parts[3]));
-            mv.Teleport(pos, false);
-            Core.Log.Msg($"[dev] mxtp: teleported to {pos}");
+            Core.Log.Msg($"[dev] mxfog {(on ? "on" : "off")}: {feature}; {volumetric}");
         }
     }
 

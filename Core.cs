@@ -1,3 +1,4 @@
+using MapExpansions.Lifecycle;
 using MapExpansions.Source;
 using MelonLoader;
 
@@ -18,8 +19,8 @@ namespace MapExpansions
             var cat = MelonPreferences.CreateCategory("MapExpansions");
             CaptureCycles = cat.CreateEntry("CaptureCycles", 1,
                 description: "How often the source scene is captured in the menu. Values above 1 only test repeatability.");
-            HarmonyInstance.PatchAll(typeof(Core).Assembly);
-            Log.Msg("initialized");
+            // MelonLoader has already applied the [HarmonyPatch] classes; a second PatchAll would run every patch twice.
+            Log.Msg($"initialized; {HarmonyInstance.GetPatchedMethods().Count()} methods patched");
         }
 
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
@@ -31,6 +32,14 @@ namespace MapExpansions
         {
             if (sceneName == "Menu")
                 SourceCapture.OnMenuReady();
+            else if (sceneName == BuildPipeline.MainScene)
+                BuildPipeline.OnMainInitialized();
+        }
+
+        public override void OnSceneWasUnloaded(int buildIndex, string sceneName)
+        {
+            if (sceneName == BuildPipeline.MainScene)
+                BuildPipeline.OnMainUnloaded();
         }
     }
 }
