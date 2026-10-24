@@ -34,6 +34,7 @@
     <Reference Include="UnityEngine.TerrainPhysicsModule"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.TerrainPhysicsModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.AIModule"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.AIModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.AudioModule"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.AudioModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.RenderPipelines.Universal.Runtime"><HintPath>$(WorkspaceLibPath)/game/Unity.RenderPipelines.Universal.Runtime.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Unity.AI.Navigation"><HintPath>$(WorkspaceLibPath)/game/Unity.AI.Navigation.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 

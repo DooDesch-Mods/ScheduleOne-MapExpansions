@@ -26,6 +26,7 @@ namespace MapExpansions.Debug
     /// mxveh ...                       vehicle AI spike, see VehicleSpike
     /// mxreg ...                       region 6 spike, see RegionSpike
     /// mxterrain ...                   terrain overlap, see TerrainSpike
+    /// mxenv ...                       fog and world range, see EnvSpike
     /// </summary>
     internal static class DevConsole
     {
@@ -80,6 +81,7 @@ namespace MapExpansions.Debug
                     case "mxveh": VehicleSpike.Handle(parts); break;
                     case "mxreg": RegionSpike.Handle(parts); break;
                     case "mxterrain": TerrainSpike.Handle(parts); break;
+                    case "mxenv": EnvSpike.Handle(parts); break;
                     default:
                         Core.Log.Warning($"[dev] unknown command '{cmd}'");
                         return false;

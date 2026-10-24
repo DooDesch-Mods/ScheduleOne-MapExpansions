@@ -12,6 +12,7 @@ namespace MapExpansions.Debug
     /// mxterrain list                    every terrain with position, size, resolution and whether it belongs to the copy
     /// mxterrain cut x0 z0 x1 z1         punch holes into the placed terrains inside a world rectangle
     /// mxterrain cutmain [margin]        punch holes into the placed terrains wherever a Main terrain lies
+    /// mxterrain clip name zmax         shrink a placed object along world z so its bounds end at zmax
     /// mxterrain objects z               placed objects whose bounds reach north of z, by size
     /// </summary>
     internal static class TerrainSpike
@@ -31,6 +32,7 @@ namespace MapExpansions.Debug
                     break;
                 case "cutmain": CutMain(parts.Length > 2 ? F(parts[2]) : 0f); break;
                 case "objects" when parts.Length > 2: Objects(F(parts[2])); break;
+                case "clip" when parts.Length > 3: Clip(parts[2], F(parts[3])); break;
                 default:
                     Core.Log.Warning("[dev] mxterrain list|cut|cutmain|objects (see TerrainSpike docs)");
                     break;
@@ -133,6 +135,40 @@ namespace MapExpansions.Debug
                 Core.Log.Msg($"[dev] mxterrain cut: '{t.name}' {holes}/{res * res} hole cells in {t0.ElapsedMilliseconds} ms");
             }
             Core.Log.Msg($"[dev] mxterrain cut: {done} placed terrains changed");
+        }
+
+        /// <summary>
+        /// Scales a placed object along the local axis that points along world z and shifts it back, so its north
+        /// edge ends at <paramref name="zMax"/> and the south edge stays where it was.
+        /// </summary>
+        private static void Clip(string name, float zMax)
+        {
+            var root = PlacedRoot;
+            var r = root == null ? null : root.GetComponentsInChildren<Renderer>(true).FirstOrDefault(x => x.name == name);
+            if (r == null)
+            {
+                Core.Log.Warning($"[dev] mxterrain clip: no placed renderer '{name}'");
+                return;
+            }
+            var t = r.transform;
+            Bounds before = r.bounds;
+            if (before.max.z <= zMax)
+            {
+                Core.Log.Msg($"[dev] mxterrain clip: '{name}' already ends at z {before.max.z:0}");
+                return;
+            }
+            Vector3 local = t.InverseTransformDirection(Vector3.forward);
+            int axis = Mathf.Abs(local.x) >= Mathf.Abs(local.y) && Mathf.Abs(local.x) >= Mathf.Abs(local.z) ? 0
+                : Mathf.Abs(local.y) >= Mathf.Abs(local.z) ? 1 : 2;
+            float factor = (zMax - before.min.z) / (before.max.z - before.min.z);
+            var scale = t.localScale;
+            scale[axis] *= factor;
+            t.localScale = scale;
+            float shift = zMax - r.bounds.max.z;
+            t.position += new Vector3(0f, 0f, shift);
+            Bounds after = r.bounds;
+            Core.Log.Msg($"[dev] mxterrain clip: '{name}' local axis {axis} x{factor:0.000}, z {before.min.z:0}..{before.max.z:0} -> {after.min.z:0}..{after.max.z:0}, " +
+                         $"collider {(r.GetComponent<Collider>() != null ? r.GetComponent<Collider>().bounds.max.z.ToString("0", Ci) : "none")}");
         }
 
         private static void Objects(float z)
