@@ -18,6 +18,7 @@ namespace MapExpansions.Source
     internal static class NavLinks
     {
         private const float FallbackSpeed = 1.5f;
+        private const float SnapRadius = 1.5f;
 
         private static readonly List<NavMeshLinkInstance> Instances = new();
         private static readonly List<(Vector3 a, Vector3 b, float width)> Ends = new();
@@ -28,12 +29,21 @@ namespace MapExpansions.Source
         public static void Add(Vector3 a, Vector3 b, float width, IEnumerable<int> agentTypes)
         {
             int added = 0;
+            var unsnapped = new List<string>();
             foreach (int agent in agentTypes)
             {
+                // A link only joins polygons its ends touch; route points can sit a little above or below the mesh.
+                var filter = new NavMeshQueryFilter { agentTypeID = agent, areaMask = NavMesh.AllAreas };
+                Vector3 Snap(Vector3 p, string end)
+                {
+                    if (NavMesh.SamplePosition(p, out NavMeshHit hit, SnapRadius, filter)) return hit.position;
+                    unsnapped.Add($"{end} for {NavMesh.GetSettingsNameFromID(agent)}");
+                    return p;
+                }
                 var data = new NavMeshLinkData
                 {
-                    startPosition = a,
-                    endPosition = b,
+                    startPosition = Snap(a, "start"),
+                    endPosition = Snap(b, "end"),
                     width = width,
                     costModifier = -1f,
                     bidirectional = true,
@@ -51,6 +61,8 @@ namespace MapExpansions.Source
             }
             Ends.Add((a, b, width));
             Core.Log.Msg($"nav link {a} -> {b} width {width}: added for {added} agent types");
+            if (unsnapped.Count > 0)
+                Core.Log.Warning($"nav link {a} -> {b}: no NavMesh within {SnapRadius} m of the {string.Join(", ", unsnapped)}; that end may not connect");
         }
 
         public static void Clear()

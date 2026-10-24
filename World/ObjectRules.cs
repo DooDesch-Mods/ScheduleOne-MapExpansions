@@ -19,6 +19,11 @@ namespace MapExpansions.World
                     continue;
                 }
                 var area = rule.Area.size == Vector3.zero ? default : (rule.Side == WorldSide.Main ? rule.Area : b.Frame.ToWorld(rule.Area));
+                if (rule.Effect == ObjectEffect.DoubleSided)
+                {
+                    DoubleSided(b, part, rule, area);
+                    continue;
+                }
                 int renderers = 0, colliders = 0, terrains = 0;
                 bool hide = rule.Effect != ObjectEffect.NoCollision;
                 bool noCollision = rule.Effect != ObjectEffect.Hide;
@@ -58,6 +63,56 @@ namespace MapExpansions.World
                 else Core.Log.Msg(line);
             }
         }
+
+        /// <summary>
+        /// Gives every renderer the rule selects copies of its materials with back-face culling off. One copy per
+        /// source material, shared by all renderers that used it, owned by the build.
+        /// </summary>
+        private static void DoubleSided(BuiltExpansion b, SceneIndex.Part part, ObjectRule rule, Bounds area)
+        {
+            var copies = new Dictionary<IntPtr, Material>();
+            int renderers = 0, noCull = 0;
+            var shaders = new HashSet<string>();
+            foreach (var r in part.Renderers)
+            {
+                if (r == null || !SceneIndex.MatchesSelfOrAncestor(r.transform, rule, area)) continue;
+                var mats = r.sharedMaterials;
+                bool changed = false;
+                for (int i = 0; i < mats.Length; i++)
+                {
+                    var m = mats[i];
+                    if (m == null || m.name.EndsWith(TwoSidedSuffix, StringComparison.Ordinal)) continue;
+                    if (!copies.TryGetValue(m.Pointer, out var copy))
+                    {
+                        if (!m.HasProperty(CullId))
+                        {
+                            // Without a culling property the shader decides on its own; the material stays.
+                            shaders.Add(m.shader != null ? m.shader.name : "?");
+                            noCull++;
+                            copies[m.Pointer] = null;
+                            continue;
+                        }
+                        copy = b.Own(new Material(m) { name = m.name + TwoSidedSuffix });
+                        copy.SetFloat(CullId, 0f);
+                        copy.doubleSidedGI = true;
+                        copies[m.Pointer] = copy;
+                    }
+                    if (copy == null) continue;
+                    mats[i] = copy;
+                    changed = true;
+                }
+                if (!changed) continue;
+                r.sharedMaterials = mats;
+                renderers++;
+            }
+            string line = $"rules: '{b.Id}' {rule}: {renderers} renderers, {copies.Values.Count(x => x != null)} materials made two-sided";
+            if (noCull > 0) Core.Log.Warning($"{line}; {noCull} materials have no _Cull property and stay one-sided (shaders: {string.Join(", ", shaders)})");
+            else if (renderers == 0) Core.Log.Warning(line + "; the rule matched nothing");
+            else Core.Log.Msg(line);
+        }
+
+        private static readonly int CullId = Shader.PropertyToID("_Cull");
+        private const string TwoSidedSuffix = " (two-sided)";
 
         /// <summary>
         /// A large plate of the source (often statically batched, so it cannot be rescaled) is replaced by a plain quad

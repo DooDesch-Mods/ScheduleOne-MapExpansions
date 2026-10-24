@@ -103,6 +103,12 @@ namespace MapExpansions
         /// <summary>Thickness of the rock shell around a tunnel, which closes holes cut into hills and rock.</summary>
         public float ShellThickness { get; set; } = 1.5f;
 
+        /// <summary>
+        /// How far the facade around a tunnel mouth reaches beyond the shell, to the sides and above. The facade closes
+        /// what the clearing cut out of the slope or a portal around the mouth. 0 builds none.
+        /// </summary>
+        public float PortalMargin { get; set; } = 4f;
+
         /// <summary>Metres between two tunnel lights.</summary>
         public float LightSpacing { get; set; } = 16f;
 

@@ -128,6 +128,12 @@ namespace MapExpansions
 
         /// <summary>Renderers and colliders off.</summary>
         Remove,
+
+        /// <summary>
+        /// Renderers draw both faces. For one-sided outer walls whose back faces the main world and would otherwise
+        /// show as gaps in the sky.
+        /// </summary>
+        DoubleSided,
     }
 
     /// <summary>Selects objects by name in one world, optionally limited to an area.</summary>

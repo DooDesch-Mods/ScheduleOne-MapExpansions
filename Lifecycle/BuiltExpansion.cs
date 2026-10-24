@@ -40,8 +40,17 @@ namespace MapExpansions.Lifecycle
             return o;
         }
 
+        /// <summary>Changes to shared game state that are undone on teardown, before the owned assets go.</summary>
+        public readonly List<Action> OnTeardown = new();
+
         public void Teardown()
         {
+            foreach (var undo in OnTeardown)
+            {
+                try { undo(); }
+                catch (Exception e) { Core.Log.Error($"teardown: '{Id}' an undo step failed: {e}"); }
+            }
+            OnTeardown.Clear();
             int destroyed = 0;
             foreach (var o in Owned)
             {

@@ -93,6 +93,7 @@ namespace MapExpansions.Connections
                 }
             }
             var range = conn.BuiltRange;
+            AddApproach(conn, range);
             Core.Log.Msg($"tunnel: '{b.Id}' {conn.Name}: route {curve.Length:0} m, {curve.Count} samples, " +
                          $"{string.Join(", ", stretches.Select(s => $"{s.style} {s.from:0}..{s.to:0}"))}; built {range.from:0}..{range.to:0} m in {chunks} chunks, " +
                          $"{lights} lamps, {conn.Interior.Count} clearance boxes, layer {LayerMask.LayerToName(layer)}, {sw.ElapsedMilliseconds} ms");
@@ -185,8 +186,16 @@ namespace MapExpansions.Connections
             foreach (var run in Profile(def, style)) Sweep(md, curve, run, i0, i1, origin, mats.Tiling(run.Sub));
             if (style == RouteStyle.Tunnel)
             {
-                if (first) Ring(md, def, curve, i0, origin, -curve.Forward(i0), mats.Shell.Tiling);
-                if (last) Ring(md, def, curve, i1, origin, curve.Forward(i1), mats.Shell.Tiling);
+                if (first)
+                {
+                    Ring(md, def, curve, i0, origin, -curve.Forward(i0), mats.Shell.Tiling);
+                    Facade(md, def, curve, i0, origin, -curve.Forward(i0), mats.Wall.Tiling);
+                }
+                if (last)
+                {
+                    Ring(md, def, curve, i1, origin, curve.Forward(i1), mats.Shell.Tiling);
+                    Facade(md, def, curve, i1, origin, curve.Forward(i1), mats.Wall.Tiling);
+                }
             }
 
             var mesh = b.Own(new Mesh { name = go.name });
@@ -285,7 +294,71 @@ namespace MapExpansions.Connections
             }
         }
 
-        private static void Quad(MeshData md, Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 facing, float tiling, Vector3 right)
+        /// <summary>
+        /// A flat wall across the mouth, from the outside of the shell to a rectangle <see cref="ConnectionDefinition.PortalMargin"/>
+        /// wider and higher. Each shell point is joined to the point where the ray from the bottom centre through it
+        /// meets the rectangle; the two top corners close the gaps between the rays.
+        /// </summary>
+        private static void Facade(MeshData md, ConnectionDefinition d, RouteCurve curve, int s, Vector3 origin, Vector3 facing, float tiling)
+        {
+            float m = d.PortalMargin;
+            if (m <= 0f) return;
+            float w = HalfWidth(d), e = w + d.ShellThickness;
+            float half = e + m, top = d.CrownHeight + d.ShellThickness + m;
+            var shell = new List<Vector2> { new(e, SlabBottom), new(e, d.WallHeight) };
+            for (int i = 1; i < ArcSegments; i++)
+            {
+                float a = (float)i / ArcSegments * Mathf.PI;
+                shell.Add(new Vector2(e * Mathf.Cos(a), d.WallHeight + (d.CrownHeight + d.ShellThickness - d.WallHeight) * Mathf.Sin(a)));
+            }
+            shell.Add(new Vector2(-e, d.WallHeight));
+            shell.Add(new Vector2(-e, SlabBottom));
+
+            var centre = new Vector2(0f, SlabBottom);
+            Vector2 OnRect(Vector2 p)
+            {
+                var dir = p - centre;
+                float t = float.MaxValue;
+                if (Mathf.Abs(dir.x) > 1e-4f) t = Mathf.Min(t, half / Mathf.Abs(dir.x));
+                if (dir.y > 1e-4f) t = Mathf.Min(t, (top - centre.y) / dir.y);
+                return centre + dir * t;
+            }
+            // 0 right side, 1 top, 2 left side.
+            int Side(Vector2 q) => q.x >= half - 1e-3f ? 0 : q.x <= -half + 1e-3f ? 2 : 1;
+
+            Vector3 c = curve.Points[s] - origin, r = curve.Right(s);
+            Vector3 W(Vector2 p) => c + r * p.x + Vector3.up * p.y;
+            for (int i = 0; i < shell.Count - 1; i++)
+            {
+                Vector2 p0 = shell[i], p1 = shell[i + 1], q0 = OnRect(p0), q1 = OnRect(p1);
+                int s0 = Side(q0), s1 = Side(q1);
+                if (s0 == s1)
+                {
+                    Quad(md, W(p0), W(p1), W(q1), W(q0), facing, tiling, r, SubWall);
+                    continue;
+                }
+                var corner = new Vector2(s0 == 0 || s1 == 0 ? half : -half, top);
+                Tri(md, W(p0), W(p1), W(corner), facing, tiling, r, SubWall);
+                Tri(md, W(p0), W(corner), W(q0), facing, tiling, r, SubWall);
+                Tri(md, W(p1), W(q1), W(corner), facing, tiling, r, SubWall);
+            }
+        }
+
+        private static void Tri(MeshData md, Vector3 a, Vector3 b, Vector3 c, Vector3 facing, float tiling, Vector3 right, int sub)
+        {
+            int i = md.Vertices.Count;
+            foreach (var p in new[] { a, b, c })
+            {
+                md.Vertices.Add(p);
+                md.Uvs.Add(new Vector2(Vector3.Dot(p, right) / tiling, p.y / tiling));
+            }
+            var tris = md.Tris[sub];
+            bool front = Vector3.Dot(Vector3.Cross(b - a, c - a), facing) > 0f;
+            if (front) { tris.Add(i); tris.Add(i + 1); tris.Add(i + 2); }
+            else { tris.Add(i); tris.Add(i + 2); tris.Add(i + 1); }
+        }
+
+        private static void Quad(MeshData md, Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 facing, float tiling, Vector3 right, int sub = SubShell)
         {
             int i = md.Vertices.Count;
             foreach (var p in new[] { a, b, c, d })
@@ -293,7 +366,7 @@ namespace MapExpansions.Connections
                 md.Vertices.Add(p);
                 md.Uvs.Add(new Vector2(Vector3.Dot(p, right) / tiling, p.y / tiling));
             }
-            var tris = md.Tris[SubShell];
+            var tris = md.Tris[sub];
             // The face of triangle (a, b, c) is on the side Cross(b - a, c - a) points to, as in Mesh.RecalculateNormals.
             bool front = Vector3.Dot(Vector3.Cross(b - a, c - a), facing) > 0f;
             if (front) { tris.Add(i); tris.Add(i + 1); tris.Add(i + 2); tris.Add(i); tris.Add(i + 2); tris.Add(i + 3); }
@@ -337,6 +410,28 @@ namespace MapExpansions.Connections
             }
             return added;
         }
+
+        /// <summary>
+        /// Footprint boxes over the few metres of existing road before and after the built range. Terrain there that
+        /// reaches above the road surface would lie across the threshold as a strip of ground; terrain under the road
+        /// stays, because the footprint starts at the road surface.
+        /// </summary>
+        private static void AddApproach(BuiltConnection conn, (float from, float to) range)
+        {
+            if (range.to <= range.from) return;
+            var curve = conn.Curve;
+            float w = HalfWidth(conn.Definition);
+            float top = conn.Definition.WallHeight;
+            void Add(float a, float c)
+            {
+                if (c - a < 0.1f) return;
+                conn.Footprint.Add(OrientedBox.Along(curve.PointAt(a), curve.PointAt(c), w * 2f, -0.02f, top));
+            }
+            Add(Mathf.Max(0f, range.from - ApproachLength), range.from);
+            Add(range.to, Mathf.Min(curve.Length, range.to + ApproachLength));
+        }
+
+        private const float ApproachLength = 6f;
 
         /// <summary>Clearance, blocking and footprint boxes for samples i0..i1, about 2 m each.</summary>
         private static void AddBoxes(BuiltConnection conn, RouteStyle style, int i0, int i1)

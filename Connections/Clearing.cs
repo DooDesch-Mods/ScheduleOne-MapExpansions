@@ -46,6 +46,7 @@ namespace MapExpansions.Connections
                 var p = index.Expansion(x.Id);
                 if (p != null) parts.Add(p);
             }
+            var instanced = new List<Vector3>();
             foreach (var part in parts)
                 foreach (var r in part.Renderers)
                 {
@@ -53,6 +54,15 @@ namespace MapExpansions.Connections
                     var rb = r.bounds;
                     if (!rb.Intersects(area) || !conn.Interior.Any(box => box.Intersects(rb))) continue;
                     if (Skip(r.transform)) { kept++; continue; }
+                    // Instanced trees and the like share one mesh with thousands of copies and are drawn a second time
+                    // by the instancing manager; both copies go.
+                    if (InstancedObjects.IsInstanced(r))
+                    {
+                        r.enabled = false;
+                        instanced.Add(r.transform.position);
+                        off++;
+                        continue;
+                    }
                     if (conn.Interior.Any(box => box.Contains(rb.center)))
                     {
                         r.enabled = false;
@@ -75,6 +85,8 @@ namespace MapExpansions.Connections
                         failed++;
                     }
                 }
+
+            int instancedHidden = InstancedObjects.Hide(instanced, b, $"{b.Id} {conn.Name}");
 
             // Colliders, found by the physics scene so the collider groups the keep-alive switched on count too.
             var seen = new HashSet<IntPtr>();
@@ -133,7 +145,7 @@ namespace MapExpansions.Connections
             }
 
             Core.Log.Msg($"clear: '{b.Id}' {conn.Name} in {sw.ElapsedMilliseconds} ms: renderers {off} off, {carved} cut ({triangles} triangles), " +
-                         $"{failed} off after a failed cut, {kept} kept; colliders {colOff} off, {colCut} cut ({colTris} triangles), {colKept} kept; " +
+                         $"{failed} off after a failed cut, {kept} kept, {instancedHidden}/{instanced.Count} instanced copies out of the draw; colliders {colOff} off, {colCut} cut ({colTris} triangles), {colKept} kept; " +
                          $"{cells} terrain cells marked as holes, {trees} trees removed");
         }
     }
