@@ -22,6 +22,8 @@ namespace MapExpansions.Debug
     /// mxveh near x y z                        nearest node per graph for one point
     /// mxveh grid cx cz w d [node]             add and scan a grid graph for vehicles over the expansion
     /// mxveh connect ax ay az bx by bz         join the nearest General node at A to the nearest grid node at B
+    /// mxveh path ax ay az bx by bz [mask]    A* path between two points, default mask General plus grid
+    /// mxveh rehier                         recalculate the connected areas of all graphs
     /// mxveh mask on|off                       treat the grid graph as part of "General Vehicle Graph"
     /// mxveh spawn x y z [heading] [code]      spawn an NPC vehicle
     /// mxveh drive x y z [noroads]             navigate the last spawned vehicle there and watch it
@@ -51,6 +53,13 @@ namespace MapExpansions.Debug
                     Grid(F(parts[2]), F(parts[3]), F(parts[4]), F(parts[5]), parts.Length > 6 ? F(parts[6]) : 2f);
                     break;
                 case "connect" when parts.Length > 7: Connect(V(parts, 2), V(parts, 5)); break;
+                case "path" when parts.Length > 7:
+                    PathTest(V(parts, 2), V(parts, 5), parts.Length > 8 ? int.Parse(parts[8], Ci) : -1);
+                    break;
+                case "rehier":
+                    Astar.hierarchicalGraph.RecalculateAll();
+                    Core.Log.Msg("[dev] mxveh rehier: hierarchical graph recalculated");
+                    break;
                 case "mask" when parts.Length > 2: Mask(parts[2] == "on"); break;
                 case "spawn" when parts.Length > 4:
                     Spawn(V(parts, 2), parts.Length > 5 ? F(parts[5]) : 0f, parts.Length > 6 ? parts[6] : "shitbox");
@@ -96,7 +105,7 @@ namespace MapExpansions.Debug
                 if (g == null) continue;
                 var c = new NNConstraint { graphMask = Bit(i) };
                 var nn = a.GetNearest(p, c);
-                string where = nn.node == null ? "no node" : $"{nn.position} ({Vector3.Distance(p, nn.position):0.0} m)";
+                string where = nn.node == null ? "no node" : $"{nn.position} ({Vector3.Distance(p, nn.position):0.0} m) area {nn.node.Area} walkable {nn.node.Walkable}";
                 Core.Log.Msg($"[dev] mxveh near {p} graph {i} '{g.name}': {where}");
             }
         }
@@ -166,6 +175,32 @@ namespace MapExpansions.Debug
             })));
             astar.FlushWorkItems();
             Core.Log.Msg($"[dev] mxveh connect: General {(Vector3)nodeA.position} <-> grid {(Vector3)nodeB.position}, cost {cost}");
+        }
+
+        private static void PathTest(Vector3 a, Vector3 b, int mask)
+        {
+            if (mask < 0) mask = 1 | (GridIndex >= 0 ? 1 << GridIndex : 0);
+            var t = System.Diagnostics.Stopwatch.StartNew();
+            var path = ABPath.Construct(a, b, null);
+            path.nnConstraint.graphMask = new GraphMask { value = mask };
+            AstarPath.StartPath(path);
+            path.BlockUntilCalculated();
+            int count = path.vectorPath?.Count ?? 0;
+            string end = count > 0 ? path.vectorPath[count - 1].ToString() : "-";
+            var areas = new List<string>();
+            var graphs = new List<string>();
+            if (path.path != null)
+                for (int i = 0; i < path.path.Count; i++)
+                {
+                    var n = path.path[i];
+                    string g = n.GraphIndex.ToString(Ci);
+                    if (graphs.Count == 0 || graphs[graphs.Count - 1] != g) graphs.Add(g);
+                    string ar = n.Area.ToString(Ci);
+                    if (areas.Count == 0 || areas[areas.Count - 1] != ar) areas.Add(ar);
+                }
+            Core.Log.Msg($"[dev] mxveh path {a} -> {b} mask {mask}: state {path.CompleteState}, error {path.error} '{path.errorLog}', " +
+                         $"{count} points, length {(count > 1 ? path.GetTotalLength() : 0f):0} m, end {end}, graphs {string.Join(">", graphs)}, " +
+                         $"areas {string.Join(">", areas)}, {t.ElapsedMilliseconds} ms");
         }
 
         private static void Mask(bool on)

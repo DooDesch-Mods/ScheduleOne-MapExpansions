@@ -24,6 +24,8 @@ namespace MapExpansions.Debug
     /// mxtp x y z                      teleport the player
     /// mxnav ...                       navigation spike, see NavSpike
     /// mxveh ...                       vehicle AI spike, see VehicleSpike
+    /// mxreg ...                       region 6 spike, see RegionSpike
+    /// mxterrain ...                   terrain overlap, see TerrainSpike
     /// </summary>
     internal static class DevConsole
     {
@@ -76,6 +78,8 @@ namespace MapExpansions.Debug
                     case "mxtp": Tp(parts); break;
                     case "mxnav": NavSpike.Handle(parts); break;
                     case "mxveh": VehicleSpike.Handle(parts); break;
+                    case "mxreg": RegionSpike.Handle(parts); break;
+                    case "mxterrain": TerrainSpike.Handle(parts); break;
                     default:
                         Core.Log.Warning($"[dev] unknown command '{cmd}'");
                         return false;
