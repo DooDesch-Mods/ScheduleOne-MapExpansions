@@ -22,6 +22,7 @@ namespace MapExpansions.Debug
     /// mxreg probe [x y z]                   region lookups, unlock state, influence and cartel activities for 6
     /// mxreg unlock                          unlock region 6 and send the unlocked list through LevelManager
     /// mxreg influence delta                 change the cartel influence of region 6 through the server RPC
+    /// mxreg stub7 on|off                    add or remove a placeholder region 7, which the 0.3 influence step unlocks
     /// </summary>
     internal static class RegionSpike
     {
@@ -38,7 +39,7 @@ namespace MapExpansions.Debug
             {
                 case "add":
                     bool rect = parts.Length > 5;
-                    Add(rect ? F(parts[2]) : -270f, rect ? F(parts[3]) : -150f, rect ? F(parts[4]) : 360f, rect ? F(parts[5]) : -850f,
+                    Add(rect ? F(parts[2]) : -120f, rect ? F(parts[3]) : -225f, rect ? F(parts[4]) : 480f, rect ? F(parts[5]) : -956f,
                         parts.Length > 6 ? F(parts[6]) : (parts.Length == 3 ? F(parts[2]) : 0.5f));
                     break;
                 case "probe":
@@ -46,6 +47,7 @@ namespace MapExpansions.Debug
                     break;
                 case "unlock": Unlock(); break;
                 case "influence" when parts.Length > 2: Influence(F(parts[2])); break;
+                case "stub7" when parts.Length > 2: Stub7(parts[2] == "on"); break;
                 default:
                     Core.Log.Warning("[dev] mxreg add|probe|unlock|influence (see RegionSpike docs)");
                     break;
@@ -124,7 +126,7 @@ namespace MapExpansions.Debug
             var data = map.GetRegionData(Region);
             Core.Log.Msg($"[dev] mxreg probe: GetRegionData(6) = {(data == null ? "null" : $"'{data.Name}' unlocked {data.IsUnlocked}")}");
 
-            var probes = new List<Vector3> { new(0, 0, 0), new(-5, 0, -130), new(0, 0, -200), new(100, 0, -400), new(210, 10, -400), new(0, 0, -700) };
+            var probes = new List<Vector3> { new(0, 0, 0), new(-5, 0, -130), new(-2, 10, -215), new(3, 40, -542), new(200, 0, -600), new(100, 0, -850) };
             if (extra.HasValue) probes.Add(extra.Value);
             foreach (var p in probes)
                 Core.Log.Msg($"[dev] mxreg probe: GetRegionFromPosition{p} = {map.GetRegionFromPosition(p)} ({(int)map.GetRegionFromPosition(p)})");
@@ -171,6 +173,58 @@ namespace MapExpansions.Debug
             Core.Log.Msg($"[dev] mxreg unlock: region 6 unlocked {data.IsUnlocked}; SetUnlockedRegions sent with {list.Count} regions");
         }
 
+        /// <summary>
+        /// CartelInfluence unlocks <c>region + 1</c> when a region's influence drops through 0.3, guarded only against
+        /// Uptown. For region 6 that is <c>GetRegionData(7)</c>; the placeholder makes the lookup succeed so the step
+        /// can be compared with and without it.
+        /// </summary>
+        private static void Stub7(bool on)
+        {
+            var map = MapInstance;
+            var stub = (EMapRegion)7;
+            var old = map.Regions;
+            if (on)
+            {
+                if (map.GetRegionData(stub) != null)
+                {
+                    Core.Log.Warning("[dev] mxreg stub7: region 7 is already in Map.Regions");
+                    return;
+                }
+                var six = map.GetRegionData(Region);
+                if (six == null)
+                {
+                    Core.Log.Warning("[dev] mxreg stub7: add region 6 first, the stub borrows its polygon");
+                    return;
+                }
+                var arr = new Il2CppReferenceArray<MapRegionData>(old.Length + 1);
+                for (int i = 0; i < old.Length; i++) arr[i] = old[i];
+                arr[old.Length] = new MapRegionData
+                {
+                    Region = stub,
+                    Name = "Region 7 placeholder",
+                    UnlockedByDefault = false,
+                    StartingNPCs = new Il2CppReferenceArray<NPC>(0),
+                    RegionDeliveryLocations = new Il2CppReferenceArray<DeliveryLocation>(0),
+                    AdjacentRegions = new Il2CppReferenceArray<MapRegionData.RegionContainer>(0),
+                    RegionBounds = six.RegionBounds,
+                };
+                map.Regions = arr;
+                Core.Log.Msg($"[dev] mxreg stub7: placeholder region 7 appended ({map.Regions.Length} regions)");
+                return;
+            }
+            int keep = 0;
+            for (int i = 0; i < old.Length; i++) if (old[i].Region != stub) keep++;
+            if (keep == old.Length)
+            {
+                Core.Log.Warning("[dev] mxreg stub7: no region 7 to remove");
+                return;
+            }
+            var kept = new Il2CppReferenceArray<MapRegionData>(keep);
+            for (int i = 0, k = 0; i < old.Length; i++) if (old[i].Region != stub) kept[k++] = old[i];
+            map.Regions = kept;
+            Core.Log.Msg($"[dev] mxreg stub7: placeholder removed ({map.Regions.Length} regions)");
+        }
+
         private static void Influence(float delta)
         {
             var cartel = NetworkSingleton<Cartel>.Instance;
@@ -181,7 +235,8 @@ namespace MapExpansions.Debug
             }
             float before = cartel.Influence.GetInfluence(Region);
             cartel.Influence.ChangeInfluence(Region, delta);
-            Core.Log.Msg($"[dev] mxreg influence: ChangeInfluence(6, {delta}) sent, influence before {before}, right after {cartel.Influence.GetInfluence(Region)}");
+            Core.Log.Msg($"[dev] mxreg influence: ChangeInfluence(6, {delta}) sent, influence before {before}, right after {cartel.Influence.GetInfluence(Region)}, " +
+                         $"local player {(Player.Local != null ? "present" : "missing")}");
         }
     }
 }
