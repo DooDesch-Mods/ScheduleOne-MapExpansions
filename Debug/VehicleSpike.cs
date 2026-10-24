@@ -20,7 +20,11 @@ namespace MapExpansions.Debug
     ///
     /// mxveh info                              A* version, graphs, node counts, nearest General node for probes
     /// mxveh near x y z                        nearest node per graph for one point
-    /// mxveh grid cx cz w d [node]             add and scan a grid graph for vehicles over the expansion
+    /// mxveh grid cx cz w d [node]             add and scan a grid graph for vehicles over the expansion; a second call
+    ///                                         rescans the same graph, which drops the links made by connect
+    /// mxveh recast cx cz w d                  add and scan a recast graph with the settings of "General Vehicle Graph";
+    ///                                         unlike the grid it keeps the floor under tunnel roofs
+    /// mxveh nodes x0 z0 x1 z1 [graph]        walkable and blocked nodes of a recast graph inside a rectangle, by height
     /// mxveh connect ax ay az bx by bz         join the nearest General node at A to the nearest grid node at B
     /// mxveh path ax ay az bx by bz [mask]    A* path between two points, default mask General plus grid
     /// mxveh rehier                         recalculate the connected areas of all graphs
@@ -51,6 +55,10 @@ namespace MapExpansions.Debug
                 case "near" when parts.Length > 4: Near(V(parts, 2)); break;
                 case "grid" when parts.Length > 5:
                     Grid(F(parts[2]), F(parts[3]), F(parts[4]), F(parts[5]), parts.Length > 6 ? F(parts[6]) : 2f);
+                    break;
+                case "recast" when parts.Length > 5: Recast(F(parts[2]), F(parts[3]), F(parts[4]), F(parts[5])); break;
+                case "nodes" when parts.Length > 5:
+                    Nodes(F(parts[2]), F(parts[3]), F(parts[4]), F(parts[5]), parts.Length > 6 ? int.Parse(parts[6], Ci) : GridIndex);
                     break;
                 case "connect" when parts.Length > 7: Connect(V(parts, 2), V(parts, 5)); break;
                 case "path" when parts.Length > 7:
@@ -113,16 +121,14 @@ namespace MapExpansions.Debug
         private static void Grid(float cx, float cz, float width, float depth, float node)
         {
             var a = Astar;
-            if (GridIndex >= 0)
-            {
-                Core.Log.Warning("[dev] mxveh grid: a grid graph is already added; restart the session to rebuild it");
-                return;
-            }
             var t = System.Diagnostics.Stopwatch.StartNew();
-            var g = a.data.AddGraph(Il2CppType.Of<GridGraph>()).TryCast<GridGraph>();
+            bool rescan = GridIndex >= 0;
+            var g = rescan
+                ? a.data.graphs[GridIndex]?.TryCast<GridGraph>()
+                : a.data.AddGraph(Il2CppType.Of<GridGraph>()).TryCast<GridGraph>();
             if (g == null)
             {
-                Core.Log.Error("[dev] mxveh grid: AddGraph did not return a GridGraph");
+                Core.Log.Error($"[dev] mxveh grid: {(rescan ? $"graph {GridIndex} is no GridGraph" : "AddGraph did not return a GridGraph")}");
                 return;
             }
             g.name = GridName;
@@ -146,8 +152,98 @@ namespace MapExpansions.Debug
             if (arr != null)
                 for (int i = 0; i < arr.Length; i++)
                     if (arr[i] != null && arr[i].Walkable) walkable++;
-            Core.Log.Msg($"[dev] mxveh grid: '{GridName}' index {GridIndex}, {g.width}x{g.depth} @ {node} m around ({cx}, {cz}); " +
+            Core.Log.Msg($"[dev] mxveh grid: {(rescan ? "rescanned" : "added")} '{GridName}' index {GridIndex}, {g.width}x{g.depth} @ {node} m around ({cx}, {cz}); " +
                          $"add {addMs} ms, scan {t.ElapsedMilliseconds} ms, nodes {nodes}, walkable {walkable}");
+        }
+
+        private static void Recast(float cx, float cz, float width, float depth)
+        {
+            var a = Astar;
+            var src = a.data.graphs.Length > 0 ? a.data.graphs[0]?.TryCast<RecastGraph>() : null;
+            if (src == null)
+            {
+                Core.Log.Error("[dev] mxveh recast: graph 0 is no RecastGraph, nothing to copy the settings from");
+                return;
+            }
+            var t = System.Diagnostics.Stopwatch.StartNew();
+            bool rescan = GridIndex >= 0;
+            var g = rescan
+                ? a.data.graphs[GridIndex]?.TryCast<RecastGraph>()
+                : a.data.AddGraph(Il2CppType.Of<RecastGraph>()).TryCast<RecastGraph>();
+            if (g == null)
+            {
+                Core.Log.Error($"[dev] mxveh recast: {(rescan ? $"graph {GridIndex} is no RecastGraph" : "AddGraph did not return a RecastGraph")}");
+                return;
+            }
+            g.name = GridName;
+            g.cellSize = src.cellSize;
+            g.walkableHeight = src.walkableHeight;
+            g.walkableClimb = src.walkableClimb;
+            g.characterRadius = src.characterRadius;
+            g.maxSlope = src.maxSlope;
+            g.maxEdgeLength = src.maxEdgeLength;
+            g.contourMaxError = src.contourMaxError;
+            g.minRegionSize = src.minRegionSize;
+            g.useTiles = src.useTiles;
+            g.editorTileSize = src.editorTileSize;
+            g.mask = src.mask;
+            g.rasterizeColliders = src.rasterizeColliders;
+            g.rasterizeMeshes = src.rasterizeMeshes;
+            g.rasterizeTerrain = src.rasterizeTerrain;
+            g.rasterizeTrees = src.rasterizeTrees;
+            g.colliderRasterizeDetail = src.colliderRasterizeDetail;
+            g.terrainSampleSize = src.terrainSampleSize;
+            g.rotation = Vector3.zero;
+            g.forcedBoundsCenter = new Vector3(cx, 40f, cz);
+            g.forcedBoundsSize = new Vector3(width, 160f, depth);
+            for (int i = 0; i < a.data.graphs.Length; i++)
+                if (a.data.graphs[i] != null && a.data.graphs[i].Pointer == g.Pointer) GridIndex = i;
+            Core.Log.Msg($"[dev] mxveh recast: settings of '{src.name}': cell {src.cellSize}, height {src.walkableHeight}, climb {src.walkableClimb}, " +
+                         $"radius {src.characterRadius}, slope {src.maxSlope}, tiles {src.useTiles}/{src.editorTileSize}, mask {src.mask.value}, " +
+                         $"colliders {src.rasterizeColliders}, meshes {src.rasterizeMeshes}, terrain {src.rasterizeTerrain}, trees {src.rasterizeTrees}, " +
+                         $"bounds {src.forcedBoundsCenter} size {src.forcedBoundsSize}");
+            long addMs = t.ElapsedMilliseconds;
+            t.Restart();
+            a.Scan(g);
+            Core.Log.Msg($"[dev] mxveh recast: {(rescan ? "rescanned" : "added")} '{GridName}' index {GridIndex} over ({cx}, {cz}) {width}x{depth}; " +
+                         $"add {addMs} ms, scan {t.ElapsedMilliseconds} ms, nodes {g.CountNodes()}");
+        }
+
+        private static void Nodes(float x0, float z0, float x1, float z1, int index)
+        {
+            var a = Astar;
+            var g = index >= 0 && index < a.data.graphs.Length ? a.data.graphs[index]?.TryCast<RecastGraph>() : null;
+            if (g == null)
+            {
+                Core.Log.Warning($"[dev] mxveh nodes: graph {index} is no RecastGraph");
+                return;
+            }
+            float minX = Mathf.Min(x0, x1), maxX = Mathf.Max(x0, x1), minZ = Mathf.Min(z0, z1), maxZ = Mathf.Max(z0, z1);
+            var buckets = new SortedDictionary<int, (int walkable, int blocked)>();
+            int total = 0;
+            var tiles = g.GetTiles();
+            for (int t = 0; tiles != null && t < tiles.Length; t++)
+            {
+                var nodes = tiles[t]?.nodes;
+                for (int i = 0; nodes != null && i < nodes.Length; i++)
+                {
+                    var n = nodes[i];
+                    if (n == null) continue;
+                    var p = (Vector3)n.position;
+                    if (p.x < minX || p.x > maxX || p.z < minZ || p.z > maxZ) continue;
+                    total++;
+                    int y = Mathf.RoundToInt(p.y);
+                    buckets.TryGetValue(y, out var c);
+                    buckets[y] = n.Walkable ? (c.walkable + 1, c.blocked) : (c.walkable, c.blocked + 1);
+                }
+            }
+            string list = string.Join(", ", buckets.Select(b => $"y {b.Key}: {b.Value.walkable}/{b.Value.blocked}"));
+            Core.Log.Msg($"[dev] mxveh nodes graph {index} x {minX}..{maxX} z {minZ}..{maxZ}: {total} nodes (walkable/blocked by height) {list}");
+            foreach (var terrain in Terrain.activeTerrains)
+            {
+                int layer = terrain.gameObject.layer;
+                Core.Log.Msg($"[dev] mxveh nodes: terrain '{terrain.name}' layer {layer} '{LayerMask.LayerToName(layer)}', in mask {((g.mask.value >> layer) & 1) == 1}");
+            }
         }
 
         private static void Connect(Vector3 a, Vector3 b)
@@ -183,6 +279,8 @@ namespace MapExpansions.Debug
             var t = System.Diagnostics.Stopwatch.StartNew();
             var path = ABPath.Construct(a, b, null);
             path.nnConstraint.graphMask = new GraphMask { value = mask };
+            // A partial path ends at the reachable node closest to the target, which shows where the graph breaks.
+            path.calculatePartial = true;
             AstarPath.StartPath(path);
             path.BlockUntilCalculated();
             int count = path.vectorPath?.Count ?? 0;

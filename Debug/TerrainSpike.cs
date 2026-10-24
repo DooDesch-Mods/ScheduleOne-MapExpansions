@@ -20,6 +20,9 @@ namespace MapExpansions.Debug
     /// mxterrain objects z               placed objects whose bounds reach north of z, by size
     /// mxterrain collider copy|main name on|off   enable or disable the colliders whose object name starts with name
     /// mxterrain road ax ay az bx by bz w  a flat drivable box whose top runs from a to b, w metres wide
+    /// mxterrain road clear              remove all stand-in roads
+    /// mxterrain overlap ax ay az bx by bz w h [off]  colliders and renderers in the box from a to b (w wide, h high
+    ///                                   above the line); off disables them
     /// mxterrain rotate                  turn the data of the placed terrains by the placement yaw (multiples of 90
     ///                                   degrees); mxplace runs it on its own when yaw is set
     /// </summary>
@@ -47,6 +50,11 @@ namespace MapExpansions.Debug
                 case "ground" when parts.Length > 3: Ground(parts[2], F(parts[3])); break;
                 case "rotate": Rotate(); break;
                 case "collider" when parts.Length > 4: Colliders(parts[2] == "copy", parts[3], parts[4] == "on"); break;
+                case "road" when parts.Length > 2 && parts[2] == "clear": ClearRoads(); break;
+                case "overlap" when parts.Length > 9:
+                    Overlap(new Vector3(F(parts[2]), F(parts[3]), F(parts[4])), new Vector3(F(parts[5]), F(parts[6]), F(parts[7])),
+                        F(parts[8]), F(parts[9]), parts.Length > 10 && parts[10] == "off");
+                    break;
                 case "road" when parts.Length > 8:
                     Road(new Vector3(F(parts[2]), F(parts[3]), F(parts[4])), new Vector3(F(parts[5]), F(parts[6]), F(parts[7])), F(parts[8]));
                     break;
@@ -404,6 +412,15 @@ namespace MapExpansions.Debug
                 n++;
                 Core.Log.Msg($"[dev] mxterrain {(hide ? "hide" : "show")} {(copy ? "copy" : "main")}: '{r.name}' under '{r.transform.root.name}' x {r.bounds.min.x:0}..{r.bounds.max.x:0} z {r.bounds.min.z:0}..{r.bounds.max.z:0}");
             }
+            // A terrain is no Renderer; a disabled one also drops out of Terrain.activeTerrains, which the recast scan reads.
+            foreach (var t in Object.FindObjectsOfType<Terrain>(true))
+            {
+                if (!t.gameObject.activeInHierarchy) continue;
+                if (IsPlaced(t) != copy || !t.name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+                t.enabled = !hide;
+                n++;
+                Core.Log.Msg($"[dev] mxterrain {(hide ? "hide" : "show")} {(copy ? "copy" : "main")}: terrain '{t.name}' enabled {t.enabled}");
+            }
             if (n == 0) Core.Log.Warning($"[dev] mxterrain {(hide ? "hide" : "show")}: no {(copy ? "copy" : "main")} renderer starts with '{prefix}'");
         }
 
@@ -438,6 +455,63 @@ namespace MapExpansions.Debug
             if (root != null) go.transform.SetParent(root, true);
             Roads.Add(go);
             Core.Log.Msg($"[dev] mxterrain road: {a} -> {b}, {dir.magnitude:0.0} m long, {width} m wide, slope {Mathf.Atan2(dir.y, new Vector2(dir.x, dir.z).magnitude) * Mathf.Rad2Deg:0.0} degrees");
+        }
+
+        /// <summary>
+        /// Lists what fills a corridor: colliders by physics overlap, renderers by bounds. Stand-in roads are skipped.
+        /// Renderers only count when their bounds are smaller than 300 m, so the world plates stay out of the list.
+        /// </summary>
+        private static void Overlap(Vector3 a, Vector3 b, float width, float height, bool off)
+        {
+            var dir = b - a;
+            var rot = Quaternion.LookRotation(new Vector3(dir.x, 0f, dir.z));
+            var center = (a + b) * 0.5f + Vector3.up * (height * 0.5f + 0.3f);
+            var half = new Vector3(width * 0.5f, height * 0.5f + Mathf.Abs(dir.y) * 0.5f, new Vector2(dir.x, dir.z).magnitude * 0.5f);
+            int n = 0;
+            var seen = new HashSet<IntPtr>();
+            foreach (var c in Physics.OverlapBox(center, half, rot, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (c == null || c.name == "MapExpansions.Road" || !seen.Add(c.gameObject.Pointer)) continue;
+                n++;
+                Core.Log.Msg($"[dev] mxterrain overlap: collider '{c.name}' ({(IsPlaced(c) ? "copy" : "main")}) {c.GetIl2CppType().Name} under '{c.transform.parent?.name}' " +
+                             $"x {c.bounds.min.x:0}..{c.bounds.max.x:0} y {c.bounds.min.y:0}..{c.bounds.max.y:0} z {c.bounds.min.z:0}..{c.bounds.max.z:0}{(off ? ", off" : "")}");
+                // A terrain collider covers the whole map; switching it off would drop everything on it.
+                if (off && c.GetIl2CppType().Name == "TerrainCollider")
+                {
+                    Core.Log.Warning($"[dev] mxterrain overlap: terrain collider '{c.name}' stays on");
+                    continue;
+                }
+                if (off)
+                {
+                    c.enabled = false;
+                    var r = c.GetComponent<Renderer>();
+                    if (r != null) r.enabled = false;
+                }
+            }
+            var box = new Bounds(center, Vector3.zero);
+            foreach (var corner in new[] { new Vector3(-1, -1, -1), new Vector3(1, 1, 1), new Vector3(-1, 1, 1), new Vector3(1, -1, -1),
+                         new Vector3(1, 1, -1), new Vector3(-1, -1, 1), new Vector3(1, -1, 1), new Vector3(-1, 1, -1) })
+                box.Encapsulate(center + rot * Vector3.Scale(half, corner));
+            foreach (var r in Object.FindObjectsOfType<Renderer>())
+            {
+                if (r == null || !r.enabled || r.name == "MapExpansions.Road" || seen.Contains(r.gameObject.Pointer)) continue;
+                var rb = r.bounds;
+                if (rb.size.x > 300f || rb.size.z > 300f || !rb.Intersects(box)) continue;
+                n++;
+                Core.Log.Msg($"[dev] mxterrain overlap: renderer '{r.name}' ({(IsPlaced(r) ? "copy" : "main")}) under '{r.transform.parent?.name}' " +
+                             $"x {rb.min.x:0}..{rb.max.x:0} y {rb.min.y:0}..{rb.max.y:0} z {rb.min.z:0}..{rb.max.z:0}{(off ? ", off" : "")}");
+                if (off) r.enabled = false;
+            }
+            Core.Log.Msg($"[dev] mxterrain overlap: {n} objects in the box {a} -> {b}, {width} m wide, {height} m high{(off ? ", all switched off" : "")}");
+        }
+
+        private static void ClearRoads()
+        {
+            int n = 0;
+            foreach (var go in Roads)
+                if (go != null) { Object.Destroy(go); n++; }
+            Roads.Clear();
+            Core.Log.Msg($"[dev] mxterrain road clear: {n} roads removed");
         }
 
         private static GameObject _ground;
