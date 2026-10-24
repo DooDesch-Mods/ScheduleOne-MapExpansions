@@ -42,6 +42,9 @@ namespace MapExpansions.Debug
 
         /// <summary>Rotation of the placed copy, identity while nothing is placed.</summary>
         internal static Quaternion PlacedRotation => _placed != null ? _placed.transform.rotation : Quaternion.identity;
+
+        /// <summary>Root of the placed copy. A replaced root stays findable by name until the frame ends.</summary>
+        internal static Transform PlacedRoot => _placed != null ? _placed.transform : null;
         private static int _lastFrame = -1;
         private static string _lastSig = "";
 
@@ -151,6 +154,9 @@ namespace MapExpansions.Debug
                           $"{rerooted} pointed at the offset root, {failed} failed";
             if (failed > 0) Core.Log.Error(line + (firstError != null ? $"; first error: {firstError}" : ""));
             else Core.Log.Msg(line);
+            // A terrain under a turned parent is unsupported by Unity; it keeps world identity and only its data turns.
+            foreach (var terrain in copy.GetComponentsInChildren<Terrain>(true))
+                terrain.transform.rotation = Quaternion.identity;
             if (yaw != 0f) TerrainSpike.Rotate();
         }
 

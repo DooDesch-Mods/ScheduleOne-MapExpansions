@@ -59,7 +59,7 @@ namespace MapExpansions.Debug
             Core.Log.Msg($"[dev] mxenv info: camera {(cam != null ? $"'{cam.name}' near {cam.nearClipPlane} far {cam.farClipPlane}" : "none")}, " +
                          $"skybox {(RenderSettings.skybox != null ? RenderSettings.skybox.name : "none")}, shadow distance {QualitySettings.shadowDistance}, " +
                          $"lod bias {QualitySettings.lodBias}");
-            var placed = GameObject.Find("MapExpansions.Placed")?.transform;
+            var placed = DevConsole.PlacedRoot;
             var big = new List<(string name, Bounds b)>();
             foreach (var r in Object.FindObjectsOfType<Renderer>())
             {

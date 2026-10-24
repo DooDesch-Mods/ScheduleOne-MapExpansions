@@ -48,7 +48,7 @@ namespace MapExpansions.Debug
             }
         }
 
-        private static Transform PlacedRoot => GameObject.Find("MapExpansions.Placed")?.transform;
+        private static Transform PlacedRoot => DevConsole.PlacedRoot;
 
         private static bool IsPlaced(Component c)
         {
@@ -164,6 +164,7 @@ namespace MapExpansions.Debug
 
                 if ((k & 1) == 1) td.size = new Vector3(size.z, size.y, size.x);
                 t.transform.position = min;
+                t.transform.rotation = Quaternion.identity;
                 t.detailObjectDensity = 0f;
                 t.Flush();
                 Rotated.Add(t.GetInstanceID());
