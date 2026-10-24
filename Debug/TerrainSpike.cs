@@ -123,44 +123,57 @@ namespace MapExpansions.Debug
                                       Mathf.Min(Mathf.Min(pos.z, c1.z), Mathf.Min(c2.z, c3.z)));
 
                 int hres = td.heightmapResolution;
-                var hrt = Turn(td.heightmapTexture, k, td.heightmapTexture.format);
-                td.CopyActiveRenderTextureToHeightmap(new RectInt(0, 0, hres, hres), new Vector2Int(0, 0), TerrainHeightmapSyncControl.HeightAndLod);
-                Release(hrt);
-
-                var maps = td.alphamapTextures;
-                for (int i = 0; i < maps.Length; i++)
+                string heights = Step(t, "heightmap", () =>
                 {
-                    var src = maps[i];
-                    var art = Turn(src, k, RenderTextureFormat.ARGB32);
-                    td.CopyActiveRenderTextureToTexture(TerrainData.AlphamapTextureName, i, new RectInt(0, 0, src.width, src.height), new Vector2Int(0, 0), false);
-                    Release(art);
-                }
-                if (maps.Length > 0) td.SyncTexture(TerrainData.AlphamapTextureName);
+                    var hrt = Turn(td.heightmapTexture, k, td.heightmapTexture.format);
+                    td.CopyActiveRenderTextureToHeightmap(new RectInt(0, 0, hres, hres), new Vector2Int(0, 0), TerrainHeightmapSyncControl.HeightAndLod);
+                    Release(hrt);
+                    return $"{hres}";
+                });
 
-                bool holes = td.holesTexture != null;
-                if (holes)
+                // TerrainData.alphamapTextures is stripped from the game; the indexed getter is the remaining path.
+                string splats = Step(t, "splat maps", () =>
+                {
+                    int count = td.alphamapTextureCount;
+                    for (int i = 0; i < count; i++)
+                    {
+                        var src = td.GetAlphamapTexture(i);
+                        var art = Turn(src, k, RenderTextureFormat.ARGB32);
+                        td.CopyActiveRenderTextureToTexture(TerrainData.AlphamapTextureName, i, new RectInt(0, 0, src.width, src.height), new Vector2Int(0, 0), false);
+                        Release(art);
+                    }
+                    if (count > 0) td.SyncTexture(TerrainData.AlphamapTextureName);
+                    return $"{count}";
+                });
+
+                string holes = Step(t, "holes", () =>
                 {
                     var src = td.holesTexture;
+                    if (src == null) return "none";
                     var hlrt = Turn(src, k, RenderTextureFormat.R8);
                     td.CopyActiveRenderTextureToTexture(TerrainData.HolesTextureName, 0, new RectInt(0, 0, src.width, src.height), new Vector2Int(0, 0), false);
                     Release(hlrt);
-                }
+                    return $"{src.width}";
+                });
 
-                var trees = td.treeInstances;
-                for (int i = 0; i < trees.Length; i++)
+                string trees = Step(t, "trees", () =>
                 {
-                    var tree = trees[i];
-                    var p = tree.position;
-                    tree.position = k switch
+                    int count = td.treeInstanceCount;
+                    for (int i = 0; i < count; i++)
                     {
-                        1 => new Vector3(p.z, p.y, 1f - p.x),
-                        2 => new Vector3(1f - p.x, p.y, 1f - p.z),
-                        _ => new Vector3(1f - p.z, p.y, p.x),
-                    };
-                    tree.rotation += k * Mathf.PI * 0.5f;
-                    trees[i] = tree;
-                }
-                td.treeInstances = trees;
+                        var tree = td.GetTreeInstance(i);
+                        var p = tree.position;
+                        tree.position = k switch
+                        {
+                            1 => new Vector3(p.z, p.y, 1f - p.x),
+                            2 => new Vector3(1f - p.x, p.y, 1f - p.z),
+                            _ => new Vector3(1f - p.z, p.y, p.x),
+                        };
+                        tree.rotation += k * Mathf.PI * 0.5f;
+                        td.SetTreeInstance(i, tree);
+                    }
+                    return $"{count}";
+                });
 
                 if ((k & 1) == 1) td.size = new Vector3(size.z, size.y, size.x);
                 t.transform.position = min;
@@ -169,11 +182,26 @@ namespace MapExpansions.Debug
                 t.Flush();
                 Rotated.Add(t.GetInstanceID());
                 done++;
-                Core.Log.Msg($"[dev] mxterrain rotate: '{t.name}' turned {k * 90} degrees in {sw.ElapsedMilliseconds} ms, heightmap {hres}, " +
-                             $"{maps.Length} splat maps, holes {holes}, {trees.Length} trees, now x {min.x:0}..{min.x + td.size.x:0} " +
+                Core.Log.Msg($"[dev] mxterrain rotate: '{t.name}' turned {k * 90} degrees in {sw.ElapsedMilliseconds} ms, heightmap {heights}, " +
+                             $"splat maps {splats}, holes {holes}, trees {trees}, now x {min.x:0}..{min.x + td.size.x:0} " +
                              $"z {min.z:0}..{min.z + td.size.z:0}; detail density set to 0");
             }
             Core.Log.Msg($"[dev] mxterrain rotate: {done} placed terrains turned by {k * 90} degrees");
+        }
+
+        /// <summary>Runs one part of the turn; a failed part is logged and the remaining parts still run.</summary>
+        private static string Step(Terrain t, string what, Func<string> body)
+        {
+            try
+            {
+                return body();
+            }
+            catch (Exception e)
+            {
+                RenderTexture.active = null;
+                Core.Log.Error($"[dev] mxterrain rotate: '{t.name}' {what} failed: {e.GetType().Name}: {e.Message}");
+                return "FAILED";
+            }
         }
 
         /// <summary>Source uv for a destination uv when the data turns clockwise by k quarter turns seen from above.</summary>
@@ -336,10 +364,12 @@ namespace MapExpansions.Debug
             int n = 0;
             foreach (var r in Object.FindObjectsOfType<Renderer>(true))
             {
+                // Inactive renderers belong to the capture cache; a change there would carry into every later placement.
+                if (!r.gameObject.activeInHierarchy) continue;
                 if (IsPlaced(r) != copy || !r.name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
                 r.enabled = !hide;
                 n++;
-                Core.Log.Msg($"[dev] mxterrain {(hide ? "hide" : "show")}: '{r.name}' x {r.bounds.min.x:0}..{r.bounds.max.x:0} z {r.bounds.min.z:0}..{r.bounds.max.z:0}");
+                Core.Log.Msg($"[dev] mxterrain {(hide ? "hide" : "show")} {(copy ? "copy" : "main")}: '{r.name}' under '{r.transform.root.name}' x {r.bounds.min.x:0}..{r.bounds.max.x:0} z {r.bounds.min.z:0}..{r.bounds.max.z:0}");
             }
             if (n == 0) Core.Log.Warning($"[dev] mxterrain {(hide ? "hide" : "show")}: no {(copy ? "copy" : "main")} renderer starts with '{prefix}'");
         }
