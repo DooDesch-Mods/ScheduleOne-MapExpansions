@@ -17,6 +17,8 @@ namespace MapExpansions.Debug
     /// mxterrain show copy|main name    enable them again
     /// mxterrain ground name zmax       unbatched quad with the material of a placed renderer, its extent cut at zmax
     /// mxterrain objects z               placed objects whose bounds reach north of z, by size
+    /// mxterrain rotate                  turn the data of the placed terrains by the placement yaw (multiples of 90
+    ///                                   degrees); mxplace runs it on its own when yaw is set
     /// </summary>
     internal static class TerrainSpike
     {
@@ -39,6 +41,7 @@ namespace MapExpansions.Debug
                 case "hide" when parts.Length > 3: Hide(parts[2] == "copy", string.Join(" ", parts.Skip(3)), true); break;
                 case "show" when parts.Length > 3: Hide(parts[2] == "copy", string.Join(" ", parts.Skip(3)), false); break;
                 case "ground" when parts.Length > 3: Ground(parts[2], F(parts[3])); break;
+                case "rotate": Rotate(); break;
                 default:
                     Core.Log.Warning("[dev] mxterrain list|cut|cutmain|objects (see TerrainSpike docs)");
                     break;
@@ -66,6 +69,165 @@ namespace MapExpansions.Debug
             }
         }
 
+        private static readonly HashSet<int> Rotated = new();
+        private static Material _blit;
+
+        /// <summary>
+        /// A terrain renders axis-aligned at its transform position and ignores rotation, so a turned placement needs
+        /// the data itself turned: heightmap, splat maps and holes on the GPU, tree instances on the CPU, and the
+        /// terrain moved to the minimum corner of its turned rectangle. Detail layers have no read or write path in
+        /// the interop; their density is set to 0 instead of drawing grass in the unturned pattern.
+        /// </summary>
+        internal static void Rotate()
+        {
+            var root = PlacedRoot;
+            if (root == null)
+            {
+                Core.Log.Warning("[dev] mxterrain rotate: nothing placed");
+                return;
+            }
+            float yaw = root.eulerAngles.y;
+            int k = Mathf.RoundToInt(yaw / 90f) & 3;
+            if (Mathf.Abs(Mathf.DeltaAngle(yaw, k * 90f)) > 0.5f)
+            {
+                Core.Log.Error($"[dev] mxterrain rotate: yaw {yaw:0.##} is not a multiple of 90, terrains stay unturned");
+                return;
+            }
+            if (_blit == null)
+            {
+                var shader = Shader.Find("Hidden/BlitCopy");
+                if (shader == null)
+                {
+                    Core.Log.Error("[dev] mxterrain rotate: shader Hidden/BlitCopy not found");
+                    return;
+                }
+                _blit = new Material(shader);
+            }
+            int done = 0;
+            foreach (var t in root.GetComponentsInChildren<Terrain>(true))
+            {
+                if (k == 0 || Rotated.Contains(t.GetInstanceID()))
+                {
+                    Core.Log.Msg($"[dev] mxterrain rotate: '{t.name}' skipped, {(k == 0 ? "yaw 0" : "already turned")}");
+                    continue;
+                }
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var td = EnsureClone(t);
+                Vector3 size = td.size;
+                Vector3 pos = t.transform.position;
+                var rot = root.rotation;
+                Vector3 c1 = pos + rot * new Vector3(size.x, 0f, 0f);
+                Vector3 c2 = pos + rot * new Vector3(0f, 0f, size.z);
+                Vector3 c3 = pos + rot * new Vector3(size.x, 0f, size.z);
+                var min = new Vector3(Mathf.Min(Mathf.Min(pos.x, c1.x), Mathf.Min(c2.x, c3.x)), pos.y,
+                                      Mathf.Min(Mathf.Min(pos.z, c1.z), Mathf.Min(c2.z, c3.z)));
+
+                int hres = td.heightmapResolution;
+                var hrt = Turn(td.heightmapTexture, k, td.heightmapTexture.format);
+                td.CopyActiveRenderTextureToHeightmap(new RectInt(0, 0, hres, hres), new Vector2Int(0, 0), TerrainHeightmapSyncControl.HeightAndLod);
+                Release(hrt);
+
+                var maps = td.alphamapTextures;
+                for (int i = 0; i < maps.Length; i++)
+                {
+                    var src = maps[i];
+                    var art = Turn(src, k, RenderTextureFormat.ARGB32);
+                    td.CopyActiveRenderTextureToTexture(TerrainData.AlphamapTextureName, i, new RectInt(0, 0, src.width, src.height), new Vector2Int(0, 0), false);
+                    Release(art);
+                }
+                if (maps.Length > 0) td.SyncTexture(TerrainData.AlphamapTextureName);
+
+                bool holes = td.holesTexture != null;
+                if (holes)
+                {
+                    var src = td.holesTexture;
+                    var hlrt = Turn(src, k, RenderTextureFormat.R8);
+                    td.CopyActiveRenderTextureToTexture(TerrainData.HolesTextureName, 0, new RectInt(0, 0, src.width, src.height), new Vector2Int(0, 0), false);
+                    Release(hlrt);
+                }
+
+                var trees = td.treeInstances;
+                for (int i = 0; i < trees.Length; i++)
+                {
+                    var tree = trees[i];
+                    var p = tree.position;
+                    tree.position = k switch
+                    {
+                        1 => new Vector3(p.z, p.y, 1f - p.x),
+                        2 => new Vector3(1f - p.x, p.y, 1f - p.z),
+                        _ => new Vector3(1f - p.z, p.y, p.x),
+                    };
+                    tree.rotation += k * Mathf.PI * 0.5f;
+                    trees[i] = tree;
+                }
+                td.treeInstances = trees;
+
+                if ((k & 1) == 1) td.size = new Vector3(size.z, size.y, size.x);
+                t.transform.position = min;
+                t.detailObjectDensity = 0f;
+                t.Flush();
+                Rotated.Add(t.GetInstanceID());
+                done++;
+                Core.Log.Msg($"[dev] mxterrain rotate: '{t.name}' turned {k * 90} degrees in {sw.ElapsedMilliseconds} ms, heightmap {hres}, " +
+                             $"{maps.Length} splat maps, holes {holes}, {trees.Length} trees, now x {min.x:0}..{min.x + td.size.x:0} " +
+                             $"z {min.z:0}..{min.z + td.size.z:0}; detail density set to 0");
+            }
+            Core.Log.Msg($"[dev] mxterrain rotate: {done} placed terrains turned by {k * 90} degrees");
+        }
+
+        /// <summary>Source uv for a destination uv when the data turns clockwise by k quarter turns seen from above.</summary>
+        private static Vector2 SourceUv(float u, float v, int k) => k switch
+        {
+            1 => new Vector2(1f - v, u),
+            2 => new Vector2(1f - u, 1f - v),
+            3 => new Vector2(v, 1f - u),
+            _ => new Vector2(u, v),
+        };
+
+        /// <summary>Draws <paramref name="src"/> turned into a temporary render texture and leaves it active.</summary>
+        private static RenderTexture Turn(Texture src, int k, RenderTextureFormat format)
+        {
+            var rt = RenderTexture.GetTemporary(src.width, src.height, 0, format, RenderTextureReadWrite.Linear);
+            var filter = src.filterMode;
+            src.filterMode = FilterMode.Point;
+            RenderTexture.active = rt;
+            _blit.mainTexture = src;
+            GL.PushMatrix();
+            GL.LoadOrtho();
+            _blit.SetPass(0);
+            GL.Begin(GL.QUADS);
+            foreach (var (u, v) in new[] { (0f, 0f), (0f, 1f), (1f, 1f), (1f, 0f) })
+            {
+                var s = SourceUv(u, v, k);
+                GL.TexCoord2(s.x, s.y);
+                GL.Vertex3(u, v, 0f);
+            }
+            GL.End();
+            GL.PopMatrix();
+            src.filterMode = filter;
+            return rt;
+        }
+
+        private static void Release(RenderTexture rt)
+        {
+            RenderTexture.active = null;
+            RenderTexture.ReleaseTemporary(rt);
+        }
+
+        private static TerrainData EnsureClone(Terrain t)
+        {
+            if (!t.terrainData.name.EndsWith("(MapExpansions)", StringComparison.Ordinal))
+            {
+                var clone = Object.Instantiate(t.terrainData);
+                clone.name = t.terrainData.name + " (MapExpansions)";
+                t.terrainData = clone;
+                var col = t.GetComponent<TerrainCollider>();
+                if (col != null) col.terrainData = clone;
+                else Core.Log.Warning($"[dev] mxterrain: '{t.name}' has no TerrainCollider");
+            }
+            return t.terrainData;
+        }
+
         private static void CutMain(float margin)
         {
             var rects = new List<Rect>();
@@ -91,16 +253,7 @@ namespace MapExpansions.Debug
             {
                 if (!IsPlaced(t) || t.terrainData == null) continue;
                 var t0 = System.Diagnostics.Stopwatch.StartNew();
-                if (!t.terrainData.name.EndsWith("(MapExpansions)", StringComparison.Ordinal))
-                {
-                    var clone = Object.Instantiate(t.terrainData);
-                    clone.name = t.terrainData.name + " (MapExpansions)";
-                    t.terrainData = clone;
-                    var col = t.GetComponent<TerrainCollider>();
-                    if (col != null) col.terrainData = clone;
-                    else Core.Log.Warning($"[dev] mxterrain cut: '{t.name}' has no TerrainCollider");
-                }
-                var td = t.terrainData;
+                var td = EnsureClone(t);
                 int res = td.holesResolution;
                 Vector3 p = t.transform.position;
                 Vector3 s = td.size;

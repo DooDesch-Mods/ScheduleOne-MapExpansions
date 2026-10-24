@@ -14,8 +14,10 @@ namespace MapExpansions.Debug
     /// <summary>
     /// Dev console commands for the stage 1 spikes. Compiled out of Release.
     ///
-    /// mxplace [none|root] [dx dy dz]  copy the captured world to an offset; 'root' points every statically batched
-    ///                                 renderer at the offset root, 'none' only moves the transforms
+    /// mxplace [none|root] [dx dy dz [yaw]]  copy the captured world to an offset, turned by yaw degrees clockwise
+    ///                                 seen from above; 'root' points every statically batched renderer at the offset
+    ///                                 root, 'none' only moves the transforms
+    /// mxfind name [copy|main]         renderer bounds and transforms whose name contains name
     /// mxunplace                       remove the placed copy
     /// mxlight [off]                   lightmap indices of the placed copy; 'off' clears them
     /// mxcam ex ey ez tx ty tz | off   park the camera at a world position looking at a world point
@@ -37,6 +39,9 @@ namespace MapExpansions.Debug
 
         /// <summary>Offset of the placed copy, or the default offset while nothing is placed.</summary>
         internal static Vector3 PlacedOffset => _placed != null ? _placed.transform.position : DefaultOffset;
+
+        /// <summary>Rotation of the placed copy, identity while nothing is placed.</summary>
+        internal static Quaternion PlacedRotation => _placed != null ? _placed.transform.rotation : Quaternion.identity;
         private static int _lastFrame = -1;
         private static string _lastSig = "";
 
@@ -77,6 +82,7 @@ namespace MapExpansions.Debug
                     case "mxframe": MelonCoroutines.Start(Frame(parts.Length > 1 ? F(parts[1]) : 3f)); break;
                     case "mxwhere": Where(); break;
                     case "mxtp": Tp(parts); break;
+                    case "mxfind" when parts.Length > 1: Find(parts[1], parts.Length > 2 ? parts[2] : ""); break;
                     case "mxnav": NavSpike.Handle(parts); break;
                     case "mxveh": VehicleSpike.Handle(parts); break;
                     case "mxreg": RegionSpike.Handle(parts); break;
@@ -100,9 +106,10 @@ namespace MapExpansions.Debug
         {
             string mode = parts.Length > 1 ? parts[1].ToLowerInvariant() : "root";
             Vector3 offset = parts.Length > 4 ? new Vector3(F(parts[2]), F(parts[3]), F(parts[4])) : DefaultOffset;
+            float yaw = parts.Length > 5 ? F(parts[5]) : 0f;
             if (mode != "root" && mode != "none")
             {
-                Core.Log.Warning("[dev] mxplace [none|root] [dx dy dz]");
+                Core.Log.Warning("[dev] mxplace [none|root] [dx dy dz [yaw]]");
                 return;
             }
             if (SourceCapture.Cache == null || SourceCapture.Cache.transform.childCount == 0)
@@ -115,6 +122,7 @@ namespace MapExpansions.Debug
             var t = System.Diagnostics.Stopwatch.StartNew();
             _placed = new GameObject("MapExpansions.Placed");
             _placed.transform.position = offset;
+            _placed.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
             var source = SourceCapture.Cache.transform.GetChild(0).gameObject;
             var copy = Object.Instantiate(source, _placed.transform);
             copy.name = source.name;
@@ -139,10 +147,28 @@ namespace MapExpansions.Debug
                     firstError ??= e.Message;
                 }
             }
-            string line = $"[dev] mxplace {mode} at {offset}: copy in {cloneMs} ms, {batched} batched renderers, " +
+            string line = $"[dev] mxplace {mode} at {offset} yaw {yaw}: copy in {cloneMs} ms, {batched} batched renderers, " +
                           $"{rerooted} pointed at the offset root, {failed} failed";
             if (failed > 0) Core.Log.Error(line + (firstError != null ? $"; first error: {firstError}" : ""));
             else Core.Log.Msg(line);
+            if (yaw != 0f) TerrainSpike.Rotate();
+        }
+
+        private static void Find(string part, string scope)
+        {
+            int n = 0;
+            foreach (var r in Object.FindObjectsOfType<Renderer>())
+            {
+                if (r.name.IndexOf(part, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                bool placed = _placed != null && r.transform.IsChildOf(_placed.transform);
+                if ((scope == "copy" && !placed) || (scope == "main" && placed)) continue;
+                var b = r.bounds;
+                var t = r.transform;
+                Core.Log.Msg($"[dev] mxfind {(placed ? "copy" : "main")} '{r.name}' under '{(t.parent != null ? t.parent.name : "-")}': " +
+                             $"x {b.min.x:0}..{b.max.x:0} y {b.min.y:0}..{b.max.y:0} z {b.min.z:0}..{b.max.z:0}, pos {t.position}, fwd {t.forward}");
+                if (++n >= 25) break;
+            }
+            Core.Log.Msg($"[dev] mxfind '{part}' {scope}: {n} renderers listed");
         }
 
         private static void Unplace()

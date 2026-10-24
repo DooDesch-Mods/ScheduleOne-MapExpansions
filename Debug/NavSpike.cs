@@ -86,7 +86,8 @@ namespace MapExpansions.Debug
                     Core.Log.Error($"[dev] mxnav add: data of '{n.Name}' was unloaded");
                     continue;
                 }
-                var inst = NavMesh.AddNavMeshData(n.Data, n.Position + offset, n.Rotation);
+                var rot = DevConsole.PlacedRotation;
+                var inst = NavMesh.AddNavMeshData(n.Data, rot * n.Position + offset, rot * n.Rotation);
                 if (!inst.valid)
                 {
                     Core.Log.Error($"[dev] mxnav add: AddNavMeshData failed for '{n.Name}'");
