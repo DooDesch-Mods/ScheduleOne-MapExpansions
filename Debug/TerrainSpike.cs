@@ -10,13 +10,16 @@ namespace MapExpansions.Debug
     /// Terrain overlap commands, all under <c>mxterrain</c>:
     ///
     /// mxterrain list                    every terrain with position, size, resolution and whether it belongs to the copy
-    /// mxterrain cut x0 z0 x1 z1         punch holes into the placed terrains inside a world rectangle
+    /// mxterrain cut x0 z0 x1 z1 [main]  punch holes into the placed terrains (or the Main ones) inside a world rectangle
+    /// mxterrain height x z              terrain heights and the first collider hit from above at x/z
     /// mxterrain cutmain [margin]        punch holes into the placed terrains wherever a Main terrain lies
     /// mxterrain clip name zmax         shrink a placed object along world z so its bounds end at zmax
     /// mxterrain hide copy|main name    disable the renderers whose name starts with name, in the copy or in Main
     /// mxterrain show copy|main name    enable them again
     /// mxterrain ground name zmax       unbatched quad with the material of a placed renderer, its extent cut at zmax
     /// mxterrain objects z               placed objects whose bounds reach north of z, by size
+    /// mxterrain collider copy|main name on|off   enable or disable the colliders whose object name starts with name
+    /// mxterrain road ax ay az bx by bz w  a flat drivable box whose top runs from a to b, w metres wide
     /// mxterrain rotate                  turn the data of the placed terrains by the placement yaw (multiples of 90
     ///                                   degrees); mxplace runs it on its own when yaw is set
     /// </summary>
@@ -33,8 +36,9 @@ namespace MapExpansions.Debug
                 case "list": List(); break;
                 case "cut" when parts.Length > 5:
                     Cut(new[] { Rect.MinMaxRect(Mathf.Min(F(parts[2]), F(parts[4])), Mathf.Min(F(parts[3]), F(parts[5])),
-                        Mathf.Max(F(parts[2]), F(parts[4])), Mathf.Max(F(parts[3]), F(parts[5]))) });
+                        Mathf.Max(F(parts[2]), F(parts[4])), Mathf.Max(F(parts[3]), F(parts[5]))) }, parts.Length > 6 && parts[6] == "main");
                     break;
+                case "height" when parts.Length > 3: Height(F(parts[2]), F(parts[3])); break;
                 case "cutmain": CutMain(parts.Length > 2 ? F(parts[2]) : 0f); break;
                 case "objects" when parts.Length > 2: Objects(F(parts[2])); break;
                 case "clip" when parts.Length > 3: Clip(parts[2], F(parts[3])); break;
@@ -42,6 +46,10 @@ namespace MapExpansions.Debug
                 case "show" when parts.Length > 3: Hide(parts[2] == "copy", string.Join(" ", parts.Skip(3)), false); break;
                 case "ground" when parts.Length > 3: Ground(parts[2], F(parts[3])); break;
                 case "rotate": Rotate(); break;
+                case "collider" when parts.Length > 4: Colliders(parts[2] == "copy", parts[3], parts[4] == "on"); break;
+                case "road" when parts.Length > 8:
+                    Road(new Vector3(F(parts[2]), F(parts[3]), F(parts[4])), new Vector3(F(parts[5]), F(parts[6]), F(parts[7])), F(parts[8]));
+                    break;
                 default:
                     Core.Log.Warning("[dev] mxterrain list|cut|cutmain|objects (see TerrainSpike docs)");
                     break;
@@ -156,24 +164,32 @@ namespace MapExpansions.Debug
                     return $"{src.width}";
                 });
 
-                string trees = Step(t, "trees", () =>
+                TreeInstance Turned(TreeInstance tree)
                 {
-                    int count = td.treeInstanceCount;
-                    for (int i = 0; i < count; i++)
+                    var p = tree.position;
+                    tree.position = k switch
                     {
-                        var tree = td.GetTreeInstance(i);
-                        var p = tree.position;
-                        tree.position = k switch
-                        {
-                            1 => new Vector3(p.z, p.y, 1f - p.x),
-                            2 => new Vector3(1f - p.x, p.y, 1f - p.z),
-                            _ => new Vector3(1f - p.z, p.y, p.x),
-                        };
-                        tree.rotation += k * Mathf.PI * 0.5f;
-                        td.SetTreeInstance(i, tree);
-                    }
-                    return $"{count}";
+                        1 => new Vector3(p.z, p.y, 1f - p.x),
+                        2 => new Vector3(1f - p.x, p.y, 1f - p.z),
+                        _ => new Vector3(1f - p.z, p.y, p.x),
+                    };
+                    tree.rotation += k * Mathf.PI * 0.5f;
+                    return tree;
+                }
+                string trees = Step(t, "trees (array)", () =>
+                {
+                    var all = td.treeInstances;
+                    for (int i = 0; i < all.Length; i++) all[i] = Turned(all[i]);
+                    td.treeInstances = all;
+                    return $"{all.Length}";
                 });
+                if (trees == "FAILED")
+                    trees = Step(t, "trees (indexed)", () =>
+                    {
+                        int count = td.treeInstanceCount;
+                        for (int i = 0; i < count; i++) td.SetTreeInstance(i, Turned(td.GetTreeInstance(i)));
+                        return $"{count}";
+                    });
 
                 if ((k & 1) == 1) td.size = new Vector3(size.z, size.y, size.x);
                 t.transform.position = min;
@@ -275,12 +291,29 @@ namespace MapExpansions.Debug
         /// Writes a holes mask into each placed terrain through the GPU path, the only terrain write the interop keeps.
         /// The terrain data is cloned first, so the cached source stays intact.
         /// </summary>
-        private static void Cut(Rect[] worldRects)
+        private static void Height(float x, float z)
+        {
+            foreach (var t in Object.FindObjectsOfType<Terrain>())
+            {
+                if (t.terrainData == null) continue;
+                Vector3 p = t.transform.position;
+                Vector3 s = t.terrainData.size;
+                if (x < p.x || x > p.x + s.x || z < p.z || z > p.z + s.z) continue;
+                float h = t.SampleHeight(new Vector3(x, 0f, z)) + p.y;
+                Core.Log.Msg($"[dev] mxterrain height {x:0.#} {z:0.#}: {(IsPlaced(t) ? "copy" : "main")} terrain '{t.name}' y {h:0.00}");
+            }
+            var hits = Physics.RaycastAll(new Vector3(x, 400f, z), Vector3.down, 800f, ~0, QueryTriggerInteraction.Ignore);
+            foreach (var hit in hits.OrderBy(hh => hh.distance).Take(4))
+                Core.Log.Msg($"[dev] mxterrain height {x:0.#} {z:0.#}: hit '{hit.collider.name}' ({(IsPlaced(hit.collider) ? "copy" : "main")}) at y {hit.point.y:0.00}");
+            if (hits.Length == 0) Core.Log.Msg($"[dev] mxterrain height {x:0.#} {z:0.#}: no collider below");
+        }
+
+        private static void Cut(Rect[] worldRects, bool main = false)
         {
             int done = 0;
             foreach (var t in Object.FindObjectsOfType<Terrain>())
             {
-                if (!IsPlaced(t) || t.terrainData == null) continue;
+                if (IsPlaced(t) == main || t.terrainData == null) continue;
                 var t0 = System.Diagnostics.Stopwatch.StartNew();
                 var td = EnsureClone(t);
                 int res = td.holesResolution;
@@ -322,7 +355,7 @@ namespace MapExpansions.Debug
                 done++;
                 Core.Log.Msg($"[dev] mxterrain cut: '{t.name}' {holes}/{res * res} hole cells in {t0.ElapsedMilliseconds} ms");
             }
-            Core.Log.Msg($"[dev] mxterrain cut: {done} placed terrains changed");
+            Core.Log.Msg($"[dev] mxterrain cut: {done} {(main ? "Main" : "placed")} terrains changed");
         }
 
         /// <summary>
@@ -372,6 +405,39 @@ namespace MapExpansions.Debug
                 Core.Log.Msg($"[dev] mxterrain {(hide ? "hide" : "show")} {(copy ? "copy" : "main")}: '{r.name}' under '{r.transform.root.name}' x {r.bounds.min.x:0}..{r.bounds.max.x:0} z {r.bounds.min.z:0}..{r.bounds.max.z:0}");
             }
             if (n == 0) Core.Log.Warning($"[dev] mxterrain {(hide ? "hide" : "show")}: no {(copy ? "copy" : "main")} renderer starts with '{prefix}'");
+        }
+
+        private static void Colliders(bool copy, string prefix, bool on)
+        {
+            int n = 0;
+            foreach (var c in Object.FindObjectsOfType<Collider>(true))
+            {
+                if (!c.gameObject.activeInHierarchy) continue;
+                if (IsPlaced(c) != copy || !c.name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+                c.enabled = on;
+                n++;
+                Core.Log.Msg($"[dev] mxterrain collider {(copy ? "copy" : "main")}: '{c.name}' {c.GetIl2CppType().Name} {(on ? "on" : "off")}, " +
+                             $"x {c.bounds.min.x:0}..{c.bounds.max.x:0} z {c.bounds.min.z:0}..{c.bounds.max.z:0}");
+            }
+            if (n == 0) Core.Log.Warning($"[dev] mxterrain collider: no {(copy ? "copy" : "main")} collider starts with '{prefix}'");
+        }
+
+        private static readonly List<GameObject> Roads = new();
+
+        /// <summary>A stand-in tunnel floor: a box whose top face runs along a to b, so wheels and the grid scan see a road.</summary>
+        private static void Road(Vector3 a, Vector3 b, float width)
+        {
+            const float thickness = 1f;
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            go.name = "MapExpansions.Road";
+            var dir = b - a;
+            go.transform.rotation = Quaternion.LookRotation(dir);
+            go.transform.position = (a + b) * 0.5f - go.transform.up * (thickness * 0.5f);
+            go.transform.localScale = new Vector3(width, thickness, dir.magnitude);
+            var root = PlacedRoot;
+            if (root != null) go.transform.SetParent(root, true);
+            Roads.Add(go);
+            Core.Log.Msg($"[dev] mxterrain road: {a} -> {b}, {dir.magnitude:0.0} m long, {width} m wide, slope {Mathf.Atan2(dir.y, new Vector2(dir.x, dir.z).magnitude) * Mathf.Rad2Deg:0.0} degrees");
         }
 
         private static GameObject _ground;
