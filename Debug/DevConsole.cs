@@ -23,6 +23,7 @@ namespace MapExpansions.Debug
     /// mxwhere                         player position
     /// mxtp x y z                      teleport the player
     /// mxnav ...                       navigation spike, see NavSpike
+    /// mxveh ...                       vehicle AI spike, see VehicleSpike
     /// </summary>
     internal static class DevConsole
     {
@@ -74,6 +75,7 @@ namespace MapExpansions.Debug
                     case "mxwhere": Where(); break;
                     case "mxtp": Tp(parts); break;
                     case "mxnav": NavSpike.Handle(parts); break;
+                    case "mxveh": VehicleSpike.Handle(parts); break;
                     default:
                         Core.Log.Warning($"[dev] unknown command '{cmd}'");
                         return false;
