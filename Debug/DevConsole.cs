@@ -22,6 +22,7 @@ namespace MapExpansions.Debug
     /// mxframe [seconds]               frame time statistics over a sample window
     /// mxwhere                         player position
     /// mxtp x y z                      teleport the player
+    /// mxnav ...                       navigation spike, see NavSpike
     /// </summary>
     internal static class DevConsole
     {
@@ -29,6 +30,9 @@ namespace MapExpansions.Debug
         private static readonly Vector3 DefaultOffset = new(0f, 0f, -700f);
 
         private static GameObject _placed;
+
+        /// <summary>Offset of the placed copy, or the default offset while nothing is placed.</summary>
+        internal static Vector3 PlacedOffset => _placed != null ? _placed.transform.position : DefaultOffset;
         private static int _lastFrame = -1;
         private static string _lastSig = "";
 
@@ -69,6 +73,7 @@ namespace MapExpansions.Debug
                     case "mxframe": MelonCoroutines.Start(Frame(parts.Length > 1 ? F(parts[1]) : 3f)); break;
                     case "mxwhere": Where(); break;
                     case "mxtp": Tp(parts); break;
+                    case "mxnav": NavSpike.Handle(parts); break;
                     default:
                         Core.Log.Warning($"[dev] unknown command '{cmd}'");
                         return false;
@@ -158,9 +163,8 @@ namespace MapExpansions.Debug
                 hist[mr.lightmapIndex] = n + 1;
                 if (clear) mr.lightmapIndex = -1;
             }
-            int sceneMaps = LightmapSettings.lightmaps?.Length ?? 0;
             string list = string.Join(", ", hist.OrderBy(k => k.Key).Select(k => $"{k.Key}:{k.Value}"));
-            Core.Log.Msg($"[dev] mxlight: lightmapIndex histogram {list}; loaded lightmaps {sceneMaps}{(clear ? "; all set to -1" : "")}");
+            Core.Log.Msg($"[dev] mxlight: lightmapIndex histogram {list}{(clear ? "; all set to -1" : "")}");
         }
 
         private static void Cam(string[] parts)
