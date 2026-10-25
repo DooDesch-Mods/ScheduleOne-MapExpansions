@@ -63,14 +63,18 @@ namespace MapExpansions.World
                 index.MeshUsers.TryGetValue(mesh.Pointer, out int users);
                 if (!batched && users > 1)
                 {
-                    if (!mesh.isReadable)
+                    Mesh clone;
+                    if (mesh.isReadable)
                     {
-                        Core.Log.Warning($"carve: '{Path(mr.transform)}' shares the unreadable mesh '{mesh.name}' with {users - 1} other renderers; " +
-                                         "it is switched off instead of cut");
-                        return Outcome.Failed;
+                        clone = owner.Own(Object.Instantiate(mesh));
+                        clone.name = mesh.name + " (MapExpansions)";
                     }
-                    var clone = owner.Own(Object.Instantiate(mesh));
-                    clone.name = mesh.name + " (MapExpansions)";
+                    else
+                    {
+                        clone = CloneGpu(mesh, owner);
+                        Core.Log.Msg($"carve: '{Path(mr.transform)}' shares the unreadable mesh '{mesh.name}' with {users - 1} other renderers; " +
+                                     "it gets a copy from the GPU buffers");
+                    }
                     mf.sharedMesh = clone;
                     mesh = clone;
                 }
@@ -88,6 +92,140 @@ namespace MapExpansions.World
                 Core.Log.Warning($"carve: cutting '{Path(mr.transform)}' ({mesh.name}) failed, it is switched off instead: {e.Message}");
                 return Outcome.Failed;
             }
+        }
+
+        /// <summary>
+        /// Copies an unreadable mesh through its GPU buffers: same vertex layout, vertex and index data and submeshes,
+        /// owned by the build. The copy keeps no CPU data either, so it is cut and drawn on the GPU only.
+        /// </summary>
+        internal static Mesh CloneGpu(Mesh src, BuiltExpansion owner)
+        {
+            var clone = owner.Own(new Mesh { name = src.name + " (MapExpansions)" });
+            clone.SetVertexBufferParams(src.vertexCount, src.GetVertexAttributes());
+            int indexCount = 0;
+            for (int s = 0; s < src.subMeshCount; s++)
+            {
+                var d = src.GetSubMesh(s);
+                indexCount = Mathf.Max(indexCount, d.indexStart + d.indexCount);
+            }
+            clone.SetIndexBufferParams(indexCount, src.indexFormat);
+            const MeshUpdateFlags flags = MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontRecalculateBounds |
+                                          MeshUpdateFlags.DontNotifyMeshUsers | MeshUpdateFlags.DontResetBoneBounds;
+            clone.subMeshCount = src.subMeshCount;
+            for (int s = 0; s < src.subMeshCount; s++) clone.SetSubMesh(s, src.GetSubMesh(s), flags);
+            clone.bounds = src.bounds;
+            // Drops the CPU copy; a later upload would otherwise write its zeros over the GPU data.
+            clone.UploadMeshData(true);
+            for (int st = 0; st < src.vertexBufferCount; st++)
+                CopyBuffer(src.GetVertexBuffer(st), clone.GetVertexBuffer(st), $"vertex stream {st} of '{src.name}'");
+            CopyBuffer(src.GetIndexBuffer(), clone.GetIndexBuffer(), $"index buffer of '{src.name}'");
+            return clone;
+        }
+
+        private static void CopyBuffer(GraphicsBuffer from, GraphicsBuffer to, string what)
+        {
+            try
+            {
+                int bytes = from.count * from.stride;
+                if (to.count * to.stride < bytes)
+                    throw new InvalidOperationException($"{what}: the copy holds {to.count * to.stride} bytes, the source {bytes}");
+                if (bytes % 4 == 0) Copy<int>(from, to, bytes / 4, 4, what);
+                else Copy<ushort>(from, to, bytes / 2, 2, what);
+            }
+            finally
+            {
+                from.Dispose();
+                to.Dispose();
+            }
+        }
+
+        private static void Copy<T>(GraphicsBuffer from, GraphicsBuffer to, int n, int elem, string what) where T : unmanaged, IEquatable<T>
+        {
+            var data = new Il2CppStructArray<T>(n);
+            from.InternalGetData(new Il2CppSystem.Array(data.Pointer), 0, 0, n, elem);
+            to.InternalSetData(new Il2CppSystem.Array(data.Pointer), 0, 0, n, elem);
+            var back = new Il2CppStructArray<T>(n);
+            to.InternalGetData(new Il2CppSystem.Array(back.Pointer), 0, 0, n, elem);
+            // A buffer the driver refused to write keeps zeros without an error.
+            for (int i = 0; i < n; i += Mathf.Max(1, n / 64))
+                if (!data[i].Equals(back[i]))
+                    throw new InvalidOperationException($"{what}: the copy did not take the write (element {i})");
+        }
+
+        /// <summary>
+        /// A readable copy of a renderer's mesh in the renderer's own space with the winding reversed, so it draws the
+        /// faces the original culls. Normals are recalculated for the reversed faces. One submesh per material of the
+        /// renderer; null when the renderer has no mesh or no triangles.
+        /// </summary>
+        internal static Mesh BuildBack(MeshRenderer mr, string name)
+        {
+            var mf = mr.GetComponent<MeshFilter>();
+            var mesh = mf != null ? mf.sharedMesh : null;
+            if (mesh == null) return null;
+            bool batched = mr.isPartOfStaticBatch;
+            Matrix4x4 toWorld = batched
+                ? (mr.staticBatchRootTransform != null ? mr.staticBatchRootTransform.localToWorldMatrix : Matrix4x4.identity)
+                : mr.transform.localToWorldMatrix;
+            Matrix4x4 toLocal = mr.transform.worldToLocalMatrix * toWorld;
+            int first = batched ? mr.subMeshStartIndex : 0;
+            int count = batched ? Mathf.Min(mr.sharedMaterials.Length, mesh.subMeshCount - first) : mesh.subMeshCount;
+            bool wide = mesh.indexFormat == IndexFormat.UInt32;
+
+            var subs = new List<int[]>();
+            int minV = int.MaxValue, maxV = int.MinValue;
+            for (int s = first; s < first + count; s++)
+            {
+                var d = mesh.GetSubMesh(s);
+                if (d.topology != MeshTopology.Triangles || d.indexCount == 0)
+                {
+                    subs.Add(Array.Empty<int>());
+                    continue;
+                }
+                int[] idx;
+                if (mesh.isReadable)
+                {
+                    var src = mesh.GetIndices(s, false);
+                    idx = new int[src.Length];
+                    for (int i = 0; i < idx.Length; i++) idx[i] = src[i];
+                }
+                else idx = ReadIndices(mesh, wide, d.indexStart, d.indexCount);
+                for (int i = 0; i < idx.Length; i++)
+                {
+                    idx[i] += d.baseVertex;
+                    if (idx[i] < minV) minV = idx[i];
+                    if (idx[i] > maxV) maxV = idx[i];
+                }
+                subs.Add(idx);
+            }
+            if (minV > maxV) return null;
+            Vector3[] local;
+            if (mesh.isReadable)
+            {
+                var all = mesh.vertices;
+                local = new Vector3[maxV - minV + 1];
+                for (int i = 0; i < local.Length; i++) local[i] = toLocal.MultiplyPoint3x4(all[minV + i]);
+            }
+            else local = ReadPositions(mesh, minV, maxV - minV + 1, toLocal);
+
+            var back = new Mesh { name = name };
+            if (local.Length > 65535) back.indexFormat = IndexFormat.UInt32;
+            back.vertices = local;
+            back.subMeshCount = subs.Count;
+            for (int s = 0; s < subs.Count; s++)
+            {
+                var src = subs[s];
+                var arr = new Il2CppStructArray<int>(src.Length);
+                for (int t = 0; t + 2 < src.Length; t += 3)
+                {
+                    arr[t] = src[t] - minV;
+                    arr[t + 1] = src[t + 2] - minV;
+                    arr[t + 2] = src[t + 1] - minV;
+                }
+                back.SetTriangles(arr, s, false);
+            }
+            back.RecalculateNormals();
+            back.RecalculateBounds();
+            return back;
         }
 
         private static int CarveCpu(Mesh mesh, Matrix4x4 toWorld, IReadOnlyList<OrientedBox> boxes)

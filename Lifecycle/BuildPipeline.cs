@@ -115,7 +115,11 @@ namespace MapExpansions.Lifecycle
             foreach (var c in def.Connections)
             {
                 var conn = TunnelBuilder.Build(b, c, index);
-                if (conn != null) b.Connections.Add(conn);
+                if (conn != null)
+                {
+                    b.Connections.Add(conn);
+                    TunnelShadows.Add(conn);
+                }
                 else Core.Log.Error($"build: '{b.Id}' connection {c.Name} was not built");
             }
 
@@ -216,6 +220,7 @@ namespace MapExpansions.Lifecycle
             if (_navRoutine != null) MelonCoroutines.Stop(_navRoutine);
             _navRoutine = null;
             NavLinks.Clear();
+            TunnelShadows.Clear();
             foreach (var x in Builds)
             {
                 var id = x.Expansion.Id;

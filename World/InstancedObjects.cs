@@ -21,9 +21,15 @@ namespace MapExpansions.World
         /// <summary>True when the renderer belongs to a world object that also has an instanced copy.</summary>
         public static bool IsInstanced(Renderer r) => r != null && r.GetComponent<InstanceWorldObject>() != null;
 
-        /// <summary>Takes the instanced copies at the given world positions out of the draw; returns how many.</summary>
-        public static int Hide(List<Vector3> positions, BuiltExpansion owner, string reason)
+        /// <summary>
+        /// Takes the instanced copies at the given world positions out of the draw; returns how many positions had a
+        /// copy. One object can have copies in several baked sets (one per LOD), and its renderers can repeat a position.
+        /// </summary>
+        public static int Hide(List<Vector3> found, BuiltExpansion owner, string reason)
         {
+            var positions = new List<Vector3>();
+            foreach (var p in found)
+                if (!positions.Any(q => (q - p).sqrMagnitude < 0.01f)) positions.Add(p);
             if (positions.Count == 0) return 0;
             var manager = Singleton<InstancingManager>.Instance;
             if (manager == null)
@@ -37,27 +43,29 @@ namespace MapExpansions.World
                 Core.Log.Warning($"instancing: InstancingManager has no baked objects; {positions.Count} instanced objects ({reason}) stay drawn");
                 return 0;
             }
-            int hidden = 0;
+            var matched = new bool[positions.Count];
+            int texels = 0;
             for (int i = 0; i < list.Count; i++)
             {
                 var data = list[i];
                 if (data == null || data.PositionData == null) continue;
                 try
                 {
-                    hidden += HideIn(data, positions, owner, reason);
+                    texels += HideIn(data, positions, matched, owner, reason);
                 }
                 catch (Exception e)
                 {
                     Core.Log.Error($"instancing: '{data.Id}' could not be changed ({reason}): {e}");
                 }
             }
-            string line = $"instancing: {hidden} of {positions.Count} instanced objects taken out of the draw ({reason})";
+            int hidden = matched.Count(x => x);
+            string line = $"instancing: {hidden} of {positions.Count} instanced objects taken out of the draw, {texels} copies ({reason})";
             if (hidden < positions.Count) Core.Log.Warning(line + "; the rest stay drawn");
             else Core.Log.Msg(line);
             return hidden;
         }
 
-        private static int HideIn(InstanceObjectData data, List<Vector3> positions, BuiltExpansion owner, string reason)
+        private static int HideIn(InstanceObjectData data, List<Vector3> positions, bool[] matched, BuiltExpansion owner, string reason)
         {
             var src = data.PositionData;
             int w = src.width, h = src.height;
@@ -76,6 +84,7 @@ namespace MapExpansions.World
                     if (Mathf.Abs(d.y) > MatchVertical || new Vector2(d.x, d.z).magnitude > MatchHorizontal) continue;
                     pixels[i] = new Color(c.r, FarBelow - offset.y, c.b, c.a);
                     done[k] = true;
+                    matched[k] = true;
                     hidden++;
                     break;
                 }

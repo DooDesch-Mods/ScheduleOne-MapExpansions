@@ -1,5 +1,6 @@
 using MapExpansions.Lifecycle;
 using UnityEngine;
+using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
 
 namespace MapExpansions.World
@@ -71,25 +72,33 @@ namespace MapExpansions.World
         private static void DoubleSided(BuiltExpansion b, SceneIndex.Part part, ObjectRule rule, Bounds area)
         {
             var copies = new Dictionary<IntPtr, Material>();
-            int renderers = 0, noCull = 0;
+            var noCull = new HashSet<IntPtr>();
+            int renderers = 0, backs = 0, lowerLods = 0, failed = 0, vertices = 0;
             var shaders = new HashSet<string>();
+            var added = new List<Renderer>();
             foreach (var r in part.Renderers)
             {
-                if (r == null || !SceneIndex.MatchesSelfOrAncestor(r.transform, rule, area)) continue;
+                if (r == null || !r.enabled || r.name.StartsWith(BackName, StringComparison.Ordinal)) continue;
+                if (!SceneIndex.MatchesSelfOrAncestor(r.transform, rule, area)) continue;
                 var mats = r.sharedMaterials;
-                bool changed = false;
+                bool changed = false, needsBack = false;
                 for (int i = 0; i < mats.Length; i++)
                 {
                     var m = mats[i];
                     if (m == null || m.name.EndsWith(TwoSidedSuffix, StringComparison.Ordinal)) continue;
+                    if (noCull.Contains(m.Pointer))
+                    {
+                        needsBack = true;
+                        continue;
+                    }
                     if (!copies.TryGetValue(m.Pointer, out var copy))
                     {
                         if (!m.HasProperty(CullId))
                         {
-                            // Without a culling property the shader decides on its own; the material stays.
+                            // Without a culling property the shader decides on its own; a reversed copy of the mesh draws the back.
                             shaders.Add(m.shader != null ? m.shader.name : "?");
-                            noCull++;
-                            copies[m.Pointer] = null;
+                            noCull.Add(m.Pointer);
+                            needsBack = true;
                             continue;
                         }
                         copy = b.Own(new Material(m) { name = m.name + TwoSidedSuffix });
@@ -97,19 +106,86 @@ namespace MapExpansions.World
                         copy.doubleSidedGI = true;
                         copies[m.Pointer] = copy;
                     }
-                    if (copy == null) continue;
                     mats[i] = copy;
                     changed = true;
                 }
-                if (!changed) continue;
-                r.sharedMaterials = mats;
-                renderers++;
+                if (changed)
+                {
+                    r.sharedMaterials = mats;
+                    renderers++;
+                }
+                if (!needsBack) continue;
+                var mr = r.TryCast<MeshRenderer>();
+                if (mr == null) continue;
+                if (!IsCoarsestLod(r))
+                {
+                    lowerLods++;
+                    continue;
+                }
+                try
+                {
+                    var back = AddBack(b, mr);
+                    if (back == null) continue;
+                    added.Add(back);
+                    backs++;
+                    vertices += back.GetComponent<MeshFilter>().sharedMesh.vertexCount;
+                }
+                catch (Exception e)
+                {
+                    failed++;
+                    Core.Log.Warning($"rules: '{b.Id}' {rule}: the back of '{MeshCarver.Path(r.transform)}' could not be built, it stays one-sided: {e.Message}");
+                }
             }
-            string line = $"rules: '{b.Id}' {rule}: {renderers} renderers, {copies.Values.Count(x => x != null)} materials made two-sided";
-            if (noCull > 0) Core.Log.Warning($"{line}; {noCull} materials have no _Cull property and stay one-sided (shaders: {string.Join(", ", shaders)})");
-            else if (renderers == 0) Core.Log.Warning(line + "; the rule matched nothing");
+            // The backs join the index, so later rules and the clearing of the connections treat them like their originals.
+            part.Renderers.AddRange(added);
+            string line = $"rules: '{b.Id}' {rule}: {renderers} renderers, {copies.Count} materials made two-sided";
+            if (noCull.Count > 0)
+                line += $"; {noCull.Count} materials without _Cull ({string.Join(", ", shaders)}): {backs} reversed backs ({vertices} vertices), " +
+                        $"{lowerLods} finer LODs without a back";
+            if (failed > 0) Core.Log.Warning($"{line}; {failed} backs failed");
+            else if (renderers + backs == 0) Core.Log.Warning(line + "; the rule matched nothing");
             else Core.Log.Msg(line);
         }
+
+        /// <summary>
+        /// True when the renderer is in no LOD group or in the coarsest level of its group. A back is mostly seen from
+        /// far away, and backs of every level would draw on top of each other.
+        /// </summary>
+        private static bool IsCoarsestLod(Renderer r)
+        {
+            var group = r.GetComponentInParent<LODGroup>();
+            if (group == null) return true;
+            var lods = group.GetLODs();
+            int level = -1, coarsest = -1;
+            for (int i = 0; i < lods.Length; i++)
+            {
+                var rs = lods[i].renderers;
+                if (rs == null || rs.Length == 0) continue;
+                coarsest = i;
+                foreach (var x in rs)
+                    if (x != null && x.Pointer == r.Pointer) level = i;
+            }
+            // A renderer under a group but in none of its levels draws on its own.
+            return level < 0 || level == coarsest;
+        }
+
+        private static Renderer AddBack(BuiltExpansion b, MeshRenderer mr)
+        {
+            var mesh = MeshCarver.BuildBack(mr, BackName + mr.name);
+            if (mesh == null) return null;
+            b.Own(mesh);
+            var go = new GameObject(BackName + mr.name);
+            go.layer = mr.gameObject.layer;
+            go.transform.SetParent(mr.transform, false);
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var back = go.AddComponent<MeshRenderer>();
+            back.sharedMaterials = mr.sharedMaterials;
+            back.shadowCastingMode = ShadowCastingMode.Off;
+            back.receiveShadows = mr.receiveShadows;
+            return back;
+        }
+
+        private const string BackName = "TwoSidedBack ";
 
         private static readonly int CullId = Shader.PropertyToID("_Cull");
         private const string TwoSidedSuffix = " (two-sided)";

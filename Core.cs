@@ -36,6 +36,11 @@ namespace MapExpansions
                 BuildPipeline.OnMainInitialized();
         }
 
+        public override void OnUpdate()
+        {
+            Connections.TunnelShadows.Tick();
+        }
+
         public override void OnSceneWasUnloaded(int buildIndex, string sceneName)
         {
             if (sceneName == BuildPipeline.MainScene)

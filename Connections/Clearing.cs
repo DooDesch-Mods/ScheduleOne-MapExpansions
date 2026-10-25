@@ -115,10 +115,11 @@ namespace MapExpansions.Connections
                         var cb = c.bounds;
                         if (!conn.Blocking.Any(x => x.Intersects(cb))) continue;
                     }
+                    // A switched-off collider reports empty bounds.
+                    var size = c.bounds.size;
                     c.enabled = false;
                     offColliders.Add(c.Pointer);
                     colOff++;
-                    var size = c.bounds.size;
                     string line = $"clear: '{b.Id}' {conn.Name}: collider '{MeshCarver.Path(c.transform)}' ({c.GetIl2CppType().Name}, {size.x:0}x{size.y:0}x{size.z:0} m) switched off";
                     if (Mathf.Max(size.x, Mathf.Max(size.y, size.z)) > 50f) Core.Log.Warning(line + "; it is large and may carry ground outside the connection");
                     else Core.Log.Msg(line);
