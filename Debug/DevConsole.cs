@@ -35,6 +35,10 @@ namespace MapExpansions.Debug
     /// mxhide filter [on]              stop (or resume) drawing renderers and terrains whose path contains filter
     /// mxterrain filter [pixelError]   render settings of terrains whose name contains filter, optionally a new pixel error
     /// mxproperty code                 ownership, grids, loading docks, idle points and employees of a property
+    /// mxagents                        NavMesh agents that are enabled but off the NavMesh
+    /// mxarrest                        arrest the local player where they stand, as the police would
+    /// mxshop [id|close]               list the shops, pick a shop's seller choice, or close every shop screen
+    /// mxbuy code                      buy a listing through Ray's dialogue handler, as his confirmation would
     /// mxnav ...                       NPC navigation tests, see NavTest
     /// mxveh ...                       vehicle navigation tests, see VehicleTest
     /// </summary>
@@ -108,6 +112,10 @@ namespace MapExpansions.Debug
                     case "mxedges" when parts.Length > 7: Edges(V(parts, 1), V(parts, 4), string.Join(" ", parts, 7, parts.Length - 7)); break;
                     case "mxline" when parts.Length > 4: Line(F(parts[1]), F(parts[2]), F(parts[3]), F(parts[4]), parts.Length > 5 ? F(parts[5]) : 4f, parts.Length > 6 ? F(parts[6]) : 80f); break;
                     case "mxproperty" when parts.Length > 1: PropertyInfo(parts[1]); break;
+                    case "mxagents": Agents(); break;
+                    case "mxarrest": Arrest(); break;
+                    case "mxshop": World.Shops.Choose(parts.Length > 1 ? parts[1] : ""); break;
+                    case "mxbuy" when parts.Length > 1: World.RealtorListings.Buy(parts[1]); break;
                     case "mxnav": NavTest.Handle(parts); break;
                     case "mxveh": VehicleTest.Handle(parts); break;
                     default:
@@ -189,6 +197,38 @@ namespace MapExpansions.Debug
                 Core.Log.Msg($"[dev] mxnpc: '{npc.ID}' at {pos} ({exp}), region {(int)npc.Region}, visible {npc.isVisible}, action {action}, {car}, {deal}");
             }
             if (found == 0) Core.Log.Warning($"[dev] mxnpc: no NPC id contains '{idPart}'");
+        }
+
+        /// <summary>Every enabled NavMesh agent that is not on the NavMesh, with its NPC, position and nearest NavMesh point.</summary>
+        private static void Agents()
+        {
+            var agents = UnityEngine.Object.FindObjectsOfType<UnityEngine.AI.NavMeshAgent>();
+            int off = 0;
+            foreach (var a in agents)
+            {
+                if (a == null || !a.enabled || !a.gameObject.activeInHierarchy || a.isOnNavMesh) continue;
+                off++;
+                var pos = a.transform.position;
+                var npc = a.GetComponentInParent<Il2CppScheduleOne.NPCs.NPC>();
+                string near = UnityEngine.AI.NavMesh.SamplePosition(pos, out var hit, 10f, UnityEngine.AI.NavMesh.AllAreas)
+                    ? $"NavMesh {Vector3.Distance(hit.position, pos):F2} m away at {hit.position}"
+                    : "no NavMesh within 10 m";
+                string exp = MapExpansionsApi.ExpansionAt(pos) ?? "main world";
+                Core.Log.Msg($"[dev] mxagents: '{(npc != null ? npc.ID : a.name)}' at {pos} ({exp}), agent type {a.agentTypeID}, {near}");
+            }
+            Core.Log.Msg($"[dev] mxagents: {off} of {agents.Length} agents are enabled but off the NavMesh");
+        }
+
+        private static void Arrest()
+        {
+            var p = Player.Local;
+            if (p == null)
+            {
+                Core.Log.Warning("[dev] mxarrest: no local player");
+                return;
+            }
+            Core.Log.Msg($"[dev] mxarrest: arresting '{p.PlayerName}' at {p.transform.position} ({MapExpansionsApi.ExpansionAt(p.transform.position) ?? "main world"})");
+            p.Arrest_Server();
         }
 
         private static void Where()

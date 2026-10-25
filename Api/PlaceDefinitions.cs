@@ -63,7 +63,8 @@ namespace MapExpansions
     /// <summary>
     /// A property the player can buy, as a copy of a main-world property: its building, grids, loading docks, employee
     /// spots and sale sign come along and stand at <see cref="Root"/>. The copy is a networked object the host spawns,
-    /// so ownership, hiring and building work in co-op as on the original.
+    /// so ownership, hiring and building work in co-op as on the original. A business such as the laundromat is copied
+    /// the same way and launders money like the original.
     /// </summary>
     public sealed class PropertyDefinition
     {
@@ -78,11 +79,13 @@ namespace MapExpansions
 
         public string Name { get; set; }
 
-        public float Price { get; set; }
+        /// <summary>The purchase price; null keeps the template's.</summary>
+        public float? Price { get; set; }
 
-        public int EmployeeCapacity { get; set; }
+        /// <summary>How many employees work there; null keeps the template's.</summary>
+        public int? EmployeeCapacity { get; set; }
 
-        /// <summary>Code of the main-world property that is copied, for example "bungalow" or "barn".</summary>
+        /// <summary>Code of the main-world property or business that is copied, for example "bungalow", "barn" or "laundromat".</summary>
         public string Template { get; set; } = "bungalow";
 
         /// <summary>Where the template's root stands, in expansion-local coordinates.</summary>
@@ -100,6 +103,16 @@ namespace MapExpansions
 
         /// <summary>The realtor's choice text; empty means "&lt;Name&gt; (&lt;PRICE&gt;)". The price token is replaced by the game.</summary>
         public string RealtorText { get; set; }
+    }
+
+    /// <summary>Where an expansion's police station releases arrested players and parks the cars taken from them.</summary>
+    public sealed class PoliceStationDefinition
+    {
+        /// <summary>Where a released player stands, on walkable ground, facing away from the station.</summary>
+        public LocalPoint ReleasePoint { get; set; }
+
+        /// <summary>Parking spaces for taken cars: the car's centre and the direction its front points. At least one.</summary>
+        public List<LocalPoint> VehicleSpots { get; } = new();
     }
 
     /// <summary>A place where a customer waits for a deal.</summary>

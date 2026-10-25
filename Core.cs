@@ -42,6 +42,8 @@ namespace MapExpansions
             World.WeatherCover.Tick();
             World.SeparateViews.Tick();
             World.Properties.Tick();
+            World.MainCopies.Tick();
+            World.Shops.Tick();
         }
 
         public override void OnFixedUpdate()
