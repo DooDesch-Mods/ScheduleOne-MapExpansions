@@ -39,6 +39,8 @@ namespace MapExpansions
         public override void OnUpdate()
         {
             Connections.TunnelShadows.Tick();
+            World.WeatherCover.Tick();
+            World.SeparateViews.Tick();
         }
 
         public override void OnFixedUpdate()

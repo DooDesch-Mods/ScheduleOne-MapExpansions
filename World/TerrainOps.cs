@@ -30,8 +30,9 @@ namespace MapExpansions.World
         /// <summary>
         /// A terrain renders axis-aligned at its transform position and ignores rotation, so a turned placement needs
         /// the data itself turned: heightmap, splat maps and holes on the GPU, tree instances on the CPU, and the
-        /// terrain moved to the minimum corner of its turned rectangle. Detail layers have no read or write path in
-        /// the interop; their density is set to 0 instead of drawing grass in the unturned pattern.
+        /// terrain moved to the minimum corner of its turned rectangle. Detail layers (grass and bush tufts) turn cell
+        /// for cell through <see cref="DetailLayers"/>; when that fails, no details are drawn on the terrain rather than
+        /// in the unturned pattern.
         /// </summary>
         public static bool Rotate(Terrain t, Frame frame, BuiltExpansion owner)
         {
@@ -134,17 +135,28 @@ namespace MapExpansions.World
                     return $"{count}";
                 });
 
+            string details = Step(t, "detail layers", () =>
+            {
+                long tufts = DetailLayers.Turn(td, k, out string what);
+                if (tufts < 0) throw new InvalidOperationException(what);
+                return what == "none" ? what : $"{what}, {tufts} tufts";
+            });
+            // Quality settings override the detail density, so a failed turn switches the details off by distance.
+            if (details == "FAILED") t.detailObjectDistance = 0f;
+
             if ((k & 1) == 1) td.size = new Vector3(size.z, size.y, size.x);
             t.transform.position = min;
             t.transform.rotation = Quaternion.identity;
-            t.detailObjectDensity = 0f;
             t.Flush();
             // Unturned holes leave a few open cells in the wrong place; the terrain is still usable.
+            // Details failing leaves the terrain without grass but usable, so the expansion is still placed.
             bool ok = heights != "FAILED" && splats != "FAILED" && trees != "FAILED";
             string line = $"terrain: '{t.name}' turned {k * 90} degrees in {sw.ElapsedMilliseconds} ms, heightmap {heights}, " +
-                          $"splat maps {splats}, holes {holes}, trees {trees}, now x {min.x:0}..{min.x + td.size.x:0} " +
-                          $"z {min.z:0}..{min.z + td.size.z:0}; detail density set to 0";
-            if (ok) Core.Log.Msg(line); else Core.Log.Error(line);
+                          $"splat maps {splats}, holes {holes}, trees {trees}, details {details}, now x {min.x:0}..{min.x + td.size.x:0} " +
+                          $"z {min.z:0}..{min.z + td.size.z:0}{(details == "FAILED" ? "; details switched off" : "")}";
+            if (!ok) Core.Log.Error(line);
+            else if (details == "FAILED") Core.Log.Warning(line);
+            else Core.Log.Msg(line);
             return ok;
         }
 
@@ -228,9 +240,10 @@ namespace MapExpansions.World
             /// a terrain height. A cell on a steep slope spans many metres between its corners and is drawn as a
             /// sliver across that span, so the test runs over the whole span in steps of one metre. <paramref name="slack"/>
             /// widens the span up and down: a coarse level of detail draws the surface metres off the heightmap, and the
-            /// holes texture clips it only where the cell is open.
+            /// holes texture clips it only where the cell is open. <paramref name="slackBelow"/>, when given, replaces it
+            /// downwards, for a test whose holes would show where nothing lies under them.
             /// </summary>
-            public int Cut(Terrain t, Rect worldArea, Func<float, float, float, bool> isHole, string reason, float slack = 0f)
+            public int Cut(Terrain t, Rect worldArea, Func<float, float, float, bool> isHole, string reason, float slack = 0f, float? slackBelow = null)
             {
                 var td = t.terrainData;
                 if (td == null) return 0;
@@ -261,7 +274,7 @@ namespace MapExpansions.World
                             lo = Mathf.Min(lo, ch);
                             hi = Mathf.Max(hi, ch);
                         }
-                        lo -= slack;
+                        lo -= slackBelow ?? slack;
                         hi += slack;
                         bool hole = false;
                         for (float h = lo; !hole; h = Mathf.Min(h + 1f, hi))

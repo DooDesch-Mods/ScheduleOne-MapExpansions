@@ -95,6 +95,21 @@ namespace MapExpansions.Lifecycle
         /// <summary>Boxes whose terrain cells become holes, so the deck lies free and the tunnel can enter a hill.</summary>
         public readonly List<OrientedBox> Footprint = new();
 
+        /// <summary>
+        /// Footprint over the road in front of the built range. Nothing of the connection lies under it, so only terrain
+        /// that stands above the road becomes a hole there.
+        /// </summary>
+        /// <summary>The last metre inside each open end of the built range; only terrain above the road becomes a hole there.</summary>
+        public readonly List<OrientedBox> PortalFootprint = new();
+
+        public readonly List<OrientedBox> ApproachFootprint = new();
+
+        /// <summary>
+        /// The road in front of the built range at both ends, from just under its surface to the crown. Only the objects
+        /// of <see cref="ConnectionDefinition.ClearApproach"/> are cut here.
+        /// </summary>
+        public readonly List<OrientedBox> Approach = new();
+
         public BuiltConnection(ConnectionDefinition def, RouteCurve curve)
         {
             Definition = def;

@@ -46,6 +46,16 @@ namespace MapExpansions.World
                     ExactCollision(b, part, rule, area);
                     continue;
                 }
+                if (rule.Effect == ObjectEffect.Cut)
+                {
+                    if (area.size == Vector3.zero)
+                    {
+                        Core.Log.Error($"rules: '{b.Id}' {rule}: a cut needs an area; nothing is cut");
+                        continue;
+                    }
+                    Cut(b, index, part, rule, area, offColliders);
+                    continue;
+                }
                 int renderers = 0, colliders = 0, terrains = 0;
                 bool hide = rule.Effect != ObjectEffect.NoCollision;
                 bool noCollision = rule.Effect != ObjectEffect.Hide;
@@ -283,6 +293,65 @@ namespace MapExpansions.World
             string line = $"rules: '{b.Id}' {rule}: {changed} convex colliders made plain, {copied} readable copies, {moving} on moving bodies";
             if (failed > 0) Core.Log.Warning($"{line}; {failed} failed");
             else if (changed == 0) Core.Log.Warning(line + "; no convex mesh collider matched");
+            else Core.Log.Msg(line);
+        }
+
+        /// <summary>
+        /// Cuts the triangles of the selected renderers and mesh colliders out of <paramref name="area"/>. Large cut
+        /// triangles are drawn again outside it. A renderer whose cut fails is switched off, a collider whose cut fails
+        /// stays whole.
+        /// </summary>
+        private static void Cut(BuiltExpansion b, SceneIndex index, SceneIndex.Part part, ObjectRule rule, Bounds area, HashSet<IntPtr> offColliders)
+        {
+            var boxes = new List<Connections.OrientedBox> { new(area.center, Quaternion.identity, area.extents) };
+            int carved = 0, triangles = 0, untouched = 0, failed = 0, inactive = 0, colCut = 0, colTris = 0, colFailed = 0;
+            foreach (var r in part.Renderers)
+            {
+                if (r == null || !r.enabled || !SceneIndex.MatchesSelfOrAncestor(r.transform, rule, area)) continue;
+                // The patch of a switched-off object would be visible on its own.
+                if (!r.gameObject.activeInHierarchy) { inactive++; continue; }
+                var mr = r.TryCast<MeshRenderer>();
+                if (mr == null)
+                {
+                    Core.Log.Warning($"rules: '{b.Id}' {rule}: '{MeshCarver.Path(r.transform)}' is no mesh renderer and stays whole");
+                    continue;
+                }
+                var outcome = MeshCarver.CarveRenderer(mr, boxes, index, b, out int cut);
+                if (outcome == MeshCarver.Outcome.Carved)
+                {
+                    carved++;
+                    triangles += cut;
+                    Core.Log.Msg($"rules: '{b.Id}' {rule}: '{MeshCarver.Path(r.transform)}' {cut} triangles cut");
+                }
+                else if (outcome == MeshCarver.Outcome.Failed)
+                {
+                    r.enabled = false;
+                    failed++;
+                    Core.Log.Warning($"rules: '{b.Id}' {rule}: '{MeshCarver.Path(r.transform)}' could not be cut and is switched off");
+                }
+                else untouched++;
+            }
+            foreach (var c in part.Colliders)
+            {
+                if (c == null || !c.enabled || c.isTrigger || !SceneIndex.MatchesSelfOrAncestor(c.transform, rule, area)) continue;
+                var mc = c.TryCast<MeshCollider>();
+                if (mc == null) continue;
+                var outcome = MeshCarver.CarveCollider(mc, boxes, b, out int cut);
+                if (outcome == MeshCarver.Outcome.Carved)
+                {
+                    colCut++;
+                    colTris += cut;
+                }
+                else if (outcome == MeshCarver.Outcome.Failed)
+                {
+                    colFailed++;
+                    Core.Log.Warning($"rules: '{b.Id}' {rule}: collider '{MeshCarver.Path(c.transform)}' could not be cut and stays whole");
+                }
+            }
+            string line = $"rules: '{b.Id}' {rule}: {carved} renderers cut ({triangles} triangles), {untouched} without a triangle in the area, " +
+                          $"{failed} off after a failed cut, {inactive} inactive left as they are; {colCut} colliders cut ({colTris} triangles), {colFailed} failed";
+            if (failed + colFailed > 0) Core.Log.Warning(line);
+            else if (carved + colCut == 0) Core.Log.Warning(line + "; nothing was cut");
             else Core.Log.Msg(line);
         }
 

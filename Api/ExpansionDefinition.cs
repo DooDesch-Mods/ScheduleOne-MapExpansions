@@ -50,6 +50,24 @@ namespace MapExpansions
 
         /// <summary>The lowest height the expansion may reach in the world; lower terrain is reported on build.</summary>
         public float MinimumWorldHeight { get; set; } = -5f;
+
+        /// <summary>
+        /// Each world is drawn only while the camera is on its side, as if the other were not there: in the expansion the
+        /// main world's map is not drawn, in the main world the expansion is not drawn. The side changes in the middle of
+        /// each connection's built stretch, where neither end can be seen; the connections are always drawn. For an
+        /// expansion whose source had its own backdrop, such as a ring of distant mountains, that would stand in the
+        /// other world. Colliders, characters and vehicles stay as they are.
+        /// </summary>
+        public bool SeparateViews { get; set; }
+
+        /// <summary>
+        /// Root objects of the main scene that are not drawn in the expansion with <see cref="SeparateViews"/>. Nothing
+        /// that can move between the worlds may lie under them; objects under a rigidbody are always drawn.
+        /// </summary>
+        public List<string> MainViewRoots { get; } = new() { "Map", "@Properties" };
+
+        /// <summary>Main-world objects drawn on both sides with everything under them, by name prefix; the sea lies under both worlds.</summary>
+        public List<string> SharedViewObjects { get; } = new() { "StylizedWater2_Ocean" };
     }
 
     /// <summary>Where the expansion's original content comes from.</summary>
@@ -153,6 +171,12 @@ namespace MapExpansions
         /// whose boxes reach up to its kerbs, above the road drawn on it.
         /// </summary>
         ColliderTop,
+
+        /// <summary>
+        /// Cuts the triangles of each selected mesh, renderers and mesh colliders, out of the rule's area; the rest of
+        /// the mesh stays. For a backdrop that runs through the other world, such as a ring of distant mountains.
+        /// </summary>
+        Cut,
     }
 
     /// <summary>Selects objects by name in one world, optionally limited to an area.</summary>

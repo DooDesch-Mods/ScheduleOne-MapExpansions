@@ -40,6 +40,9 @@ namespace MapExpansions.Navigation
 
         private readonly string _id;
         private readonly List<Join> _joins = new();
+
+        /// <summary>Per connection, the area node the first exit join reaches; the path check drives to it.</summary>
+        private readonly Dictionary<BuiltConnection, Vector3> _exitPoints = new();
         private int _areaGraph = -1, _corridorGraph = -1, _roadGraph = -1;
         private object _watch;
         private bool _alive = true;
@@ -168,7 +171,7 @@ namespace MapExpansions.Navigation
                 if (_corridorGraph >= 0 && range.to > range.from)
                 {
                     AddJoins($"{conn.Name} entry", approach, _corridorGraph, curve, Mathf.Max(0f, range.from - 3f), range.from + 3f, hw);
-                    AddJoins($"{conn.Name} exit", _corridorGraph, _areaGraph, curve, range.to - 3f, Mathf.Min(curve.Length, range.to + 3f), hw);
+                    AddExitJoins(a, conn, range.to);
                 }
                 if (approach == _roadGraph) BridgeGaps(a, conn);
             }
@@ -355,6 +358,48 @@ namespace MapExpansions.Navigation
                     PointA = curve.Points[iA] + curve.Right(iA) * (o * halfRoad),
                     PointB = curve.Points[iB] + curve.Right(iB) * (o * halfRoad),
                 });
+            }
+        }
+
+        /// <summary>
+        /// Joins the corridor to the area graph out of the built range. The area scan keeps a vehicle's radius away from
+        /// the portal's edges, so its cover of the road can start metres past the portal. The area side of each pair is
+        /// the first point past the portal, up to <see cref="MaxBridge"/> on and beyond the route's end, that the area
+        /// graph covers and that the road reaches without a step.
+        /// </summary>
+        private void AddExitJoins(AstarPath a, BuiltConnection conn, float portal)
+        {
+            var curve = conn.Curve;
+            int last = curve.Count - 1;
+            Vector3 At(float d, int side)
+            {
+                int k = curve.IndexAt(d);
+                var centre = d <= curve.Length ? curve.PointAt(d) : curve.Points[last] + curve.Forward(last) * (d - curve.Length);
+                return centre + curve.Right(k) * (side * LaneOffset(curve, k));
+            }
+            bool median = curve.MedianWidth[curve.IndexAt(portal)] > 0f;
+            foreach (int side in median ? new[] { -1, 1 } : new[] { -1, 0, 1 })
+            {
+                string what = $"{conn.Name} exit {(side == 0 ? "centre" : side < 0 ? "left lane" : "right lane")}";
+                var from = At(portal - 3f, side);
+                if (!Covers(a, _corridorGraph, from, out var inCorridor))
+                    Core.Log.Warning($"vehicle nav: '{_id}' join {what}: the corridor graph has no node at {from}; joined from the nearest one");
+                else from = inCorridor;
+                bool joined = false;
+                string why = "the area graph covers no point";
+                for (float d = portal + 3f; d <= portal + MaxBridge; d += 1f)
+                {
+                    if (!Covers(a, _areaGraph, At(d, side), out var inArea)) continue;
+                    if (!Continuous(from, inArea, out why)) continue;
+                    _joins.Add(new Join { What = what, GraphA = _corridorGraph, GraphB = _areaGraph, PointA = from, PointB = inArea });
+                    Core.Log.Msg($"vehicle nav: '{_id}' join {what} reaches the area graph {d - portal:0} m past the portal at {inArea}");
+                    _exitPoints.TryAdd(conn, inArea);
+                    joined = true;
+                    break;
+                }
+                if (!joined)
+                    Core.Log.Error($"vehicle nav: '{_id}' join {what}: no area node within {MaxBridge:0} m past the portal ({why}); " +
+                                   "vehicles cannot leave the corridor there");
             }
         }
 
@@ -781,7 +826,9 @@ namespace MapExpansions.Navigation
         private void CheckPath(BuiltConnection conn)
         {
             var curve = conn.Curve;
-            Vector3 s = curve.Points[0], e = curve.Points[curve.Count - 1];
+            // The route's end can lie in the strip past the portal that the area graph leaves bare; the check drives on
+            // to the area node the exit join reaches, so a path that stops in the corridor fails it.
+            Vector3 s = curve.Points[0], e = _exitPoints.TryGetValue(conn, out var exit) ? exit : curve.Points[curve.Count - 1];
             var path = ABPath.Construct(s, e, null);
             int general = AstarPath.active != null ? IndexOf(AstarPath.active, GeneralGraphName) : -1;
             path.nnConstraint.graphMask = new GraphMask { value = (general >= 0 ? 1 << general : 0) | ExtraMask };
@@ -816,6 +863,7 @@ namespace MapExpansions.Navigation
             if (_linkRoot != null) Object.Destroy(_linkRoot);
             _linkRoot = null;
             _joins.Clear();
+            _exitPoints.Clear();
             ExtraMask = 0;
             Core.Log.Msg($"vehicle nav: '{_id}' released; the added graphs go with the scene");
         }

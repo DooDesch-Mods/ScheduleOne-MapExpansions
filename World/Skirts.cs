@@ -157,6 +157,7 @@ namespace MapExpansions.World
             r.renderingLayerMask = mr.renderingLayerMask;
             r.lightProbeUsage = mr.lightProbeUsage;
             MeshPatch.JoinLod(mr, r, b);
+            SeparateViews.NoteMade(b, mr, r);
             return r;
         }
 

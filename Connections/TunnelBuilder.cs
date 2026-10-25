@@ -67,12 +67,16 @@ namespace MapExpansions.Connections
 
             int chunks = 0, lights = 0;
             var stretches = curve.Stretches();
-            foreach (var (style, from, to) in stretches)
+            for (int k = 0; k < stretches.Count; k++)
             {
+                var (style, from, to) = stretches[k];
                 if (style == RouteStyle.Existing || to - from < 0.1f) continue;
                 int i0 = curve.IndexAt(from), i1 = curve.IndexAt(to);
                 if (i1 <= i0) continue;
-                AddBoxes(conn, style, i0, i1);
+                // An end of the built range, where the road goes on as an existing one or the route stops.
+                bool openStart = k == 0 || stretches[k - 1].style == RouteStyle.Existing;
+                bool openEnd = k == stretches.Count - 1 || stretches[k + 1].style == RouteStyle.Existing;
+                AddBoxes(conn, style, i0, i1, openStart, openEnd);
 
                 float chunkLength = style == RouteStyle.Tunnel ? def.LightSpacing * 2f : 32f;
                 int start = i0;
@@ -82,7 +86,8 @@ namespace MapExpansions.Connections
                     if (end <= start) end = Mathf.Min(i1, start + 1);
                     // A short rest joins the chunk before it.
                     if (i1 - end < 4) end = i1;
-                    var go = BuildChunk(b, conn, style, start, end, start == i0, end == i1, mats, layer, chunks);
+                    var go = BuildChunk(b, conn, style, start, end, start == i0, end == i1, start == i0 && openStart, end == i1 && openEnd,
+                                        mats, layer, chunks);
                     if (go != null)
                     {
                         conn.SurfaceChunks.Add(go);
@@ -117,7 +122,6 @@ namespace MapExpansions.Connections
             float hw = conn.Curve.RoadWidth[s] * 0.5f, w = HalfWidth(conn, s), ch = d.CurbHeight;
             var runs = new List<Run>
             {
-                new(SubRoad, new(-hw, 0f), new(hw, 0f)),
                 new(SubWalkway, new(hw, 0f), new(hw, ch)),
                 new(SubWalkway, new(hw, ch), new(w, ch)),
                 new(SubWalkway, new(-w, ch), new(-hw, ch)),
@@ -127,8 +131,12 @@ namespace MapExpansions.Connections
             {
                 float mw = conn.Curve.MedianWidth[s], half = mw * 0.5f, top = half * 0.6f;
                 float mh = d.MedianHeight * Mathf.Clamp01(mw / MedianFullWidth);
+                // One road run per carriageway, so each gets its own centre line.
+                runs.Add(new Run(SubRoad, new(-hw, 0f), new(-half, 0f)));
+                runs.Add(new Run(SubRoad, new(half, 0f), new(hw, 0f)));
                 runs.Add(new Run(SubWalkway, new(-half, 0f), new(-top, mh), new(top, mh), new(half, 0f)));
             }
+            else runs.Add(new Run(SubRoad, new(-hw, 0f), new(hw, 0f)));
             switch (style)
             {
                 case RouteStyle.Tunnel:
@@ -187,8 +195,12 @@ namespace MapExpansions.Connections
             public readonly List<int>[] Tris = { new(), new(), new(), new() };
         }
 
+        /// <param name="first">The chunk starts its stretch.</param>
+        /// <param name="last">The chunk ends its stretch.</param>
+        /// <param name="openFirst">The chunk starts the built range, see <see cref="BuiltConnection.BuiltRange"/>.</param>
+        /// <param name="openLast">The chunk ends the built range.</param>
         private static GameObject BuildChunk(BuiltExpansion b, BuiltConnection conn, RouteStyle style, int i0, int i1, bool first, bool last,
-                                             Materials mats, int layer, int number)
+                                             bool openFirst, bool openLast, Materials mats, int layer, int number)
         {
             var def = conn.Definition;
             var curve = conn.Curve;
@@ -204,6 +216,11 @@ namespace MapExpansions.Connections
             var profiles = new List<List<Run>>(i1 - i0 + 1);
             for (int s = i0; s <= i1; s++) profiles.Add(Profile(conn, style, s, median));
             for (int k = 0; k < profiles[0].Count; k++) Sweep(md, curve, profiles, k, i0, i1, origin, mats.Tiling(profiles[0][k].Sub));
+            if (median)
+            {
+                MedianCap(md, conn, i0, origin, -curve.Forward(i0), mats.Walkway.Tiling);
+                MedianCap(md, conn, i1, origin, curve.Forward(i1), mats.Walkway.Tiling);
+            }
             if (style == RouteStyle.Tunnel)
             {
                 if (first)
@@ -216,7 +233,11 @@ namespace MapExpansions.Connections
                     Ring(md, conn, i1, origin, curve.Forward(i1), mats.Shell.Tiling);
                     Facade(md, conn, i1, origin, curve.Forward(i1), mats.Wall.Tiling);
                 }
+                if (openFirst) WingWall(md, conn, i0, origin, def.StartWingWalls, true, mats.Wall.Tiling);
+                if (openLast) WingWall(md, conn, i1, origin, def.EndWingWalls, false, mats.Wall.Tiling);
             }
+            if (openFirst) EndCap(md, conn, style, i0, origin, -curve.Forward(i0), mats);
+            if (openLast) EndCap(md, conn, style, i1, origin, curve.Forward(i1), mats);
 
             var mesh = b.Own(new Mesh { name = go.name });
             if (md.Vertices.Count > 65535) mesh.indexFormat = IndexFormat.UInt32;
@@ -260,7 +281,9 @@ namespace MapExpansions.Connections
 
         /// <summary>
         /// Sweeps run <paramref name="index"/> of each sample's cross-section along samples i0..i1; quads face the left
-        /// side of the run.
+        /// side of the run. A road run spans one texture repeat across when it is wider than the tiling, with the
+        /// middle of the texture, where the road texture draws its centre line, in the middle of the run; a wider span
+        /// would repeat the line beside it.
         /// </summary>
         private static void Sweep(MeshData md, RouteCurve curve, List<List<Run>> profiles, int index, int i0, int i1, Vector3 origin, float tiling)
         {
@@ -274,11 +297,13 @@ namespace MapExpansions.Connections
                 for (int k = 1; k < m; k++) across[k] = across[k - 1] + Vector2.Distance(pts[k - 1], pts[k]);
                 Vector3 c = curve.Points[s] - origin, r = curve.Right(s);
                 float v = curve.Distance[s] / tiling;
+                float mid = (pts[0].x + pts[m - 1].x) * 0.5f, span = Mathf.Max(tiling, Mathf.Abs(pts[m - 1].x - pts[0].x));
                 for (int k = 0; k < m; k++)
                 {
                     var p = pts[k];
                     md.Vertices.Add(c + r * p.x + Vector3.up * p.y);
-                    md.Uvs.Add(new Vector2(across[k] / tiling, v));
+                    float u = first.Sub == SubRoad ? 0.5f + (p.x - mid) / span : across[k] / tiling;
+                    md.Uvs.Add(new Vector2(u, v));
                 }
             }
             var tris = md.Tris[first.Sub];
@@ -290,6 +315,22 @@ namespace MapExpansions.Connections
                     tris.Add(a); tris.Add(d); tris.Add(cc);
                     tris.Add(a); tris.Add(cc); tris.Add(bb);
                 }
+        }
+
+        /// <summary>
+        /// Closes the end of the median barrier at sample s; the sweep only draws its sides, so where it starts in full
+        /// height it would be open. Between two chunks the caps of both lie inside the barrier.
+        /// </summary>
+        private static void MedianCap(MeshData md, BuiltConnection conn, int s, Vector3 origin, Vector3 facing, float tiling)
+        {
+            var curve = conn.Curve;
+            float mw = curve.MedianWidth[s];
+            float mh = conn.Definition.MedianHeight * Mathf.Clamp01(mw / MedianFullWidth);
+            if (mw <= 0f || mh <= 0.01f) return;
+            float half = mw * 0.5f, top = half * 0.6f;
+            Vector3 c = curve.Points[s] - origin, r = curve.Right(s);
+            Vector3 W(float x, float y) => c + r * x + Vector3.up * y;
+            Quad(md, W(-half, 0f), W(-top, mh), W(top, mh), W(half, 0f), facing, tiling, r, SubWalkway);
         }
 
         /// <summary>Closes the gap between the inside and the shell at a tunnel mouth.</summary>
@@ -349,6 +390,94 @@ namespace MapExpansions.Connections
 
         private const float FacadeDepth = 1.5f;
 
+        /// <summary>
+        /// Closes the cross-section where the built range ends: the walkway blocks on both sides and, outside a tunnel,
+        /// whose ring closes the rest, the slab and the guard walls.
+        /// </summary>
+        private static void EndCap(MeshData md, BuiltConnection conn, RouteStyle style, int s, Vector3 origin, Vector3 facing, Materials mats)
+        {
+            var d = conn.Definition;
+            var curve = conn.Curve;
+            float hw = curve.RoadWidth[s] * 0.5f, w = HalfWidth(conn, s), ch = d.CurbHeight;
+            Vector3 c = curve.Points[s] - origin, r = curve.Right(s);
+            Vector3 W(float x, float y) => c + r * x + Vector3.up * y;
+            Quad(md, W(hw, 0f), W(w, 0f), W(w, ch), W(hw, ch), facing, mats.Walkway.Tiling, r, SubWalkway);
+            Quad(md, W(-w, 0f), W(-hw, 0f), W(-hw, ch), W(-w, ch), facing, mats.Walkway.Tiling, r, SubWalkway);
+            if (style == RouteStyle.Tunnel) return;
+            float o = style == RouteStyle.Road ? w + GuardThickness : w;
+            Quad(md, W(-o, SlabBottom), W(o, SlabBottom), W(o, 0f), W(-o, 0f), facing, mats.Shell.Tiling, r, SubShell);
+            if (style != RouteStyle.Road) return;
+            float g = d.GuardHeight;
+            Quad(md, W(w, 0f), W(o, 0f), W(o, g), W(w, g), facing, mats.Wall.Tiling, r, SubWall);
+            Quad(md, W(-o, 0f), W(-w, 0f), W(-w, g), W(-o, g), facing, mats.Wall.Tiling, r, SubWall);
+        }
+
+        /// <summary>Metres between two cross-sections of a wing wall.</summary>
+        private const float WingStep = 1f;
+
+        /// <summary>Metres a wing wall reaches below the road, into the ground beside it.</summary>
+        private const float WingDepth = 2f;
+
+        /// <summary>
+        /// Height of a wing wall over the road at sample s: where the outside of the shell meets the portal frame's
+        /// outer edge, so the wall stays inside the frame's outline.
+        /// </summary>
+        private static float WingTop(BuiltConnection conn, int s)
+        {
+            var d = conn.Definition;
+            float e = HalfWidth(conn, s) + d.ShellThickness, m = Mathf.Max(0f, d.PortalMargin);
+            float rise = d.CrownHeight + d.ShellThickness - d.WallHeight + m;
+            float x = Mathf.Clamp01(e / (e + m));
+            return d.WallHeight + rise * Mathf.Sqrt(1f - x * x);
+        }
+
+        /// <summary>
+        /// The tunnel's walls running on in front of the portal at sample s, on the given sides, between the inside of
+        /// the wall and the outside of the shell, along the road over <see cref="ConnectionDefinition.ApproachLength"/>
+        /// metres. Past the end of the route they go straight on.
+        /// </summary>
+        private static void WingWall(MeshData md, BuiltConnection conn, int s, Vector3 origin, WingWalls sides, bool atStart, float tiling)
+        {
+            if (sides == WingWalls.None) return;
+            var d = conn.Definition;
+            var curve = conn.Curve;
+            float length = d.ApproachLength;
+            if (length < WingStep)
+            {
+                Core.Log.Warning($"tunnel: {conn.Name}: wing walls at the {(atStart ? "start" : "end")} left out; ApproachLength {length:0.##} m is shorter than {WingStep} m");
+                return;
+            }
+            float w = HalfWidth(conn, s), e = w + d.ShellThickness, top = WingTop(conn, s);
+            int n = Mathf.CeilToInt(length / WingStep);
+            float d0 = curve.Distance[s], dir = atStart ? -1f : 1f;
+            var centres = new Vector3[n + 1];
+            var rights = new Vector3[n + 1];
+            for (int k = 0; k <= n; k++)
+            {
+                float dist = d0 + dir * length * k / n;
+                if (dist < 0f) centres[k] = curve.Points[0] - curve.Forward(0) * -dist;
+                else if (dist > curve.Length) centres[k] = curve.Points[curve.Count - 1] + curve.Forward(curve.Count - 1) * (dist - curve.Length);
+                else centres[k] = curve.PointAt(dist);
+                centres[k] -= origin;
+                rights[k] = k == 0 ? curve.Right(s) : curve.Right(curve.IndexAt(dist));
+            }
+            Vector3 outward = (centres[n] - centres[n - 1]).normalized;
+            // Seen from outside looking in, left is the route's left at the start and its right at the end.
+            foreach (var (side, sign) in new[] { (WingWalls.Left, atStart ? -1f : 1f), (WingWalls.Right, atStart ? 1f : -1f) })
+            {
+                if ((sides & side) == 0) continue;
+                Vector3 P(int k, float x, float y) => centres[k] + rights[k] * (sign * x) + Vector3.up * y;
+                for (int k = 0; k < n; k++)
+                {
+                    Vector3 along = (centres[k + 1] - centres[k]).normalized, across = rights[k] * sign;
+                    Quad(md, P(k, w, -WingDepth), P(k + 1, w, -WingDepth), P(k + 1, w, top), P(k, w, top), -across, tiling, along, SubWall);
+                    Quad(md, P(k, e, -WingDepth), P(k + 1, e, -WingDepth), P(k + 1, e, top), P(k, e, top), across, tiling, along, SubWall);
+                    Quad(md, P(k, w, top), P(k + 1, w, top), P(k + 1, e, top), P(k, e, top), Vector3.up, tiling, along, SubWall, across);
+                }
+                Quad(md, P(n, w, -WingDepth), P(n, e, -WingDepth), P(n, e, top), P(n, w, top), outward, tiling, rights[n] * sign, SubWall);
+            }
+        }
+
         /// <summary>Walls from the slab bottom up to <paramref name="wallHeight"/>, then a half ellipse over them, right to left.</summary>
         private static List<Vector2> Outline(float halfWidth, float wallHeight, float rise)
         {
@@ -363,13 +492,16 @@ namespace MapExpansions.Connections
             return pts;
         }
 
-        private static void Quad(MeshData md, Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 facing, float tiling, Vector3 right, int sub = SubShell)
+        /// <summary>A flat quad with planar texture coordinates along <paramref name="right"/> and <paramref name="up"/> (default: world up).</summary>
+        private static void Quad(MeshData md, Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 facing, float tiling, Vector3 right, int sub = SubShell,
+                                 Vector3? up = null)
         {
             int i = md.Vertices.Count;
+            var v = up ?? Vector3.up;
             foreach (var p in new[] { a, b, c, d })
             {
                 md.Vertices.Add(p);
-                md.Uvs.Add(new Vector2(Vector3.Dot(p, right) / tiling, p.y / tiling));
+                md.Uvs.Add(new Vector2(Vector3.Dot(p, right) / tiling, Vector3.Dot(p, v) / tiling));
             }
             var tris = md.Tris[sub];
             // The face of triangle (a, b, c) is on the side Cross(b - a, c - a) points to, as in Mesh.RecalculateNormals.
@@ -419,50 +551,99 @@ namespace MapExpansions.Connections
         /// <summary>
         /// Footprint boxes over the few metres of existing road before and after the built range. Terrain there that
         /// reaches above the road surface would lie across the threshold as a strip of ground; terrain under the road
-        /// stays, because the footprint starts at the road surface.
+        /// stays, because the footprint starts at the road surface. Approach boxes over the same road, as wide as it,
+        /// let the clearing cut the objects the definition names; on a side with a wing wall they reach into the wall
+        /// and up to its top, so what they cut ends behind it.
         /// </summary>
         private static void AddApproach(BuiltConnection conn, (float from, float to) range)
         {
             if (range.to <= range.from) return;
             var curve = conn.Curve;
-            float top = conn.Definition.WallHeight;
-            void Add(float a, float c)
+            var def = conn.Definition;
+            float length = Mathf.Max(0f, def.ApproachLength);
+            void Add(float a, float c, int portal, WingWalls wings, bool atStart)
             {
                 if (c - a < 0.1f) return;
-                float w = Mathf.Max(HalfWidth(conn, curve.IndexAt(a)), HalfWidth(conn, curve.IndexAt(c)));
-                conn.Footprint.Add(OrientedBox.Along(curve.PointAt(a), curve.PointAt(c), w * 2f, -0.02f, top));
+                int ia = curve.IndexAt(a), ic = curve.IndexAt(c);
+                Vector3 pa = curve.PointAt(a), pc = curve.PointAt(c);
+                float w = Mathf.Max(HalfWidth(conn, ia), HalfWidth(conn, ic));
+                conn.ApproachFootprint.Add(OrientedBox.Along(pa, pc, w * 2f, -0.02f, def.WallHeight));
+
+                float half = Mathf.Max(curve.RoadWidth[ia], curve.RoadWidth[ic]) * 0.5f, top = def.CrownHeight;
+                float minX = -half, maxX = half;
+                // The sample on the portal is the last one of the leg before it, so the built side is the next one at the start.
+                int inside = atStart ? Mathf.Min(curve.Count - 1, portal + 1) : portal;
+                bool tunnel = curve.Style[inside] == RouteStyle.Tunnel;
+                if (tunnel && wings != WingWalls.None)
+                {
+                    float wall = HalfWidth(conn, portal) + def.ShellThickness * 0.5f;
+                    // Left seen from outside looking in is the route's left at the start and its right at the end.
+                    bool negative = (wings & (atStart ? WingWalls.Left : WingWalls.Right)) != 0;
+                    bool positive = (wings & (atStart ? WingWalls.Right : WingWalls.Left)) != 0;
+                    if (negative) minX = -wall;
+                    if (positive) maxX = wall;
+                    top = Mathf.Max(top, WingTop(conn, portal));
+                }
+                var shift = Vector3.Cross(Vector3.up, new Vector3(pc.x - pa.x, 0f, pc.z - pa.z).normalized) * ((minX + maxX) * 0.5f);
+                conn.Approach.Add(OrientedBox.Along(pa + shift, pc + shift, maxX - minX, -0.15f, top));
             }
-            Add(Mathf.Max(0f, range.from - ApproachLength), range.from);
-            Add(range.to, Mathf.Min(curve.Length, range.to + ApproachLength));
+            Add(Mathf.Max(0f, range.from - length), range.from, curve.IndexAt(range.from), def.StartWingWalls, true);
+            Add(range.to, Mathf.Min(curve.Length, range.to + length), curve.IndexAt(range.to), def.EndWingWalls, false);
         }
 
-        private const float ApproachLength = 6f;
-
-        /// <summary>Clearance, blocking and footprint boxes for samples i0..i1, about 2 m each.</summary>
-        private static void AddBoxes(BuiltConnection conn, RouteStyle style, int i0, int i1)
+        /// <summary>
+        /// Clearance, blocking and footprint boxes for samples i0..i1, about 2 m each. Footprint boxes reach a little past
+        /// their neighbours, but not past an open end of the built range, where the ground in front of the portal stays.
+        /// </summary>
+        private static void AddBoxes(BuiltConnection conn, RouteStyle style, int i0, int i1, bool openStart, bool openEnd)
         {
             var def = conn.Definition;
             var curve = conn.Curve;
             float top = style == RouteStyle.Tunnel ? def.CrownHeight : def.WallHeight;
             float footprintTop = style == RouteStyle.Tunnel ? def.CrownHeight + 0.5f : def.WallHeight;
             const int step = 4;
-            for (int s = i0; s < i1; s += step)
+            for (int s = i0, e; s < i1; s = e)
             {
-                int e = Mathf.Min(i1, s + step);
+                // A box's ends stand across its own chord. At an open end the portal stands across the route's direction
+                // there, and on a bend a chord over several samples is turned against it: one corner of the box reaches
+                // past the portal and cuts what lies outside. The last samples before an open end get a box each.
+                bool nearEnd = (openStart && s < i0 + step) || (openEnd && s + step > i1 - step);
+                e = Mathf.Min(i1, s + (nearEnd ? 1 : step));
                 float w = Mathf.Max(HalfWidth(conn, s), HalfWidth(conn, e));
                 float footprintWidth = style == RouteStyle.Tunnel ? w + def.ShellThickness * 0.6f : w;
                 Vector3 a = curve.Points[s], bb = curve.Points[e];
                 // Straight boxes along a bend leave a wedge between each other on the outer side, and the terrain in that
                 // wedge stands inside the tube; each box reaches a little into the next. Clearance and blocking boxes
                 // stop at the ends of the range, so nothing outside a portal is cut.
-                var along = (bb - a).normalized * FootprintOverlap;
-                Vector3 ia = s > i0 ? a - along : a, ib = e < i1 ? bb + along : bb;
+                var chord = (bb - a).normalized;
+                float back = s == i0 ? 0f : openStart ? Mathf.Min(FootprintOverlap, curve.Distance[s] - curve.Distance[i0]) : FootprintOverlap;
+                float ahead = e == i1 ? 0f : openEnd ? Mathf.Min(FootprintOverlap, curve.Distance[i1] - curve.Distance[e]) : FootprintOverlap;
+                Vector3 ia = a - chord * back, ib = bb + chord * ahead;
                 conn.Interior.Add(OrientedBox.Along(ia, ib, w * 2f, -0.15f, top));
                 conn.Blocking.Add(OrientedBox.Along(ia, ib, w * 2f, 0.3f, top));
-                conn.Footprint.Add(OrientedBox.Along(a - along, bb + along, footprintWidth * 2f, -0.02f, footprintTop));
+                // A hole cell whose centre lies in the footprint opens all of the cell, and at a portal half of it lies
+                // outside, beside the road, with nothing under it. The last metre before an open end is a portal strip:
+                // only terrain above the road becomes a hole there, and the floor covers what stays below it. The
+                // footprint, overlap included, stops at the strip.
+                float lo = openStart ? curve.Distance[i0] + PortalStrip : float.MinValue;
+                float hi = openEnd ? curve.Distance[i1] - PortalStrip : float.MaxValue;
+                if (s == i0 && openStart)
+                    conn.PortalFootprint.Add(OrientedBox.Along(a, curve.PointAt(lo), footprintWidth * 2f, -0.02f, footprintTop));
+                if (e == i1 && openEnd)
+                    conn.PortalFootprint.Add(OrientedBox.Along(curve.PointAt(hi), bb, footprintWidth * 2f, -0.02f, footprintTop));
+                float da = s > i0 || !openStart ? curve.Distance[s] - FootprintOverlap : curve.Distance[s];
+                float db = e < i1 || !openEnd ? curve.Distance[e] + FootprintOverlap : curve.Distance[e];
+                da = Mathf.Max(da, lo);
+                db = Mathf.Min(db, hi);
+                if (db - da < 0.05f) continue;
+                Vector3 fa = a + chord * (da - curve.Distance[s]), fb = bb + chord * (db - curve.Distance[e]);
+                conn.Footprint.Add(OrientedBox.Along(fa, fb, footprintWidth * 2f, -0.02f, footprintTop));
             }
         }
 
         private const float FootprintOverlap = 1f;
+
+        /// <summary>Length of the strip at an open end of the built range where terrain under the road stays.</summary>
+        private const float PortalStrip = 1f;
     }
 }

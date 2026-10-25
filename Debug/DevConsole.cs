@@ -31,6 +31,7 @@ namespace MapExpansions.Debug
     /// mxray ax ay az bx by bz         every collider a ray from a to b meets, nearest first
     /// mxedges x0 y0 z0 x1 y1 z1 filter open mesh edges inside a world box, as chains, of renderers whose path contains filter
     /// mxlight                         directional lights, shadow distance and the render pipeline's light layers
+    /// mxviews [on|off]                which world the camera's side draws, or separate the views on and off
     /// mxhide filter [on]              stop (or resume) drawing renderers and terrains whose path contains filter
     /// mxterrain filter [pixelError]   render settings of terrains whose name contains filter, optionally a new pixel error
     /// mxnav ...                       NPC navigation tests, see NavTest
@@ -82,10 +83,20 @@ namespace MapExpansions.Debug
                     case "mxcam": Cam(parts); break;
                     case "mxframe": MelonCoroutines.Start(Frame(parts.Length > 1 ? F(parts[1]) : 3f)); break;
                     case "mxfind" when parts.Length > 1: Find(parts[1], parts.Length > 2 ? parts[2] : ""); break;
+                    case "mxfog" when parts.Length > 2 && parts[1] == "tunnel":
+                        Connections.TunnelFog.Enabled = parts[2] == "on";
+                        Core.Log.Msg($"[dev] mxfog tunnel: fog pass off in tunnels {Connections.TunnelFog.Enabled}");
+                        break;
                     case "mxfog" when parts.Length > 2: Fog(parts[1], parts[2] == "on"); break;
                     case "mxfog" when parts.Length > 1: Fog("all", parts[1] == "on"); break;
                     case "mxbox" when parts.Length > 6: Box(V(parts, 1), V(parts, 4), parts.Length > 7 ? parts[7] : ""); break;
                     case "mxlight": Lights(); break;
+                    case "mxviews" when parts.Length > 1:
+                        World.SeparateViews.Enabled = parts[1] == "on";
+                        Core.Log.Msg($"[dev] mxviews: views separated {World.SeparateViews.Enabled}");
+                        break;
+                    case "mxviews": Core.Log.Msg(World.SeparateViews.Describe(Camera.main != null ? Camera.main.transform.position : Vector3.zero)); break;
+                    case "mxcover": Core.Log.Msg(World.WeatherCover.Describe(Camera.main != null ? Camera.main.transform.position : Vector3.zero)); break;
                     case "mxhide" when parts.Length > 1:
                         bool on = parts.Length > 2 && parts[^1] == "on";
                         Hide(string.Join(" ", parts, 1, parts.Length - (on ? 2 : 1)), on);

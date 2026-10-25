@@ -11,12 +11,15 @@ namespace MapExpansions.Connections
     /// </summary>
     internal static class TunnelFog
     {
+        /// <summary>Whether the pass goes off in a tunnel; the dev console switches it to compare.</summary>
+        public static bool Enabled = true;
+
         private static bool _off;
         private static bool _noFeatureReported;
 
         public static void Apply(bool inside, string why)
         {
-            if (inside) SwitchOff();
+            if (inside && Enabled) SwitchOff();
             else if (_off) Restore(why);
         }
 

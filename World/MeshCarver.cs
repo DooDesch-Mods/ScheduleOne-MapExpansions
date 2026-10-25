@@ -89,7 +89,7 @@ namespace MapExpansions.World
                 if (patch.Capped)
                     Core.Log.Warning($"carve: '{Path(mr.transform)}' patch stopped at {patch.Pieces} pieces; part of the hole stays open");
                 if (patch.Build(mr, materials, owner, $"MapExpansions patch {mr.name}") != null)
-                    Core.Log.Msg($"carve: '{Path(mr.transform)}' {patch.Large} large cut triangles drawn again outside the connection in {patch.Pieces} pieces");
+                    Core.Log.Msg($"carve: '{Path(mr.transform)}' {patch.Cut} cut triangles drawn again outside the connection in {patch.Pieces} pieces");
                 return Outcome.Carved;
             }
             catch (Exception e)
@@ -280,7 +280,9 @@ namespace MapExpansions.World
             for (int i = 0; i < verts.Length; i++) world[i] = toWorld.MultiplyPoint3x4(verts[i]);
             var srcNormals = mesh.normals;
             var srcUv = mesh.uv;
-            Vector4[] normals = null, uv = null;
+            var srcUv2 = mesh.uv2;
+            var srcColors = mesh.colors;
+            Vector4[] normals = null, uv = null, uv2 = null, colors = null;
             if (srcNormals != null && srcNormals.Length == verts.Length)
             {
                 normals = new Vector4[verts.Length];
@@ -291,6 +293,18 @@ namespace MapExpansions.World
                 uv = new Vector4[verts.Length];
                 for (int i = 0; i < verts.Length; i++) uv[i] = srcUv[i];
             }
+            if (srcUv2 != null && srcUv2.Length == verts.Length)
+            {
+                uv2 = new Vector4[verts.Length];
+                for (int i = 0; i < verts.Length; i++) uv2[i] = srcUv2[i];
+            }
+            if (srcColors != null && srcColors.Length == verts.Length)
+            {
+                colors = new Vector4[verts.Length];
+                for (int i = 0; i < verts.Length; i++) colors[i] = srcColors[i];
+            }
+            patch.HasUv2 = uv2 != null;
+            patch.HasColors = colors != null;
             int cut = 0;
             for (int s = 0; s < mesh.subMeshCount; s++)
             {
@@ -302,7 +316,7 @@ namespace MapExpansions.World
                     if (Hits(world[tris[t]], world[tris[t + 1]], world[tris[t + 2]], boxes))
                     {
                         cut++;
-                        if (s < patch.Submeshes) AddToPatch(patch, s, world, normals, uv, toWorld, tris[t], tris[t + 1], tris[t + 2], 0);
+                        if (s < patch.Submeshes) AddToPatch(patch, s, world, normals, uv, uv2, colors, toWorld, tris[t], tris[t + 1], tris[t + 2], 0);
                         continue;
                     }
                     keep.Add(tris[t]);
@@ -341,7 +355,7 @@ namespace MapExpansions.World
             }
             if (parts.Count == 0) return 0;
             var world = ReadPositions(mesh, minV, maxV - minV + 1, toWorld);
-            Vector4[] normals = null, uv = null;
+            Vector4[] normals = null, uv = null, uv2 = null, colors = null;
             bool attributesRead = false;
 
             int cut = 0;
@@ -354,16 +368,19 @@ namespace MapExpansions.World
                     int a = p.Indices[t], b = p.Indices[t + 1], c = p.Indices[t + 2];
                     if (a == b && b == c) continue;
                     if (!Hits(world[a + p.BaseVertex - minV], world[b + p.BaseVertex - minV], world[c + p.BaseVertex - minV], boxes)) continue;
-                    if (p.Sub < patch.Submeshes &&
-                        MeshPatch.IsLarge(world[a + p.BaseVertex - minV], world[b + p.BaseVertex - minV], world[c + p.BaseVertex - minV]))
+                    if (p.Sub < patch.Submeshes)
                     {
                         if (!attributesRead)
                         {
                             attributesRead = true;
                             normals = ReadAttribute(mesh, VertexAttribute.Normal, minV, maxV - minV + 1, what);
                             uv = ReadAttribute(mesh, VertexAttribute.TexCoord0, minV, maxV - minV + 1, what);
+                            uv2 = ReadAttribute(mesh, VertexAttribute.TexCoord1, minV, maxV - minV + 1, what);
+                            colors = ReadAttribute(mesh, VertexAttribute.Color, minV, maxV - minV + 1, what);
+                            patch.HasUv2 = uv2 != null;
+                            patch.HasColors = colors != null;
                         }
-                        AddToPatch(patch, p.Sub, world, normals, uv, toWorld, a + p.BaseVertex, b + p.BaseVertex, c + p.BaseVertex, minV);
+                        AddToPatch(patch, p.Sub, world, normals, uv, uv2, colors, toWorld, a + p.BaseVertex, b + p.BaseVertex, c + p.BaseVertex, minV);
                     }
                     p.Indices[t + 1] = a;
                     p.Indices[t + 2] = a;
@@ -376,7 +393,8 @@ namespace MapExpansions.World
         }
 
         /// <summary>One cut triangle into the patch, by vertex index; <paramref name="minV"/> is the first vertex of the arrays.</summary>
-        private static void AddToPatch(MeshPatch patch, int sub, Vector3[] world, Vector4[] normals, Vector4[] uv, Matrix4x4 toWorld,
+        private static void AddToPatch(MeshPatch patch, int sub, Vector3[] world, Vector4[] normals, Vector4[] uv, Vector4[] uv2,
+            Vector4[] colors, Matrix4x4 toWorld,
             int a, int b, int c, int minV)
         {
             Vector3 pa = world[a - minV], pb = world[b - minV], pc = world[c - minV];
@@ -385,7 +403,9 @@ namespace MapExpansions.World
             {
                 var n = normals != null ? toWorld.MultiplyVector(normals[i - minV]).normalized : face;
                 var u = uv != null ? (Vector2)uv[i - minV] : Vector2.zero;
-                return new MeshPatch.V(p, n, u);
+                var l = uv2 != null ? (Vector2)uv2[i - minV] : Vector2.zero;
+                var col = colors != null ? (Color)colors[i - minV] : Color.white;
+                return new MeshPatch.V(p, n, u, l, col);
             }
             patch.Add(sub, Corner(a, pa), Corner(b, pb), Corner(c, pc));
         }
@@ -579,20 +599,36 @@ namespace MapExpansions.World
                     }
                 }
                 var keep = new List<int>(tris.Count);
+                // The parts of cut triangles outside the boxes stay solid, so the collider ends on the box faces like
+                // the drawn mesh and leaves no gap in front of the connection.
+                var patch = new MeshPatch(boxes, 1);
                 for (int t = 0; t + 2 < tris.Count; t += 3)
                 {
                     var a = toWorld.MultiplyPoint3x4(local[tris[t]]);
                     var b = toWorld.MultiplyPoint3x4(local[tris[t + 1]]);
                     var c = toWorld.MultiplyPoint3x4(local[tris[t + 2]]);
-                    if (Hits(a, b, c, boxes)) { cut++; continue; }
+                    if (Hits(a, b, c, boxes))
+                    {
+                        cut++;
+                        patch.Add(0, Corner(a), Corner(b), Corner(c));
+                        continue;
+                    }
                     keep.Add(tris[t]);
                     keep.Add(tris[t + 1]);
                     keep.Add(tris[t + 2]);
                 }
                 if (cut == 0) return Outcome.Untouched;
+                if (patch.Capped)
+                    Core.Log.Warning($"carve: collider '{Path(mc.transform)}' has more cut pieces than the patch holds; the rest is left open");
+                var verts = new List<Vector3>(local);
+                var toLocal = toWorld.inverse;
+                int first = verts.Count;
+                foreach (var p in patch.Positions) verts.Add(toLocal.MultiplyPoint3x4(p));
+                foreach (int i in patch.Indices(0)) keep.Add(first + i);
+                Core.Log.Msg($"carve: collider '{Path(mc.transform)}' {cut} cut triangles kept outside the connection in {patch.Pieces} pieces");
                 var copy = owner.Own(new Mesh { name = mesh.name + " (MapExpansions collider)" });
-                if (local.Length > 65535) copy.indexFormat = IndexFormat.UInt32;
-                copy.vertices = local;
+                if (verts.Count > 65535) copy.indexFormat = IndexFormat.UInt32;
+                copy.vertices = verts.ToArray();
                 var arr = new Il2CppStructArray<int>(keep.Count);
                 for (int i = 0; i < keep.Count; i++) arr[i] = keep[i];
                 copy.SetTriangles(arr, 0, true);
@@ -617,6 +653,9 @@ namespace MapExpansions.World
                 return Outcome.Failed;
             }
         }
+
+        /// <summary>A collider corner for <see cref="MeshPatch"/>; only its position is used.</summary>
+        private static MeshPatch.V Corner(Vector3 p) => new(p, Vector3.up, Vector2.zero, Vector2.zero, Color.white);
 
         public static string Path(Transform t)
         {

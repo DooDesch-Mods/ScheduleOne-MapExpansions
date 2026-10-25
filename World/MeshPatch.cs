@@ -8,41 +8,59 @@ namespace MapExpansions.World
 {
     /// <summary>
     /// Draws again the part of a cut triangle that lies outside the boxes. The cut takes whole triangles, so a large one
-    /// leaves a hole far wider than the connection, with sky behind it. Each large cut triangle is split until every
-    /// piece is outside the boxes or shorter than <see cref="FineEdge"/>; the outside pieces go into a patch renderer
-    /// in world space with the materials of the cut renderer. The rest of the hole is narrower than the tunnel shell.
+    /// leaves a hole far wider than the connection, with sky behind it. Each cut triangle is clipped against the faces of
+    /// every box it reaches into, so the pieces outside end exactly on the box faces; they go into a patch renderer in
+    /// world space with the materials of the cut renderer.
     /// </summary>
     internal sealed class MeshPatch
     {
         internal struct V
         {
             public Vector3 P, N;
-            public Vector2 U;
+            public Vector2 U, L;
+            public Color C;
 
-            public V(Vector3 p, Vector3 n, Vector2 u)
+            public V(Vector3 p, Vector3 n, Vector2 u, Vector2 l, Color c)
             {
                 P = p;
                 N = n;
                 U = u;
+                L = l;
+                C = c;
             }
 
-            public static V Mid(V a, V b) => new((a.P + b.P) * 0.5f, (a.N + b.N).normalized, (a.U + b.U) * 0.5f);
+            public static V Lerp(V a, V b, float t) =>
+                new(Vector3.Lerp(a.P, b.P, t), Vector3.Lerp(a.N, b.N, t).normalized, Vector2.Lerp(a.U, b.U, t), Vector2.Lerp(a.L, b.L, t),
+                    Color.Lerp(a.C, b.C, t));
         }
 
-        private const float FineEdge = 1f;
-        private const int MaxDepth = 10;
         private const int MaxPieces = 60000;
+
+        /// <summary>A piece smaller than this (in square metres, doubled) is a sliver along a box face and is left out.</summary>
+        private const float MinArea2 = 1e-6f;
 
         private readonly IReadOnlyList<OrientedBox> _boxes;
         private readonly List<Vector3> _pos = new();
         private readonly List<Vector3> _nrm = new();
         private readonly List<Vector2> _uv = new();
+        private readonly List<Vector2> _uv2 = new();
+        private readonly List<Color> _col = new();
         private readonly List<List<int>> _subs = new();
 
         public int Submeshes => _subs.Count;
-        public int Large { get; private set; }
+
+        /// <summary>World positions of the pieces' corners.</summary>
+        public IReadOnlyList<Vector3> Positions => _pos;
+
+        /// <summary>Corner indices of the pieces in one submesh, three per piece.</summary>
+        public IReadOnlyList<int> Indices(int sub) => _subs[sub];
+        public int Cut { get; private set; }
         public int Pieces { get; private set; }
         public bool Capped { get; private set; }
+
+        /// <summary>Whether the cut mesh has vertex colours or a second UV set; the patch carries them only then.</summary>
+        public bool HasColors { get; set; }
+        public bool HasUv2 { get; set; }
 
         public MeshPatch(IReadOnlyList<OrientedBox> boxes, int submeshes)
         {
@@ -50,38 +68,86 @@ namespace MapExpansions.World
             for (int i = 0; i < submeshes; i++) _subs.Add(new List<int>());
         }
 
-        public static bool IsLarge(Vector3 a, Vector3 b, Vector3 c)
-        {
-            float e = FineEdge * FineEdge;
-            return (b - a).sqrMagnitude > e || (c - b).sqrMagnitude > e || (a - c).sqrMagnitude > e;
-        }
-
-        /// <summary>A cut triangle, corners in world space; small ones are left out.</summary>
+        /// <summary>A cut triangle, corners in world space.</summary>
         public void Add(int sub, V a, V b, V c)
         {
-            if (!IsLarge(a.P, b.P, c.P)) return;
-            Large++;
-            Split(sub, a, b, c, 0);
+            Cut++;
+            var pieces = new List<List<V>> { new() { a, b, c } };
+            foreach (var box in _boxes)
+            {
+                var next = new List<List<V>>();
+                foreach (var poly in pieces)
+                {
+                    if (!Hits(poly, box))
+                    {
+                        next.Add(poly);
+                        continue;
+                    }
+                    // Peel off the part outside each face in turn; what is left after the sixth face is inside the box.
+                    var rest = poly;
+                    foreach (var (normal, d) in Faces(box))
+                    {
+                        Split(rest, normal, d, out var outside, out var inside);
+                        if (outside.Count >= 3) next.Add(outside);
+                        rest = inside;
+                        if (rest.Count < 3) break;
+                    }
+                }
+                pieces = next;
+                if (pieces.Count == 0) return;
+            }
+            foreach (var poly in pieces)
+                for (int i = 1; i + 1 < poly.Count; i++)
+                {
+                    if (Pieces >= MaxPieces)
+                    {
+                        Capped = true;
+                        return;
+                    }
+                    if (Vector3.Cross(poly[i].P - poly[0].P, poly[i + 1].P - poly[0].P).sqrMagnitude < MinArea2 * MinArea2) continue;
+                    Emit(sub, poly[0], poly[i], poly[i + 1]);
+                }
         }
 
-        private void Split(int sub, V a, V b, V c, int depth)
+        private static bool Hits(List<V> poly, OrientedBox box)
         {
-            if (!MeshCarver.Hits(a.P, b.P, c.P, _boxes))
+            for (int i = 1; i + 1 < poly.Count; i++)
+                if (box.Intersects(poly[0].P, poly[i].P, poly[i + 1].P)) return true;
+            return false;
+        }
+
+        /// <summary>The six faces of a box as outward normal and distance; a point is outside a face when dot(n, p) &gt; d.</summary>
+        private static IEnumerable<(Vector3 normal, float d)> Faces(OrientedBox box)
+        {
+            var axes = new[] { box.Rotation * Vector3.right, box.Rotation * Vector3.up, box.Rotation * Vector3.forward };
+            var half = new[] { box.Half.x, box.Half.y, box.Half.z };
+            for (int i = 0; i < 3; i++)
             {
-                Emit(sub, a, b, c);
-                return;
+                float c = Vector3.Dot(axes[i], box.Center);
+                yield return (axes[i], c + half[i]);
+                yield return (-axes[i], -c + half[i]);
             }
-            if (depth >= MaxDepth || !IsLarge(a.P, b.P, c.P)) return;
-            if (Pieces >= MaxPieces)
+        }
+
+        /// <summary>Splits a convex polygon by a plane into the part outside it and the part inside it.</summary>
+        private static void Split(List<V> poly, Vector3 normal, float d, out List<V> outside, out List<V> inside)
+        {
+            outside = new List<V>(poly.Count + 1);
+            inside = new List<V>(poly.Count + 1);
+            for (int i = 0; i < poly.Count; i++)
             {
-                Capped = true;
-                return;
+                var cur = poly[i];
+                var nxt = poly[(i + 1) % poly.Count];
+                float dc = Vector3.Dot(normal, cur.P) - d, dn = Vector3.Dot(normal, nxt.P) - d;
+                if (dc >= 0f) outside.Add(cur);
+                if (dc <= 0f) inside.Add(cur);
+                if ((dc > 0f && dn < 0f) || (dc < 0f && dn > 0f))
+                {
+                    var m = V.Lerp(cur, nxt, dc / (dc - dn));
+                    outside.Add(m);
+                    inside.Add(m);
+                }
             }
-            V ab = V.Mid(a, b), bc = V.Mid(b, c), ca = V.Mid(c, a);
-            Split(sub, a, ab, ca, depth + 1);
-            Split(sub, ab, b, bc, depth + 1);
-            Split(sub, ca, bc, c, depth + 1);
-            Split(sub, ab, bc, ca, depth + 1);
         }
 
         private void Emit(int sub, V a, V b, V c)
@@ -93,6 +159,8 @@ namespace MapExpansions.World
                 _pos.Add(v.P);
                 _nrm.Add(v.N);
                 _uv.Add(v.U);
+                _uv2.Add(v.L);
+                _col.Add(v.C);
             }
             Pieces++;
         }
@@ -109,6 +177,8 @@ namespace MapExpansions.World
             mesh.vertices = _pos.ToArray();
             mesh.normals = _nrm.ToArray();
             mesh.uv = _uv.ToArray();
+            if (HasUv2) mesh.uv2 = _uv2.ToArray();
+            if (HasColors) mesh.colors = _col.ToArray();
             mesh.subMeshCount = _subs.Count;
             for (int s = 0; s < _subs.Count; s++)
             {
@@ -129,7 +199,10 @@ namespace MapExpansions.World
             mr.receiveShadows = source.receiveShadows;
             mr.renderingLayerMask = source.renderingLayerMask;
             mr.lightProbeUsage = source.lightProbeUsage;
+            if (source.lightmapIndex >= 0 && source.lightmapIndex < 65534)
+                Core.Log.Warning($"carve: '{MeshCarver.Path(source.transform)}' is lightmapped (map {source.lightmapIndex}); its patch is lit without the map");
             JoinLod(source, mr, owner);
+            SeparateViews.NoteMade(owner, source, mr);
             return mr;
         }
 

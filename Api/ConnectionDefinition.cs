@@ -18,6 +18,16 @@ namespace MapExpansions
         Tunnel,
     }
 
+    /// <summary>Sides of a tunnel portal, seen from outside looking into the tunnel.</summary>
+    [Flags]
+    public enum WingWalls
+    {
+        None = 0,
+        Left = 1,
+        Right = 2,
+        Both = Left | Right,
+    }
+
     /// <summary>One point on the centre line of a connection's road surface.</summary>
     public readonly struct RoutePoint
     {
@@ -151,6 +161,31 @@ namespace MapExpansions
         /// built stretch is switched off, or cut where it is too large to switch off as a whole.
         /// </summary>
         public List<ObjectRule> Keep { get; } = new();
+
+        /// <summary>
+        /// Objects of the existing world that reach over the road in front of the built range, such as a rock face over
+        /// the lanes before a portal. Over the last <see cref="ApproachLength"/> metres of road at both ends they are cut
+        /// across the road's width, from its surface to the crown; the rest of them stays. Other objects there stay whole.
+        /// The rules select by name, parent and area; their effect is not read.
+        /// </summary>
+        public List<ObjectRule> ClearApproach { get; } = new();
+
+        /// <summary>
+        /// Metres of existing road before and after the built range that count as its approach: terrain above the road
+        /// becomes a hole there, and <see cref="ClearApproach"/> objects are cut.
+        /// </summary>
+        public float ApproachLength { get; set; } = 6f;
+
+        /// <summary>
+        /// Sides on which the tunnel's walls run on in front of the portal at the start of the built range, over
+        /// <see cref="ApproachLength"/> metres, as thick as the shell and as high as the portal frame. For a rock face
+        /// beside the approach: it ends behind the wall instead of in a cut edge, and <see cref="ClearApproach"/>
+        /// objects are cut up to the wall on that side.
+        /// </summary>
+        public WingWalls StartWingWalls { get; set; }
+
+        /// <summary>As <see cref="StartWingWalls"/>, at the portal at the end of the built range.</summary>
+        public WingWalls EndWingWalls { get; set; }
 
         public ConnectionDefinition Add(PathPoint point, RouteStyle style)
         {

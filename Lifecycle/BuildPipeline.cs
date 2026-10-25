@@ -87,6 +87,8 @@ namespace MapExpansions.Lifecycle
                 try
                 {
                     BuildWorld(b, index, built);
+                    WeatherCover.Add(b);
+                    SeparateViews.Add(b, index);
                     Registry.SetState(b.Id, ExpansionState.Placed);
                 }
                 catch (Exception e)
@@ -223,6 +225,8 @@ namespace MapExpansions.Lifecycle
             _navRoutine = null;
             NavLinks.Clear();
             TunnelShadows.Clear();
+            WeatherCover.Clear();
+            SeparateViews.Clear();
             SlopeAssist.Clear();
             PhysicsBounds.Restore("teardown");
             foreach (var x in Builds)

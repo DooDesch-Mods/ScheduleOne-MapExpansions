@@ -22,6 +22,9 @@ namespace MapExpansions.Connections
         private static bool _raised;
         private static bool _noPipelineReported;
 
+        /// <summary>Whether the camera was in a built stretch at the last tick.</summary>
+        public static bool CameraInside { get; private set; }
+
         public static void Add(BuiltConnection conn)
         {
             Boxes.AddRange(conn.Interior);
@@ -32,8 +35,8 @@ namespace MapExpansions.Connections
         {
             Lower("teardown");
             TunnelFog.Restore("teardown");
-            TunnelWeather.Restore("teardown");
             Boxes.Clear();
+            CameraInside = false;
         }
 
         public static void Tick()
@@ -42,18 +45,18 @@ namespace MapExpansions.Connections
             var cam = Camera.main;
             if (cam == null)
             {
+                CameraInside = false;
                 if (_raised) Lower("no main camera");
                 TunnelFog.Apply(false, "no main camera");
-                TunnelWeather.Apply(false, "no main camera");
                 return;
             }
             var p = cam.transform.position;
             bool inside = false;
             for (int i = 0; i < Boxes.Count && !inside; i++) inside = Boxes[i].Contains(p, Margin);
+            CameraInside = inside;
             if (inside) Raise();
             else if (_raised) Lower("camera left the tunnel");
             TunnelFog.Apply(inside, "camera left the tunnel");
-            TunnelWeather.Apply(inside, "camera left the tunnel");
         }
 
         private static void Raise()
