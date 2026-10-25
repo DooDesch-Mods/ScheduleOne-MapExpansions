@@ -90,6 +90,7 @@ namespace MapExpansions.Lifecycle
                     Places.Build(b);
                     WeatherCover.Add(b);
                     SeparateViews.Add(b, index);
+                    Properties.Build(b);
                     Registry.SetState(b.Id, ExpansionState.Placed);
                 }
                 catch (Exception e)
@@ -225,6 +226,7 @@ namespace MapExpansions.Lifecycle
             if (_navRoutine != null) MelonCoroutines.Stop(_navRoutine);
             _navRoutine = null;
             NavLinks.Clear();
+            Properties.Clear();
             TunnelShadows.Clear();
             WeatherCover.Clear();
             SeparateViews.Clear();

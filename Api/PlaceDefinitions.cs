@@ -60,6 +60,48 @@ namespace MapExpansions
         public List<LocalPoint> Spots { get; } = new();
     }
 
+    /// <summary>
+    /// A property the player can buy, as a copy of a main-world property: its building, grids, loading docks, employee
+    /// spots and sale sign come along and stand at <see cref="Root"/>. The copy is a networked object the host spawns,
+    /// so ownership, hiring and building work in co-op as on the original.
+    /// </summary>
+    public sealed class PropertyDefinition
+    {
+        /// <summary>Stable id inside the expansion; the GUIDs of the copy's grids and docks are made from it.</summary>
+        public string Id { get; set; }
+
+        /// <summary>
+        /// The game's property code: lowercase, unique across the world. Saves store the property under it, and the
+        /// realtor's dialogue choice uses it as its label.
+        /// </summary>
+        public string Code { get; set; }
+
+        public string Name { get; set; }
+
+        public float Price { get; set; }
+
+        public int EmployeeCapacity { get; set; }
+
+        /// <summary>Code of the main-world property that is copied, for example "bungalow" or "barn".</summary>
+        public string Template { get; set; } = "bungalow";
+
+        /// <summary>Where the template's root stands, in expansion-local coordinates.</summary>
+        public LocalPoint Root { get; set; }
+
+        /// <summary>
+        /// The copy is the mirror image of the template, its local x axis reversed, as if placed with scale x -1. Grids,
+        /// parking spots and spawn, access and idle points keep a proper orientation, so building, deliveries and
+        /// employees work as on the original.
+        /// </summary>
+        public bool Mirrored { get; set; }
+
+        /// <summary>Ray the realtor offers the property among his others when this is set.</summary>
+        public bool SoldByRealtor { get; set; } = true;
+
+        /// <summary>The realtor's choice text; empty means "&lt;Name&gt; (&lt;PRICE&gt;)". The price token is replaced by the game.</summary>
+        public string RealtorText { get; set; }
+    }
+
     /// <summary>A place where a customer waits for a deal.</summary>
     public sealed class DealLocationDefinition
     {

@@ -34,6 +34,7 @@ namespace MapExpansions.Debug
     /// mxviews [on|off]                which world the camera's side draws, or separate the views on and off
     /// mxhide filter [on]              stop (or resume) drawing renderers and terrains whose path contains filter
     /// mxterrain filter [pixelError]   render settings of terrains whose name contains filter, optionally a new pixel error
+    /// mxproperty code                 ownership, grids, loading docks, idle points and employees of a property
     /// mxnav ...                       NPC navigation tests, see NavTest
     /// mxveh ...                       vehicle navigation tests, see VehicleTest
     /// </summary>
@@ -106,6 +107,7 @@ namespace MapExpansions.Debug
                     case "mxray" when parts.Length > 6: Ray(V(parts, 1), V(parts, 4)); break;
                     case "mxedges" when parts.Length > 7: Edges(V(parts, 1), V(parts, 4), string.Join(" ", parts, 7, parts.Length - 7)); break;
                     case "mxline" when parts.Length > 4: Line(F(parts[1]), F(parts[2]), F(parts[3]), F(parts[4]), parts.Length > 5 ? F(parts[5]) : 4f, parts.Length > 6 ? F(parts[6]) : 80f); break;
+                    case "mxproperty" when parts.Length > 1: PropertyInfo(parts[1]); break;
                     case "mxnav": NavTest.Handle(parts); break;
                     case "mxveh": VehicleTest.Handle(parts); break;
                     default:
@@ -136,6 +138,37 @@ namespace MapExpansions.Debug
                 Core.Log.Msg($"[dev] mxstate: region {(int)r.Region} '{r.Definition.Name}' of '{r.ExpansionId}', stand-in {r.StandIn}, " +
                              $"zone {(r.Zone != null ? "present" : "missing")}");
             Core.Log.Msg($"[dev] mxstate: {NavLinks.Count} NavMesh links, vehicle graph mask extra {Navigation.VehicleNavigation.ExtraMask}");
+        }
+
+        /// <summary>Lists what a save of the property refers to: grid and dock GUIDs in the order the game keeps them.</summary>
+        private static void PropertyInfo(string code)
+        {
+            Il2CppScheduleOne.Property.Property p = null;
+            foreach (var x in Il2CppScheduleOne.Property.Property.Properties)
+                if (x != null && string.Equals(x.PropertyCode, code, StringComparison.OrdinalIgnoreCase)) { p = x; break; }
+            if (p == null)
+            {
+                Core.Log.Warning($"[dev] mxproperty: no property has the code '{code}'");
+                return;
+            }
+            Core.Log.Msg($"[dev] mxproperty: '{p.PropertyCode}' '{p.PropertyName}' at {p.transform.position}, owned {p.IsOwned}, " +
+                         $"{p.Employees.Count} of {p.EmployeeCapacity} employees, {p.EmployeeIdlePoints?.Length ?? 0} idle points");
+            for (int i = 0; i < p.Grids.Count; i++)
+            {
+                var g = p.Grids[i];
+                Core.Log.Msg($"[dev] mxproperty: grid {i} '{g.name}' guid {g.GUID}, {g.Tiles.Count} tiles, at {g.transform.position}, " +
+                             $"determinant {g.transform.localToWorldMatrix.determinant:0.##}");
+            }
+            for (int i = 0; i < p.LoadingDocks.Length; i++)
+            {
+                var d = p.LoadingDocks[i];
+                Core.Log.Msg($"[dev] mxproperty: dock {i} '{d.name}' guid {d.GUID}, at {d.transform.position}");
+            }
+            if (p.EmployeeIdlePoints != null)
+                for (int i = 0; i < p.EmployeeIdlePoints.Length; i++)
+                    Core.Log.Msg($"[dev] mxproperty: idle point {i} at {p.EmployeeIdlePoints[i].position}");
+            foreach (var e in p.Employees)
+                Core.Log.Msg($"[dev] mxproperty: employee '{e.ID}' at {e.transform.position}");
         }
 
         private static void Npc(string idPart)

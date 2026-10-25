@@ -51,6 +51,9 @@ namespace MapExpansions
         /// <summary>Places where customers of the expansion's regions wait for deals.</summary>
         public List<DealLocationDefinition> DealLocations { get; } = new();
 
+        /// <summary>Properties the player can buy, copied from main-world properties.</summary>
+        public List<PropertyDefinition> Properties { get; } = new();
+
         /// <summary>
         /// Local rectangle the vehicle graph covers, in addition to the connections. Empty means the bounds of the
         /// source terrains.
