@@ -55,6 +55,18 @@ namespace MapExpansions
         public List<PropertyDefinition> Properties { get; } = new();
 
         /// <summary>
+        /// The expansion's own police station. A player arrested in the expansion is set free there instead of at the
+        /// main world's station, and the car taken from them is parked there. Null leaves arrests to the main world.
+        /// </summary>
+        public PoliceStationDefinition PoliceStation { get; set; }
+
+        /// <summary>Shops with a seller at the counter, each with the main-world interior and doors it copies.</summary>
+        public List<ShopDefinition> Shops { get; } = new();
+
+        /// <summary>Main-world objects copied into the expansion outside any shop, such as furniture.</summary>
+        public List<CopyDefinition> Copies { get; } = new();
+
+        /// <summary>
         /// Local rectangle the vehicle graph covers, in addition to the connections. Empty means the bounds of the
         /// source terrains.
         /// </summary>
@@ -189,6 +201,15 @@ namespace MapExpansions
         /// the mesh stays. For a backdrop that runs through the other world, such as a ring of distant mountains.
         /// </summary>
         Cut,
+
+        /// <summary>
+        /// Solid box colliders become shells: thin boxes on the outside of their six faces, open wherever one of
+        /// <see cref="ObjectRule.Openings"/> crosses a face. For a building that was a closed block and gets an interior.
+        /// With <see cref="ObjectRule.Bands"/> or <see cref="ObjectRule.CeilingMaterial"/> the inside also gets walls
+        /// and a ceiling of main-world materials, open at the openings and at <see cref="ObjectRule.Windows"/>;
+        /// without them, pair it with <see cref="DoubleSided"/> so the outer walls show from inside.
+        /// </summary>
+        Hollow,
     }
 
     /// <summary>Selects objects by name in one world, optionally limited to an area.</summary>
@@ -216,6 +237,21 @@ namespace MapExpansions
         /// <summary>For <see cref="ObjectEffect.ColliderTop"/>: metres the top face moves up, negative for down.</summary>
         public float TopShift { get; set; }
 
+        /// <summary>For <see cref="ObjectEffect.Hollow"/>: doorways left open in the shell, in the same coordinates as <see cref="Area"/>.</summary>
+        public List<Bounds> Openings { get; } = new();
+
+        /// <summary>
+        /// For <see cref="ObjectEffect.Hollow"/>: wall bands of the inside lining, each from a height above the floor
+        /// in metres up to the next band or the ceiling, with the name of a loaded material.
+        /// </summary>
+        public List<(float From, string Material)> Bands { get; } = new();
+
+        /// <summary>For <see cref="ObjectEffect.Hollow"/>: the name of a loaded material for the lining's ceiling.</summary>
+        public string CeilingMaterial { get; set; }
+
+        /// <summary>For <see cref="ObjectEffect.Hollow"/>: boxes left open in the lining only, such as windows, in the same coordinates as <see cref="Area"/>.</summary>
+        public List<Bounds> Windows { get; } = new();
+
         public static ObjectRule In(WorldSide side, string name, ObjectEffect effect, string parent = null) =>
             new() { Side = side, Name = name, Parent = parent, Effect = effect };
 
@@ -238,6 +274,38 @@ namespace MapExpansions
         public ObjectRule ShiftTop(float metres)
         {
             TopShift = metres;
+            return this;
+        }
+
+        /// <summary>Adds a box to <see cref="Openings"/>.</summary>
+        public ObjectRule Opening(Vector3 min, Vector3 max)
+        {
+            var b = new Bounds();
+            b.SetMinMax(Vector3.Min(min, max), Vector3.Max(min, max));
+            Openings.Add(b);
+            return this;
+        }
+
+        /// <summary>Adds a wall band to <see cref="Bands"/>.</summary>
+        public ObjectRule Band(float from, string material)
+        {
+            Bands.Add((from, material));
+            return this;
+        }
+
+        /// <summary>Sets <see cref="CeilingMaterial"/>.</summary>
+        public ObjectRule Ceiling(string material)
+        {
+            CeilingMaterial = material;
+            return this;
+        }
+
+        /// <summary>Adds a box to <see cref="Windows"/>.</summary>
+        public ObjectRule Window(Vector3 min, Vector3 max)
+        {
+            var b = new Bounds();
+            b.SetMinMax(Vector3.Min(min, max), Vector3.Max(min, max));
+            Windows.Add(b);
             return this;
         }
 
