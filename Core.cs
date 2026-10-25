@@ -41,6 +41,11 @@ namespace MapExpansions
             Connections.TunnelShadows.Tick();
         }
 
+        public override void OnFixedUpdate()
+        {
+            Connections.SlopeAssist.FixedTick();
+        }
+
         public override void OnSceneWasUnloaded(int buildIndex, string sceneName)
         {
             if (sceneName == BuildPipeline.MainScene)

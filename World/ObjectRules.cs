@@ -36,6 +36,16 @@ namespace MapExpansions.World
                     Skirts.Apply(b, part, rule, area, bottom);
                     continue;
                 }
+                if (rule.Effect == ObjectEffect.ColliderTop)
+                {
+                    ColliderTop(b, part, rule, area, rule.TopShift);
+                    continue;
+                }
+                if (rule.Effect == ObjectEffect.ExactCollision)
+                {
+                    ExactCollision(b, part, rule, area);
+                    continue;
+                }
                 int renderers = 0, colliders = 0, terrains = 0;
                 bool hide = rule.Effect != ObjectEffect.NoCollision;
                 bool noCollision = rule.Effect != ObjectEffect.Hide;
@@ -155,6 +165,124 @@ namespace MapExpansions.World
                         $"{lowerLods} finer LODs without a back";
             if (failed > 0) Core.Log.Warning($"{line}; {failed} backs failed");
             else if (renderers + backs == 0) Core.Log.Warning(line + "; the rule matched nothing");
+            else Core.Log.Msg(line);
+        }
+
+        /// <summary>
+        /// Moves the top face of every box collider the rule selects by <paramref name="shift"/> metres up (down when
+        /// negative); the bottom face stays. Only boxes with one local axis upright are changed.
+        /// </summary>
+        private static void ColliderTop(BuiltExpansion b, SceneIndex.Part part, ObjectRule rule, Bounds area, float shift)
+        {
+            int changed = 0, tilted = 0, tooThin = 0;
+            float before = float.NaN, after = float.NaN;
+            var axes = new[] { Vector3.right, Vector3.up, Vector3.forward };
+            foreach (var c in part.Colliders)
+            {
+                if (c == null || !c.enabled || c.isTrigger || !SceneIndex.MatchesSelfOrAncestor(c.transform, rule, area)) continue;
+                var box = c.TryCast<BoxCollider>();
+                if (box == null) continue;
+                var t = box.transform;
+                var path = MeshCarver.Path(t);
+                int i = -1;
+                float dot = 0f;
+                for (int k = 0; k < 3; k++)
+                {
+                    float d = Vector3.Dot(t.TransformDirection(axes[k]), Vector3.up);
+                    if (Mathf.Abs(d) > Mathf.Abs(dot)) (i, dot) = (k, d);
+                }
+                if (Mathf.Abs(dot) < 0.999f)
+                {
+                    tilted++;
+                    Core.Log.Warning($"rules: '{b.Id}' {rule}: box '{path}' has no upright axis and keeps its top");
+                    continue;
+                }
+                var upLocal = axes[i] * Mathf.Sign(dot);
+                float scale = Mathf.Abs(t.lossyScale[i]);
+                var size = box.size;
+                float delta = scale < 1e-4f ? 0f : shift / scale;
+                if (scale < 1e-4f || size[i] + delta < 0.01f)
+                {
+                    tooThin++;
+                    Core.Log.Warning($"rules: '{b.Id}' {rule}: box '{path}' is {size[i] * scale:0.00} m high; moving its top by {shift:0.00} m leaves nothing, it stays");
+                    continue;
+                }
+                if (float.IsNaN(before)) before = t.TransformPoint(box.center + upLocal * (size[i] * 0.5f)).y;
+                size[i] += delta;
+                box.size = size;
+                box.center += upLocal * (delta * 0.5f);
+                if (float.IsNaN(after)) after = t.TransformPoint(box.center + upLocal * (size[i] * 0.5f)).y;
+                changed++;
+            }
+            string line = $"rules: '{b.Id}' {rule}: {changed} boxes moved their top by {shift:0.00} m (the first from {before:0.00} to {after:0.00}), {tilted} tilted, {tooThin} too thin";
+            if (changed == 0) Core.Log.Warning(line + "; no box changed");
+            else if (tilted + tooThin > 0) Core.Log.Warning(line);
+            else Core.Log.Msg(line);
+        }
+
+        /// <summary>
+        /// Turns the convex mesh colliders the rule selects into plain ones. Physics cooks a plain collider from the
+        /// mesh's CPU data, so an unreadable mesh is replaced by a readable copy first.
+        /// </summary>
+        private static void ExactCollision(BuiltExpansion b, SceneIndex.Part part, ObjectRule rule, Bounds area)
+        {
+            int changed = 0, copied = 0, moving = 0, failed = 0;
+            var readable = new Dictionary<IntPtr, Mesh>();
+            Mesh Readable(Mesh mesh)
+            {
+                if (mesh.isReadable) return mesh;
+                if (readable.TryGetValue(mesh.Pointer, out var known)) return known;
+                var copy = MeshCarver.ReadableCopy(mesh, mesh.name + " (MapExpansions exact)");
+                if (copy != null)
+                {
+                    b.Own(copy);
+                    copied++;
+                }
+                readable[mesh.Pointer] = copy;
+                return copy;
+            }
+            foreach (var c in part.Colliders)
+            {
+                if (c == null || !c.enabled || c.isTrigger || !SceneIndex.MatchesSelfOrAncestor(c.transform, rule, area)) continue;
+                var mc = c.TryCast<MeshCollider>();
+                if (mc == null || !mc.convex) continue;
+                var path = MeshCarver.Path(mc.transform);
+                if (mc.attachedRigidbody != null && !mc.attachedRigidbody.isKinematic)
+                {
+                    moving++;
+                    Core.Log.Warning($"rules: '{b.Id}' {rule}: collider '{path}' sits on a moving body and stays convex");
+                    continue;
+                }
+                var mesh = mc.sharedMesh;
+                if (mesh == null)
+                {
+                    failed++;
+                    Core.Log.Warning($"rules: '{b.Id}' {rule}: collider '{path}' has no mesh and stays convex");
+                    continue;
+                }
+                try
+                {
+                    var shape = Readable(mesh);
+                    if (shape == null)
+                    {
+                        failed++;
+                        Core.Log.Warning($"rules: '{b.Id}' {rule}: collider '{path}' has no readable triangles and stays convex");
+                        continue;
+                    }
+                    if (shape != mesh) mc.sharedMesh = shape;
+                    mc.convex = false;
+                    changed++;
+                    Core.Log.Msg($"rules: '{b.Id}' {rule}: collider '{path}' now uses its {mc.sharedMesh.vertexCount} vertices as a plain mesh");
+                }
+                catch (Exception e)
+                {
+                    failed++;
+                    Core.Log.Error($"rules: '{b.Id}' {rule}: collider '{path}' could not be made plain, it stays convex: {e.Message}");
+                }
+            }
+            string line = $"rules: '{b.Id}' {rule}: {changed} convex colliders made plain, {copied} readable copies, {moving} on moving bodies";
+            if (failed > 0) Core.Log.Warning($"{line}; {failed} failed");
+            else if (changed == 0) Core.Log.Warning(line + "; no convex mesh collider matched");
             else Core.Log.Msg(line);
         }
 

@@ -16,11 +16,18 @@ namespace MapExpansions.Connections
         public readonly List<float> Distance = new();
         public readonly List<RouteStyle> Style = new();
 
+        /// <summary>Road width and median width at each sample.</summary>
+        public readonly List<float> RoadWidth = new(), MedianWidth = new();
+
         /// <summary>Index of the route point each sample starts from.</summary>
         public readonly List<int> Leg = new();
 
         public readonly Vector3[] Controls;
         public readonly RouteStyle[] Styles;
+        private readonly float[] _roadWidths, _medianWidths;
+
+        /// <summary>The widest road anywhere on the route.</summary>
+        public float MaxRoadWidth { get; private set; }
 
         public int Count => Points.Count;
         public float Length => Distance.Count > 0 ? Distance[Distance.Count - 1] : 0f;
@@ -30,10 +37,16 @@ namespace MapExpansions.Connections
             int n = def.Route.Count;
             Controls = new Vector3[n];
             Styles = new RouteStyle[n];
+            _roadWidths = new float[n];
+            _medianWidths = new float[n];
             for (int i = 0; i < n; i++)
             {
-                Controls[i] = frame.Resolve(def.Route[i].Point);
-                Styles[i] = def.Route[i].Style;
+                var rp = def.Route[i];
+                Controls[i] = frame.Resolve(rp.Point);
+                Styles[i] = rp.Style;
+                _roadWidths[i] = rp.RoadWidth > 0f ? rp.RoadWidth : def.RoadWidth;
+                _medianWidths[i] = Mathf.Max(0f, rp.MedianWidth);
+                MaxRoadWidth = Mathf.Max(MaxRoadWidth, _roadWidths[i]);
             }
             Build();
         }
@@ -43,7 +56,7 @@ namespace MapExpansions.Connections
             int n = Controls.Length;
             float total = 0f;
             Vector3 last = Controls[0];
-            Add(Controls[0], 0f, 0);
+            Add(Controls[0], 0f, 0, 0f);
             for (int i = 0; i < n - 1; i++)
             {
                 Vector3 p1 = Controls[i], p2 = Controls[i + 1];
@@ -63,7 +76,7 @@ namespace MapExpansions.Connections
                     if (d < Step && s < steps) continue;
                     total += d;
                     last = p;
-                    Add(p, total, i);
+                    Add(p, total, i, t);
                 }
             }
         }
@@ -73,12 +86,16 @@ namespace MapExpansions.Connections
         /// <summary>Whether the legs starting at route points a and b are both built or both Main's own road.</summary>
         private bool Joined(int a, int b) => Built(Styles[a]) == Built(Styles[b]);
 
-        private void Add(Vector3 p, float d, int leg)
+        private void Add(Vector3 p, float d, int leg, float t)
         {
             Points.Add(p);
             Distance.Add(d);
             Leg.Add(leg);
             Style.Add(Styles[Mathf.Min(leg, Styles.Length - 1)]);
+            int next = Mathf.Min(leg + 1, Controls.Length - 1);
+            float ease = Mathf.SmoothStep(0f, 1f, t);
+            RoadWidth.Add(Mathf.Lerp(_roadWidths[leg], _roadWidths[next], ease));
+            MedianWidth.Add(Mathf.Lerp(_medianWidths[leg], _medianWidths[next], ease));
         }
 
         /// <summary>Centripetal Catmull-Rom; it does not loop or cusp on uneven point spacing.</summary>

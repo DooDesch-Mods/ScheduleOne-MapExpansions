@@ -119,6 +119,7 @@ namespace MapExpansions.Lifecycle
             }
         }
 
-        public float HalfInnerWidth => Definition.RoadWidth * 0.5f + Definition.WalkwayWidth;
+        /// <summary>Half the width between the walls where the route is widest.</summary>
+        public float HalfInnerWidth => Curve.MaxRoadWidth * 0.5f + Definition.WalkwayWidth;
     }
 }

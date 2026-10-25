@@ -141,6 +141,18 @@ namespace MapExpansions
         /// floats over the ground, so the view passes under it. The wall has no collider.
         /// </summary>
         Skirt,
+
+        /// <summary>
+        /// Convex mesh colliders collide with the mesh's own triangles instead of their hull. For a ramp whose hull
+        /// stands as a step over the road at its foot. Colliders on a moving body stay convex.
+        /// </summary>
+        ExactCollision,
+
+        /// <summary>
+        /// The top face of box colliders moves by <see cref="ObjectRule.TopShift"/>, the bottom face stays. For a deck
+        /// whose boxes reach up to its kerbs, above the road drawn on it.
+        /// </summary>
+        ColliderTop,
     }
 
     /// <summary>Selects objects by name in one world, optionally limited to an area.</summary>
@@ -165,6 +177,9 @@ namespace MapExpansions
         /// <summary>For <see cref="ObjectEffect.Skirt"/>: the height the wall reaches down to, in the same coordinates as <see cref="Area"/>.</summary>
         public float Bottom { get; set; }
 
+        /// <summary>For <see cref="ObjectEffect.ColliderTop"/>: metres the top face moves up, negative for down.</summary>
+        public float TopShift { get; set; }
+
         public static ObjectRule In(WorldSide side, string name, ObjectEffect effect, string parent = null) =>
             new() { Side = side, Name = name, Parent = parent, Effect = effect };
 
@@ -180,6 +195,13 @@ namespace MapExpansions
         public ObjectRule DownTo(float height)
         {
             Bottom = height;
+            return this;
+        }
+
+        /// <summary>Sets <see cref="TopShift"/>.</summary>
+        public ObjectRule ShiftTop(float metres)
+        {
+            TopShift = metres;
             return this;
         }
 

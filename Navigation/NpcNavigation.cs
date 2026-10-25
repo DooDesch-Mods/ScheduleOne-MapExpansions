@@ -106,7 +106,7 @@ namespace MapExpansions.Navigation
             }
             long bakeMs = sw.ElapsedMilliseconds;
 
-            float width = Mathf.Max(2f, conn.Definition.RoadWidth);
+            float width = Mathf.Max(2f, conn.Curve.MaxRoadWidth);
             // Links overlap each seam by LinkReach on both sides, so an agent always finds a polygon at both ends.
             NavLinks.Add(Ground(curve.PointAt(Mathf.Max(0f, from - 1f))), Ground(curve.PointAt(from + LinkReach + 0.5f)), width, agents);
             for (int i = 1; i < pieces; i++)

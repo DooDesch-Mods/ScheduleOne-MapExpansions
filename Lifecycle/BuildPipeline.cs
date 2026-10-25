@@ -95,6 +95,7 @@ namespace MapExpansions.Lifecycle
                     Registry.SetState(b.Id, ExpansionState.BuildFailed);
                 }
             }
+            PhysicsBounds.Extend(built);
             _navRoutine = MelonCoroutines.Start(JoinNavigation());
         }
 
@@ -119,6 +120,7 @@ namespace MapExpansions.Lifecycle
                 {
                     b.Connections.Add(conn);
                     TunnelShadows.Add(conn);
+                    SlopeAssist.Add(conn);
                 }
                 else Core.Log.Error($"build: '{b.Id}' connection {c.Name} was not built");
             }
@@ -221,6 +223,8 @@ namespace MapExpansions.Lifecycle
             _navRoutine = null;
             NavLinks.Clear();
             TunnelShadows.Clear();
+            SlopeAssist.Clear();
+            PhysicsBounds.Restore("teardown");
             foreach (var x in Builds)
             {
                 var id = x.Expansion.Id;

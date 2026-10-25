@@ -26,10 +26,21 @@ namespace MapExpansions
         /// <summary>Style of the stretch from this point to the next one.</summary>
         public readonly RouteStyle Style;
 
-        public RoutePoint(PathPoint point, RouteStyle style)
+        /// <summary>Road width at this point; 0 takes <see cref="ConnectionDefinition.RoadWidth"/>. Changes ease in along the leg.</summary>
+        public readonly float RoadWidth;
+
+        /// <summary>
+        /// Width of the barrier between the two directions at this point, 0 for none. Where it narrows to nothing, the
+        /// barrier ramps down into the road.
+        /// </summary>
+        public readonly float MedianWidth;
+
+        public RoutePoint(PathPoint point, RouteStyle style, float roadWidth = 0f, float medianWidth = 0f)
         {
             Point = point;
             Style = style;
+            RoadWidth = roadWidth;
+            MedianWidth = medianWidth;
         }
     }
 
@@ -100,6 +111,9 @@ namespace MapExpansions
         /// <summary>Height of the guard walls on <see cref="RouteStyle.Road"/> stretches.</summary>
         public float GuardHeight { get; set; } = 0.9f;
 
+        /// <summary>Height of the barrier between the two directions where a route point gives it a width.</summary>
+        public float MedianHeight { get; set; } = 0.8f;
+
         /// <summary>Thickness of the rock shell around a tunnel, which closes holes cut into hills and rock.</summary>
         public float ShellThickness { get; set; } = 1.5f;
 
@@ -141,6 +155,13 @@ namespace MapExpansions
         public ConnectionDefinition Add(PathPoint point, RouteStyle style)
         {
             Route.Add(new RoutePoint(point, style));
+            return this;
+        }
+
+        /// <summary>Adds a point with its own road width and median, see <see cref="RoutePoint.RoadWidth"/>.</summary>
+        public ConnectionDefinition Add(PathPoint point, RouteStyle style, float roadWidth, float medianWidth = 0f)
+        {
+            Route.Add(new RoutePoint(point, style, roadWidth, medianWidth));
             return this;
         }
     }

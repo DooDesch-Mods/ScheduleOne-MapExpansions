@@ -4,6 +4,7 @@ using System.Globalization;
 using Il2CppInterop.Runtime;
 using Il2CppPathfinding;
 using Il2CppScheduleOne.DevUtilities;
+using Il2CppScheduleOne.Math;
 using Il2CppScheduleOne.Vehicles;
 using Il2CppScheduleOne.Vehicles.AI;
 using MelonLoader;
@@ -24,11 +25,16 @@ namespace MapExpansions.Debug
     /// mxveh spawn x y z [heading] [code]      spawn an NPC vehicle
     /// mxveh drive x y z [noroads]             navigate the last spawned vehicle there and watch it
     /// mxveh calc ax ay az bx by bz            the road route steps of vanilla navigation, each logged, with the last vehicle's seekers
+    /// mxveh push vx vy vz                     give the last spawned vehicle this velocity and log where it goes for 2 s
+    /// mxveh wall box|blocker|mesh x y z yaw   a 0.5 x 2 x 6 m test wall made at runtime: box on Default, box on VehicleBlocker, mesh on Default
+    /// mxveh clear                             destroy the vehicles and test walls these commands made
     /// </summary>
     internal static class VehicleTest
     {
         private static readonly CultureInfo Ci = CultureInfo.InvariantCulture;
         private static LandVehicle _vehicle;
+        private static readonly List<LandVehicle> Spawned = new();
+        private static readonly List<GameObject> Walls = new();
 
         private static GraphMask Bit(int index) => new GraphMask { value = 1 << index };
 
@@ -47,8 +53,11 @@ namespace MapExpansions.Debug
                     break;
                 case "calc" when parts.Length > 7: Calc(V(parts, 2), V(parts, 5)); break;
                 case "drive" when parts.Length > 4: Drive(V(parts, 2), parts.Length > 5 && parts[5] == "noroads"); break;
+                case "push" when parts.Length > 4: Push(V(parts, 2)); break;
+                case "wall" when parts.Length > 6: Wall(parts[2], V(parts, 3), F(parts[6])); break;
+                case "clear": Clear(); break;
                 default:
-                    Core.Log.Warning("[dev] mxveh info|near|path|spawn|drive|calc (see VehicleTest docs)");
+                    Core.Log.Warning("[dev] mxveh info|near|path|spawn|drive|calc|push|wall|clear (see VehicleTest docs)");
                     break;
             }
         }
@@ -189,8 +198,86 @@ namespace MapExpansions.Debug
                 Core.Log.Error($"[dev] mxveh spawn: '{code}' did not spawn");
                 return;
             }
+            Spawned.Add(_vehicle);
             if (_vehicle.GetComponentInChildren<VehicleAgent>() is { } agent) VehicleNavigation.ApplyMask(agent);
             Core.Log.Msg($"[dev] mxveh spawn: {code} at {pos}, agent {(_vehicle.GetComponentInChildren<VehicleAgent>() != null)}");
+        }
+
+        private static void Wall(string kind, Vector3 pos, float yaw)
+        {
+            if (kind.StartsWith("copy:", StringComparison.Ordinal))
+            {
+                Copy(kind.Substring(5), pos, yaw);
+                return;
+            }
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            go.name = $"MapExpansions.TestWall.{kind}.{Walls.Count}";
+            go.transform.SetPositionAndRotation(pos + Vector3.up, Quaternion.Euler(0f, yaw, 0f));
+            go.transform.localScale = new Vector3(0.5f, 2f, 6f);
+            switch (kind)
+            {
+                case "box": break;
+                case "blocker": go.layer = LayerMask.NameToLayer("VehicleBlocker"); break;
+                case "mesh":
+                    Object.DestroyImmediate(go.GetComponent<BoxCollider>());
+                    var src = go.GetComponent<MeshFilter>().sharedMesh;
+                    var copy = new Mesh { name = go.name };
+                    copy.SetVertices(src.vertices);
+                    copy.SetTriangles(src.triangles, 0);
+                    copy.RecalculateBounds();
+                    go.AddComponent<MeshCollider>().sharedMesh = copy;
+                    break;
+                default:
+                    Core.Log.Warning($"[dev] mxveh wall: '{kind}' is not box, blocker or mesh");
+                    Object.Destroy(go);
+                    return;
+            }
+            Walls.Add(go);
+            Core.Log.Msg($"[dev] mxveh wall: {go.name} at {go.transform.position}, yaw {yaw}, layer {LayerMask.LayerToName(go.layer)}, collider {go.GetComponent<Collider>().GetIl2CppType().Name}");
+        }
+
+        /// <summary>
+        /// A copy of a named object with its colliders, without parent, at pos and yaw. Tells whether an object stops cars
+        /// because of what it is or because of where it stands.
+        /// </summary>
+        private static void Copy(string name, Vector3 pos, float yaw)
+        {
+            var src = GameObject.Find(name);
+            if (src == null)
+            {
+                Core.Log.Warning($"[dev] mxveh wall copy: no active object '{name}'");
+                return;
+            }
+            var go = Object.Instantiate(src);
+            go.name = $"MapExpansions.TestWall.copy.{Walls.Count}";
+            go.transform.SetParent(null, false);
+            go.transform.SetPositionAndRotation(pos, Quaternion.Euler(0f, yaw, 0f));
+            go.transform.localScale = src.transform.lossyScale;
+            Walls.Add(go);
+            var cols = go.GetComponentsInChildren<Collider>();
+            Core.Log.Msg($"[dev] mxveh wall copy: '{name}' (at {src.transform.position}, scale {src.transform.lossyScale}, scene {src.scene.name}) -> {go.name} at {pos}, " +
+                         $"scene {go.scene.name}, colliders {string.Join(", ", cols.Select(c => $"{c.GetIl2CppType().Name}@{LayerMask.LayerToName(c.gameObject.layer)} {c.bounds.size}"))}");
+        }
+
+        private static void Clear()
+        {
+            int cars = 0, walls = 0;
+            foreach (var v in Spawned)
+            {
+                if (v == null) continue;
+                v.DestroyVehicle();
+                cars++;
+            }
+            Spawned.Clear();
+            _vehicle = null;
+            foreach (var w in Walls)
+            {
+                if (w == null) continue;
+                Object.Destroy(w);
+                walls++;
+            }
+            Walls.Clear();
+            Core.Log.Msg($"[dev] mxveh clear: {cars} vehicles and {walls} test walls destroyed");
         }
 
         private static void Drive(Vector3 target, bool noRoads)
@@ -215,9 +302,98 @@ namespace MapExpansions.Debug
                     result = r.ToString();
                     Core.Log.Msg($"[dev] mxveh drive: navigation callback {r}");
                 }));
-            Core.Log.Msg($"[dev] mxveh drive: from {_vehicle.transform.position} to {target}, roads {(!noRoads)}, onGraph {agent.IsOnVehicleGraph()}");
+            Core.Log.Msg($"[dev] mxveh drive: from {_vehicle.transform.position} to {target}, roads {(!noRoads)}, onGraph {agent.IsOnVehicleGraph()}, " +
+                         $"mass {_vehicle.GetComponent<Rigidbody>()?.mass:0} kg, top speed {_vehicle.TopSpeed:0} km/h");
             agent.Navigate(target, settings, cb);
             MelonCoroutines.Start(Watch(agent, target, () => result));
+        }
+
+        private static void Push(Vector3 velocity)
+        {
+            var rb = _vehicle != null ? _vehicle.GetComponent<Rigidbody>() : null;
+            if (rb == null)
+            {
+                Core.Log.Warning($"[dev] mxveh push: {(_vehicle == null ? "spawn a vehicle first" : "the vehicle has no Rigidbody")}");
+                return;
+            }
+            rb.isKinematic = false;
+            rb.velocity = velocity;
+            int def = LayerMask.NameToLayer("Default");
+            var own = new List<string>();
+            foreach (var c in _vehicle.GetComponentsInChildren<Collider>())
+                if (c.enabled && !c.isTrigger)
+                    own.Add($"{c.name}@{LayerMask.LayerToName(c.gameObject.layer)}{(Physics.GetIgnoreLayerCollision(c.gameObject.layer, def) ? " ignores Default" : "")}");
+            int veh = LayerMask.NameToLayer("Vehicle");
+            var hitsLayers = new List<string>();
+            for (int l = 0; l < 32; l++)
+                if (!string.IsNullOrEmpty(LayerMask.LayerToName(l)) && !Physics.GetIgnoreLayerCollision(veh, l)) hitsLayers.Add(LayerMask.LayerToName(l));
+            Core.Log.Msg($"[dev] mxveh push: layer Vehicle collides with {string.Join(", ", hitsLayers)}; Default with Default {!Physics.GetIgnoreLayerCollision(0, 0)}, " +
+                         $"body include {rb.includeLayers.value:X8} exclude {rb.excludeLayers.value:X8}");
+            foreach (var c in _vehicle.GetComponentsInChildren<Collider>())
+                if (c.enabled && !c.isTrigger)
+                    Core.Log.Msg($"[dev] mxveh push: collider '{c.name}' include {c.includeLayers.value:X8} exclude {c.excludeLayers.value:X8} priority {c.layerOverridePriority}");
+            Core.Log.Msg($"[dev] mxveh push: {_vehicle.transform.position} with {velocity}, kinematic {rb.isKinematic}, detect collisions {rb.detectCollisions}, " +
+                         $"mode {rb.collisionDetectionMode}, solid colliders: {string.Join(", ", own)}");
+            MelonCoroutines.Start(Track(rb));
+        }
+
+        private static IEnumerator Track(Rigidbody rb)
+        {
+            for (int i = 1; i <= 8 && rb != null; i++)
+            {
+                yield return new WaitForSeconds(0.25f);
+                if (rb == null) break;
+                var hits = new List<string>();
+                foreach (var c in Physics.OverlapSphere(rb.worldCenterOfMass, 2.5f, ~0, QueryTriggerInteraction.Ignore))
+                    if (!c.transform.IsChildOf(rb.transform)) hits.Add($"{c.name}@{LayerMask.LayerToName(c.gameObject.layer)}");
+                Core.Log.Msg($"[dev] mxveh push: after {i * 0.25f:0.00} s at {rb.position}, velocity {rb.velocity}, within 2.5 m: {string.Join(", ", hits)}");
+                Core.Log.Msg($"[dev] mxveh push: contacts {Contacts(rb)}");
+            }
+            if (rb == null) Core.Log.Warning("[dev] mxveh push: the vehicle is gone");
+        }
+
+        /// <summary>
+        /// For each solid collider of the car, the world colliders its bounds touch, whether the pair is set to ignore
+        /// each other and how deep they overlap.
+        /// </summary>
+        private static string Contacts(Rigidbody rb)
+        {
+            var parts = new List<string>();
+            foreach (var c in rb.GetComponentsInChildren<Collider>())
+            {
+                if (!c.enabled || c.isTrigger || c.GetIl2CppType().Name == "WheelCollider") continue;
+                var b = c.bounds;
+                var pairs = new List<string>();
+                foreach (var w in Physics.OverlapBox(b.center, b.extents + Vector3.one * 0.2f, Quaternion.identity, ~0, QueryTriggerInteraction.Ignore))
+                {
+                    if (w.transform.IsChildOf(rb.transform)) continue;
+                    string body = w.attachedRigidbody != null ? $" on body '{w.attachedRigidbody.name}' kinematic {w.attachedRigidbody.isKinematic}" : "";
+                    bool overlap = Physics.ComputePenetration(c, c.transform.position, c.transform.rotation, w, w.transform.position, w.transform.rotation, out _, out float depth);
+                    pairs.Add($"{w.name}@{LayerMask.LayerToName(w.gameObject.layer)} {w.GetIl2CppType().Name}{body}{(Physics.GetIgnoreCollision(c, w) ? " IGNORED" : "")}{(overlap ? $" in {depth:0.00} m" : "")}");
+                }
+                parts.Add($"'{c.name}' {c.GetIl2CppType().Name}: {(pairs.Count == 0 ? "-" : string.Join("; ", pairs))}");
+            }
+            return string.Join(" | ", parts);
+        }
+
+        /// <summary>Where kinematic driving puts the car: the closest path point, the ground under it, the point ahead.</summary>
+        private static string PathProbe(VehicleAgent agent)
+        {
+            var path = agent.path;
+            if (path == null || path.vectorPath == null || path.vectorPath.Count < 2) return ", no path";
+            var box = _vehicle.boundingBox.transform;
+            var reference = box.position - box.up * (_vehicle.BoundingBoxDimensions.y * 0.5f);
+            var closest = PathUtility.GetClosestPointOnPath(path, agent.transform.position, out int start, out _, out float lerp);
+            var ahead = PathUtility.GetAheadPoint(path, reference, 1f);
+            string ground = "none";
+            float best = float.MaxValue;
+            foreach (var h in Physics.RaycastAll(closest + Vector3.up * 2f, Vector3.down, 3f, LayerMask.GetMask("Default", "Terrain"), QueryTriggerInteraction.Ignore))
+            {
+                if (h.collider.transform.IsChildOf(agent.transform) || h.distance >= best) continue;
+                best = h.distance;
+                ground = $"{h.point.y:0.00} '{h.collider.name}'";
+            }
+            return $", path segment {start}/{path.vectorPath.Count - 1} at {lerp:0.00}, closest {closest}, ground {ground}, reference {reference}, 1 m ahead {ahead}";
         }
 
         private static IEnumerator Watch(VehicleAgent agent, Vector3 target, Func<string> result)
@@ -242,7 +418,7 @@ namespace MapExpansions.Debug
                 if (Time.time - lastLog > 3f)
                 {
                     lastLog = Time.time;
-                    Core.Log.Msg($"[dev] mxveh drive: at {p}, {Vector3.Distance(p, target):0} m left, autoDriving={agent.AutoDriving}, speed {_vehicle?.Speed_Kmh:0} km/h");
+                    Core.Log.Msg($"[dev] mxveh drive: at {p}, {Vector3.Distance(p, target):0} m left, autoDriving={agent.AutoDriving}, speed {_vehicle?.Speed_Kmh:0} km/h, throttle {_vehicle?.throttleOverride:0.00}, kinematic {agent.KinematicMode}, target speed {agent.targetSpeed:0}{PathProbe(agent)}");
                 }
                 if (result() != null && !agent.AutoDriving) break;
             }

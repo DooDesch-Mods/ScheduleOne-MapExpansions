@@ -25,9 +25,9 @@ namespace MapExpansions.Debug
     /// mxcam ex ey ez tx ty tz | off   park the camera at a world position looking at a world point
     /// mxframe [seconds]               frame time statistics over a sample window
     /// mxfind name [main|exp]          renderers whose name contains name
-    /// mxfog on|off                    the screen fog render feature and the volumetric fog
+    /// mxfog [feature|volumetric] on|off the screen fog render feature, the volumetric fog, or both
     /// mxbox x0 y0 z0 x1 y1 z1 [filter] renderers and colliders whose bounds meet a world box, with their paths
-    /// mxline ax az bx bz [step]       every surface a ray from above meets, sampled along a line
+    /// mxline ax az bx bz [step] [y]   every surface a ray down from height y (80) meets, sampled along a line
     /// mxray ax ay az bx by bz         every collider a ray from a to b meets, nearest first
     /// mxedges x0 y0 z0 x1 y1 z1 filter open mesh edges inside a world box, as chains, of renderers whose path contains filter
     /// mxlight                         directional lights, shadow distance and the render pipeline's light layers
@@ -82,7 +82,8 @@ namespace MapExpansions.Debug
                     case "mxcam": Cam(parts); break;
                     case "mxframe": MelonCoroutines.Start(Frame(parts.Length > 1 ? F(parts[1]) : 3f)); break;
                     case "mxfind" when parts.Length > 1: Find(parts[1], parts.Length > 2 ? parts[2] : ""); break;
-                    case "mxfog" when parts.Length > 1: Fog(parts[1] == "on"); break;
+                    case "mxfog" when parts.Length > 2: Fog(parts[1], parts[2] == "on"); break;
+                    case "mxfog" when parts.Length > 1: Fog("all", parts[1] == "on"); break;
                     case "mxbox" when parts.Length > 6: Box(V(parts, 1), V(parts, 4), parts.Length > 7 ? parts[7] : ""); break;
                     case "mxlight": Lights(); break;
                     case "mxhide" when parts.Length > 1:
@@ -92,7 +93,7 @@ namespace MapExpansions.Debug
                     case "mxterrain" when parts.Length > 1: TerrainInfo(parts[1], parts.Length > 2 ? F(parts[2]) : -1f); break;
                     case "mxray" when parts.Length > 6: Ray(V(parts, 1), V(parts, 4)); break;
                     case "mxedges" when parts.Length > 7: Edges(V(parts, 1), V(parts, 4), string.Join(" ", parts, 7, parts.Length - 7)); break;
-                    case "mxline" when parts.Length > 4: Line(F(parts[1]), F(parts[2]), F(parts[3]), F(parts[4]), parts.Length > 5 ? F(parts[5]) : 4f); break;
+                    case "mxline" when parts.Length > 4: Line(F(parts[1]), F(parts[2]), F(parts[3]), F(parts[4]), parts.Length > 5 ? F(parts[5]) : 4f, parts.Length > 6 ? F(parts[6]) : 80f); break;
                     case "mxnav": NavTest.Handle(parts); break;
                     case "mxveh": VehicleTest.Handle(parts); break;
                     default:
@@ -431,7 +432,7 @@ namespace MapExpansions.Debug
                          $"{QualitySettings.terrainQualityOverrides}, pixel error {QualitySettings.terrainPixelError:0.##}");
         }
 
-        private static void Line(float ax, float az, float bx, float bz, float step)
+        private static void Line(float ax, float az, float bx, float bz, float step, float fromY)
         {
             var a = new Vector2(ax, az);
             var b = new Vector2(bx, bz);
@@ -439,7 +440,7 @@ namespace MapExpansions.Debug
             for (int i = 0; i <= n; i++)
             {
                 var p = Vector2.Lerp(a, b, (float)i / n);
-                var hits = Physics.RaycastAll(new Vector3(p.x, 80f, p.y), Vector3.down, 200f, ~0, QueryTriggerInteraction.Ignore);
+                var hits = Physics.RaycastAll(new Vector3(p.x, fromY, p.y), Vector3.down, 200f, ~0, QueryTriggerInteraction.Ignore);
                 var sorted = hits.ToArray().OrderByDescending(h => h.point.y).Take(4)
                     .Select(h => $"{h.point.y:0.00} '{PathOf(h.collider.transform, 3)}' {h.collider.GetIl2CppType().Name}");
                 Core.Log.Msg($"[dev] mxline ({p.x:0.0}, {p.y:0.0}): {string.Join(" | ", sorted)}");
@@ -510,11 +511,13 @@ namespace MapExpansions.Debug
             Core.Log.Msg($"[dev] mxlight: quality shadowDistance {QualitySettings.shadowDistance:0}; {layers}");
         }
 
-        private static void Fog(bool on)
+        /// <summary>Switches the fog pass ("feature"), the volumetric fog ("volumetric") or both ("all").</summary>
+        private static void Fog(string which, bool on)
         {
             var env = NetworkSingleton<EnvironmentManager>.Instance;
             string feature;
-            if (env == null) feature = "no EnvironmentManager";
+            if (which == "volumetric") feature = "fog feature untouched";
+            else if (env == null) feature = "no EnvironmentManager";
             else if (env._fogFeature == null) feature = "no fog feature";
             else
             {
@@ -523,14 +526,15 @@ namespace MapExpansions.Debug
             }
             var fx = Singleton<EnvironmentFX>.Instance;
             string volumetric;
-            if (fx == null) volumetric = "no EnvironmentFX";
+            if (which == "feature") volumetric = "volumetric fog untouched";
+            else if (fx == null) volumetric = "no EnvironmentFX";
             else if (fx.VolumetricFog == null) volumetric = "no volumetric fog";
             else
             {
                 fx.VolumetricFog.enabled = on;
                 volumetric = $"volumetric fog enabled {fx.VolumetricFog.enabled}";
             }
-            Core.Log.Msg($"[dev] mxfog {(on ? "on" : "off")}: {feature}; {volumetric}");
+            Core.Log.Msg($"[dev] mxfog {which} {(on ? "on" : "off")}: {feature}; {volumetric}");
         }
     }
 

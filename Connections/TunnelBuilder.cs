@@ -100,11 +100,21 @@ namespace MapExpansions.Connections
             return conn;
         }
 
-        private static float HalfWidth(ConnectionDefinition d) => d.RoadWidth * 0.5f + d.WalkwayWidth;
+        /// <summary>Half the width between the walls at sample s.</summary>
+        private static float HalfWidth(BuiltConnection conn, int s) => conn.Curve.RoadWidth[s] * 0.5f + conn.Definition.WalkwayWidth;
 
-        private static List<Run> Profile(ConnectionDefinition d, RouteStyle style)
+        /// <summary>Median width below which the barrier sinks into the road, so a narrowing median ends in a ramp.</summary>
+        private const float MedianFullWidth = 0.6f;
+
+        /// <summary>
+        /// The cross-section at sample s. Every sample of one chunk yields the same runs with the same point counts, so
+        /// <paramref name="median"/> is decided per chunk: with it, a barrier stands in the middle, as narrow as the
+        /// sample's median width.
+        /// </summary>
+        private static List<Run> Profile(BuiltConnection conn, RouteStyle style, int s, bool median)
         {
-            float hw = d.RoadWidth * 0.5f, w = HalfWidth(d), ch = d.CurbHeight;
+            var d = conn.Definition;
+            float hw = conn.Curve.RoadWidth[s] * 0.5f, w = HalfWidth(conn, s), ch = d.CurbHeight;
             var runs = new List<Run>
             {
                 new(SubRoad, new(-hw, 0f), new(hw, 0f)),
@@ -113,6 +123,12 @@ namespace MapExpansions.Connections
                 new(SubWalkway, new(-w, ch), new(-hw, ch)),
                 new(SubWalkway, new(-hw, ch), new(-hw, 0f)),
             };
+            if (median)
+            {
+                float mw = conn.Curve.MedianWidth[s], half = mw * 0.5f, top = half * 0.6f;
+                float mh = d.MedianHeight * Mathf.Clamp01(mw / MedianFullWidth);
+                runs.Add(new Run(SubWalkway, new(-half, 0f), new(-top, mh), new(top, mh), new(half, 0f)));
+            }
             switch (style)
             {
                 case RouteStyle.Tunnel:
@@ -183,18 +199,22 @@ namespace MapExpansions.Connections
             go.transform.position = origin;
 
             var md = new MeshData();
-            foreach (var run in Profile(def, style)) Sweep(md, curve, run, i0, i1, origin, mats.Tiling(run.Sub));
+            bool median = false;
+            for (int s = i0; s <= i1 && !median; s++) median = curve.MedianWidth[s] > 0f;
+            var profiles = new List<List<Run>>(i1 - i0 + 1);
+            for (int s = i0; s <= i1; s++) profiles.Add(Profile(conn, style, s, median));
+            for (int k = 0; k < profiles[0].Count; k++) Sweep(md, curve, profiles, k, i0, i1, origin, mats.Tiling(profiles[0][k].Sub));
             if (style == RouteStyle.Tunnel)
             {
                 if (first)
                 {
-                    Ring(md, def, curve, i0, origin, -curve.Forward(i0), mats.Shell.Tiling);
-                    Facade(md, def, curve, i0, origin, -curve.Forward(i0), mats.Wall.Tiling);
+                    Ring(md, conn, i0, origin, -curve.Forward(i0), mats.Shell.Tiling);
+                    Facade(md, conn, i0, origin, -curve.Forward(i0), mats.Wall.Tiling);
                 }
                 if (last)
                 {
-                    Ring(md, def, curve, i1, origin, curve.Forward(i1), mats.Shell.Tiling);
-                    Facade(md, def, curve, i1, origin, curve.Forward(i1), mats.Wall.Tiling);
+                    Ring(md, conn, i1, origin, curve.Forward(i1), mats.Shell.Tiling);
+                    Facade(md, conn, i1, origin, curve.Forward(i1), mats.Wall.Tiling);
                 }
             }
 
@@ -238,25 +258,30 @@ namespace MapExpansions.Connections
             return a;
         }
 
-        /// <summary>Sweeps one run along samples i0..i1; quads face the left side of the run.</summary>
-        private static void Sweep(MeshData md, RouteCurve curve, Run run, int i0, int i1, Vector3 origin, float tiling)
+        /// <summary>
+        /// Sweeps run <paramref name="index"/> of each sample's cross-section along samples i0..i1; quads face the left
+        /// side of the run.
+        /// </summary>
+        private static void Sweep(MeshData md, RouteCurve curve, List<List<Run>> profiles, int index, int i0, int i1, Vector3 origin, float tiling)
         {
-            int m = run.Points.Count;
+            var first = profiles[0][index];
+            int m = first.Points.Count;
             var across = new float[m];
-            for (int k = 1; k < m; k++) across[k] = across[k - 1] + Vector2.Distance(run.Points[k - 1], run.Points[k]);
             int baseIndex = md.Vertices.Count;
             for (int s = i0; s <= i1; s++)
             {
+                var pts = profiles[s - i0][index].Points;
+                for (int k = 1; k < m; k++) across[k] = across[k - 1] + Vector2.Distance(pts[k - 1], pts[k]);
                 Vector3 c = curve.Points[s] - origin, r = curve.Right(s);
                 float v = curve.Distance[s] / tiling;
                 for (int k = 0; k < m; k++)
                 {
-                    var p = run.Points[k];
+                    var p = pts[k];
                     md.Vertices.Add(c + r * p.x + Vector3.up * p.y);
                     md.Uvs.Add(new Vector2(across[k] / tiling, v));
                 }
             }
-            var tris = md.Tris[run.Sub];
+            var tris = md.Tris[first.Sub];
             int rows = i1 - i0;
             for (int s = 0; s < rows; s++)
                 for (int k = 0; k < m - 1; k++)
@@ -268,9 +293,11 @@ namespace MapExpansions.Connections
         }
 
         /// <summary>Closes the gap between the inside and the shell at a tunnel mouth.</summary>
-        private static void Ring(MeshData md, ConnectionDefinition d, RouteCurve curve, int s, Vector3 origin, Vector3 facing, float tiling)
+        private static void Ring(MeshData md, BuiltConnection conn, int s, Vector3 origin, Vector3 facing, float tiling)
         {
-            float w = HalfWidth(d), e = w + d.ShellThickness;
+            var d = conn.Definition;
+            var curve = conn.Curve;
+            float w = HalfWidth(conn, s), e = w + d.ShellThickness;
             var inner = new List<Vector2> { new(w, 0f), new(w, d.WallHeight) };
             var outer = new List<Vector2> { new(e, SlabBottom), new(e, d.WallHeight) };
             for (int i = 1; i < ArcSegments; i++)
@@ -295,67 +322,45 @@ namespace MapExpansions.Connections
         }
 
         /// <summary>
-        /// A flat wall across the mouth, from the outside of the shell to a rectangle <see cref="ConnectionDefinition.PortalMargin"/>
-        /// wider and higher. Each shell point is joined to the point where the ray from the bottom centre through it
-        /// meets the rectangle; the two top corners close the gaps between the rays.
+        /// A frame around the mouth: from the outside of the shell to the same outline <see cref="ConnectionDefinition.PortalMargin"/>
+        /// wider and higher, so its top follows the vault. Its outer edge runs <see cref="FacadeDepth"/> back into the
+        /// slope, so seen from the side it is a slab and not a sheet.
         /// </summary>
-        private static void Facade(MeshData md, ConnectionDefinition d, RouteCurve curve, int s, Vector3 origin, Vector3 facing, float tiling)
+        private static void Facade(MeshData md, BuiltConnection conn, int s, Vector3 origin, Vector3 facing, float tiling)
         {
+            var d = conn.Definition;
+            var curve = conn.Curve;
             float m = d.PortalMargin;
             if (m <= 0f) return;
-            float w = HalfWidth(d), e = w + d.ShellThickness;
-            float half = e + m, top = d.CrownHeight + d.ShellThickness + m;
-            var shell = new List<Vector2> { new(e, SlabBottom), new(e, d.WallHeight) };
-            for (int i = 1; i < ArcSegments; i++)
-            {
-                float a = (float)i / ArcSegments * Mathf.PI;
-                shell.Add(new Vector2(e * Mathf.Cos(a), d.WallHeight + (d.CrownHeight + d.ShellThickness - d.WallHeight) * Mathf.Sin(a)));
-            }
-            shell.Add(new Vector2(-e, d.WallHeight));
-            shell.Add(new Vector2(-e, SlabBottom));
+            float e = HalfWidth(conn, s) + d.ShellThickness, rise = d.CrownHeight + d.ShellThickness - d.WallHeight;
+            var shell = Outline(e, d.WallHeight, rise);
+            var outer = Outline(e + m, d.WallHeight, rise + m);
 
-            var centre = new Vector2(0f, SlabBottom);
-            Vector2 OnRect(Vector2 p)
-            {
-                var dir = p - centre;
-                float t = float.MaxValue;
-                if (Mathf.Abs(dir.x) > 1e-4f) t = Mathf.Min(t, half / Mathf.Abs(dir.x));
-                if (dir.y > 1e-4f) t = Mathf.Min(t, (top - centre.y) / dir.y);
-                return centre + dir * t;
-            }
-            // 0 right side, 1 top, 2 left side.
-            int Side(Vector2 q) => q.x >= half - 1e-3f ? 0 : q.x <= -half + 1e-3f ? 2 : 1;
-
-            Vector3 c = curve.Points[s] - origin, r = curve.Right(s);
+            Vector3 c = curve.Points[s] - origin, r = curve.Right(s), back = -facing * FacadeDepth;
             Vector3 W(Vector2 p) => c + r * p.x + Vector3.up * p.y;
             for (int i = 0; i < shell.Count - 1; i++)
             {
-                Vector2 p0 = shell[i], p1 = shell[i + 1], q0 = OnRect(p0), q1 = OnRect(p1);
-                int s0 = Side(q0), s1 = Side(q1);
-                if (s0 == s1)
-                {
-                    Quad(md, W(p0), W(p1), W(q1), W(q0), facing, tiling, r, SubWall);
-                    continue;
-                }
-                var corner = new Vector2(s0 == 0 || s1 == 0 ? half : -half, top);
-                Tri(md, W(p0), W(p1), W(corner), facing, tiling, r, SubWall);
-                Tri(md, W(p0), W(corner), W(q0), facing, tiling, r, SubWall);
-                Tri(md, W(p1), W(q1), W(corner), facing, tiling, r, SubWall);
+                Quad(md, W(shell[i]), W(shell[i + 1]), W(outer[i + 1]), W(outer[i]), facing, tiling, r, SubWall);
+                var mid = (outer[i] + outer[i + 1]) * 0.5f;
+                var outward = r * mid.x + Vector3.up * (mid.y - d.WallHeight);
+                Quad(md, W(outer[i]), W(outer[i + 1]), W(outer[i + 1]) + back, W(outer[i]) + back, outward, tiling, r, SubWall);
             }
         }
 
-        private static void Tri(MeshData md, Vector3 a, Vector3 b, Vector3 c, Vector3 facing, float tiling, Vector3 right, int sub)
+        private const float FacadeDepth = 1.5f;
+
+        /// <summary>Walls from the slab bottom up to <paramref name="wallHeight"/>, then a half ellipse over them, right to left.</summary>
+        private static List<Vector2> Outline(float halfWidth, float wallHeight, float rise)
         {
-            int i = md.Vertices.Count;
-            foreach (var p in new[] { a, b, c })
+            var pts = new List<Vector2> { new(halfWidth, SlabBottom), new(halfWidth, wallHeight) };
+            for (int i = 1; i < ArcSegments; i++)
             {
-                md.Vertices.Add(p);
-                md.Uvs.Add(new Vector2(Vector3.Dot(p, right) / tiling, p.y / tiling));
+                float a = (float)i / ArcSegments * Mathf.PI;
+                pts.Add(new Vector2(halfWidth * Mathf.Cos(a), wallHeight + rise * Mathf.Sin(a)));
             }
-            var tris = md.Tris[sub];
-            bool front = Vector3.Dot(Vector3.Cross(b - a, c - a), facing) > 0f;
-            if (front) { tris.Add(i); tris.Add(i + 1); tris.Add(i + 2); }
-            else { tris.Add(i); tris.Add(i + 2); tris.Add(i + 1); }
+            pts.Add(new Vector2(-halfWidth, wallHeight));
+            pts.Add(new Vector2(-halfWidth, SlabBottom));
+            return pts;
         }
 
         private static void Quad(MeshData md, Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 facing, float tiling, Vector3 right, int sub = SubShell)
@@ -420,11 +425,11 @@ namespace MapExpansions.Connections
         {
             if (range.to <= range.from) return;
             var curve = conn.Curve;
-            float w = HalfWidth(conn.Definition);
             float top = conn.Definition.WallHeight;
             void Add(float a, float c)
             {
                 if (c - a < 0.1f) return;
+                float w = Mathf.Max(HalfWidth(conn, curve.IndexAt(a)), HalfWidth(conn, curve.IndexAt(c)));
                 conn.Footprint.Add(OrientedBox.Along(curve.PointAt(a), curve.PointAt(c), w * 2f, -0.02f, top));
             }
             Add(Mathf.Max(0f, range.from - ApproachLength), range.from);
@@ -438,14 +443,14 @@ namespace MapExpansions.Connections
         {
             var def = conn.Definition;
             var curve = conn.Curve;
-            float w = HalfWidth(def);
             float top = style == RouteStyle.Tunnel ? def.CrownHeight : def.WallHeight;
-            float footprintWidth = style == RouteStyle.Tunnel ? w + def.ShellThickness * 0.6f : w;
             float footprintTop = style == RouteStyle.Tunnel ? def.CrownHeight + 0.5f : def.WallHeight;
             const int step = 4;
             for (int s = i0; s < i1; s += step)
             {
                 int e = Mathf.Min(i1, s + step);
+                float w = Mathf.Max(HalfWidth(conn, s), HalfWidth(conn, e));
+                float footprintWidth = style == RouteStyle.Tunnel ? w + def.ShellThickness * 0.6f : w;
                 Vector3 a = curve.Points[s], bb = curve.Points[e];
                 // Straight boxes along a bend leave a wedge between each other on the outer side, and the terrain in that
                 // wedge stands inside the tube; each box reaches a little into the next. Clearance and blocking boxes

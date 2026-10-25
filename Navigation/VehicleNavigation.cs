@@ -3,6 +3,7 @@ using HarmonyLib;
 using Il2CppInterop.Runtime;
 using Il2CppPathfinding;
 using Il2CppScheduleOne.Vehicles.AI;
+using MapExpansions.Connections;
 using MapExpansions.Lifecycle;
 using MelonLoader;
 using UnityEngine;
@@ -122,10 +123,11 @@ namespace MapExpansions.Navigation
                 var corridorGraph = AddRecast(a, src, $"MapExpansions {b.Id} Corridor Graph", cb, full: false);
                 if (corridorGraph != null)
                 {
+                    corridorGraph.characterRadius = Mathf.Min(src.characterRadius, CorridorRadius);
                     _corridorGraph = IndexOf(a, corridorGraph);
                     Scan(a, corridorGraph, "corridor", b, false);
                     Core.Log.Msg($"vehicle nav: '{b.Id}' corridor graph {_corridorGraph} over {cb.min}..{cb.max} scanned in {sw.ElapsedMilliseconds} ms, " +
-                                 $"{corridorGraph.CountNodes()} nodes");
+                                 $"{corridorGraph.CountNodes()} nodes, cell {corridorGraph.cellSize:0.##} m, radius {corridorGraph.characterRadius:0.##} m");
                 }
                 yield return null;
             }
@@ -152,7 +154,7 @@ namespace MapExpansions.Navigation
             foreach (var conn in b.Connections)
             {
                 var curve = conn.Curve;
-                float hw = conn.Definition.RoadWidth * 0.5f;
+                float hw = conn.Curve.MaxRoadWidth * 0.5f;
                 var range = conn.BuiltRange;
                 // A connection that starts on the main world's own road reaches the corridor over the road graph.
                 int approach = _roadGraph >= 0 && range.to > range.from && range.from > 0f ? _roadGraph : _areaGraph;
@@ -202,6 +204,13 @@ namespace MapExpansions.Navigation
             if (r == null) Core.Log.Warning($"vehicle nav: '{b.Id}' has no VehicleArea and no terrains; the area graph covers the connections only");
             return r ?? new Rect(b.Frame.Offset.x, b.Frame.Offset.z, 0f, 0f);
         }
+
+        /// <summary>
+        /// The vanilla vehicle graph keeps 2.75 m from every edge. A tunnel carriageway between the wall's walkway and
+        /// the median is about 6.5 m wide, which leaves one metre of graph, and nothing where the bend narrows it.
+        /// Half a car's width plus a margin keeps the lanes in the graph.
+        /// </summary>
+        private const float CorridorRadius = 1.5f;
 
         private static RecastGraph AddRecast(AstarPath a, RecastGraph src, string name, Bounds bounds, bool full)
         {
@@ -353,25 +362,40 @@ namespace MapExpansions.Navigation
         /// The scan keeps a vehicle's radius away from every edge, and two colliders that meet flush, such as a ramp and
         /// the deck it runs onto, each get that edge. Along the main world's stretch of a connection, every gap in the
         /// road graph's cover of the route is joined across, where the surface under the route runs on without a step.
+        /// Each lane line is checked on its own, and the centre line only where no median runs along it.
         /// </summary>
         private void BridgeGaps(AstarPath a, BuiltConnection conn)
         {
+            foreach (int side in new[] { -1, 0, 1 })
+                BridgeGaps(a, conn, side);
+        }
+
+        private void BridgeGaps(AstarPath a, BuiltConnection conn, int side)
+        {
             var curve = conn.Curve;
             float until = conn.BuiltRange.from;
+            string line = side == 0 ? "centre" : side < 0 ? "left lane" : "right lane";
             int lastCovered = -1;
             bool inGap = false;
+            Vector3 At(int i) => curve.Points[i] + curve.Right(i) * (side * LaneOffset(curve, i));
             for (int i = 0; i < curve.Count && curve.Distance[i] <= until; i++)
             {
-                if (!Covers(a, _roadGraph, curve.Points[i], out _))
+                if (side == 0 && curve.MedianWidth[i] > 0f)
+                {
+                    lastCovered = -1;
+                    inGap = false;
+                    continue;
+                }
+                if (!Covers(a, _roadGraph, At(i), out _))
                 {
                     inGap = true;
                     continue;
                 }
                 if (inGap && lastCovered >= 0)
                 {
-                    Vector3 from = curve.Points[lastCovered], to = curve.Points[i];
+                    Vector3 from = At(lastCovered), to = At(i);
                     float length = curve.Distance[i] - curve.Distance[lastCovered];
-                    string what = $"{conn.Name} gap {curve.Distance[lastCovered]:0}..{curve.Distance[i]:0} m";
+                    string what = $"{conn.Name} {line} gap {curve.Distance[lastCovered]:0}..{curve.Distance[i]:0} m";
                     if (length > MaxBridge)
                         Core.Log.Warning($"vehicle nav: '{_id}' {what} is {length:0} m long, more than {MaxBridge:0} m; not bridged");
                     else if (!Continuous(from, to, out string why))
@@ -549,6 +573,7 @@ namespace MapExpansions.Navigation
             // a lane each way, and its main-world end joins every lane nearby, so a vehicle turns onto it from either
             // direction instead of driving round a block to reach the one nearest node.
             var mainEnds = new List<(int Into, int OutOf, Vector3 At)>();
+            int offRoad = 0;
             foreach (var conn in b.Connections)
             {
                 var curve = conn.Curve;
@@ -557,14 +582,16 @@ namespace MapExpansions.Navigation
                 for (int i = 0; i <= steps; i++)
                 {
                     float d = curve.Length * i / steps;
-                    points.Add(curve.PointAt(d) + curve.Right(curve.IndexAt(d)) * RoadLaneOffset + Vector3.up * 0.3f);
+                    int k = curve.IndexAt(d);
+                    points.Add(OnRoad(curve.PointAt(d) + curve.Right(k) * LaneOffset(curve, k), ref offRoad));
                     if (i > 0) edges.Add((points.Count - 2, points.Count - 1, true));
                 }
                 int back = points.Count;
                 for (int i = 0; i <= steps; i++)
                 {
                     float d = curve.Length * (steps - i) / steps;
-                    points.Add(curve.PointAt(d) - curve.Right(curve.IndexAt(d)) * RoadLaneOffset + Vector3.up * 0.3f);
+                    int k = curve.IndexAt(d);
+                    points.Add(OnRoad(curve.PointAt(d) - curve.Right(k) * LaneOffset(curve, k), ref offRoad));
                     if (i > 0) edges.Add((points.Count - 2, points.Count - 1, true));
                 }
                 int thereEnd = back - 1, backEnd = points.Count - 1;
@@ -577,6 +604,7 @@ namespace MapExpansions.Navigation
                 else Core.Log.Warning($"vehicle nav: '{b.Id}' {conn.Name} ends with no source road node to join");
                 mainEnds.Add((there, backEnd, curve.Points[0]));
             }
+            if (offRoad > 0) Core.Log.Warning($"vehicle nav: '{b.Id}' {offRoad} lane nodes found no road under them and keep the route's height");
 
             // A vanilla link can run tens of metres past the junction with no node near it; the lanes join the links
             // that pass, from the link's start into the expansion and out of it to the link's end.
@@ -708,7 +736,43 @@ namespace MapExpansions.Navigation
         }
 
         private const float RoadLinkStep = 10f;
-        private const float RoadLaneOffset = 2f;
+
+        /// <summary>
+        /// Distance from the route to the lane the graph uses at sample k: the outer lane of each carriageway, as traffic
+        /// keeps right. A carriageway holds its width over <see cref="LaneWidth"/> lanes, rounded, at least one.
+        /// </summary>
+        private static float LaneOffset(RouteCurve curve, int k)
+        {
+            float median = curve.MedianWidth[k], carriageway = (curve.RoadWidth[k] - median) * 0.5f;
+            int lanes = Mathf.Max(1, Mathf.RoundToInt(carriageway / LaneWidth));
+            return median * 0.5f + carriageway - carriageway / lanes * 0.5f;
+        }
+
+        private const float LaneWidth = 3.5f;
+
+        /// <summary>Height of a lane node over the road, as the vanilla road nodes lie.</summary>
+        private const float RoadNodeHeight = 0.05f;
+
+        /// <summary>
+        /// The point moved onto the road under it. Kinematic driving follows the path by its closest point to the car's
+        /// underside; a path that floats over a slope pulls that point back down the slope by more than the car moves on
+        /// in a step, and the car stands still.
+        /// </summary>
+        private static Vector3 OnRoad(Vector3 p, ref int missed)
+        {
+            int mask = LayerMask.GetMask("Default", "Terrain");
+            float best = float.MaxValue;
+            Vector3? ground = null;
+            foreach (var h in Physics.RaycastAll(p + Vector3.up * 2.5f, Vector3.down, 6f, mask, QueryTriggerInteraction.Ignore))
+            {
+                if (h.distance >= best) continue;
+                best = h.distance;
+                ground = h.point;
+            }
+            if (ground.HasValue) return ground.Value + Vector3.up * RoadNodeHeight;
+            missed++;
+            return p + Vector3.up * 0.3f;
+        }
         private const float MainJoinRadius = 10f;
         private readonly List<NodeLink> _links = new();
         private GameObject _linkRoot;

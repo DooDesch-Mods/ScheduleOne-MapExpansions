@@ -31,6 +31,8 @@ namespace MapExpansions.Connections
         public static void Clear()
         {
             Lower("teardown");
+            TunnelFog.Restore("teardown");
+            TunnelWeather.Restore("teardown");
             Boxes.Clear();
         }
 
@@ -41,6 +43,8 @@ namespace MapExpansions.Connections
             if (cam == null)
             {
                 if (_raised) Lower("no main camera");
+                TunnelFog.Apply(false, "no main camera");
+                TunnelWeather.Apply(false, "no main camera");
                 return;
             }
             var p = cam.transform.position;
@@ -48,6 +52,8 @@ namespace MapExpansions.Connections
             for (int i = 0; i < Boxes.Count && !inside; i++) inside = Boxes[i].Contains(p, Margin);
             if (inside) Raise();
             else if (_raised) Lower("camera left the tunnel");
+            TunnelFog.Apply(inside, "camera left the tunnel");
+            TunnelWeather.Apply(inside, "camera left the tunnel");
         }
 
         private static void Raise()
