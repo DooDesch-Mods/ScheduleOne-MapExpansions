@@ -45,12 +45,6 @@ namespace MapExpansions.World
 
         private static readonly List<Copy> Copies = new();
 
-        /// <summary>
-        /// The prefab slot of each property code. The prefab list outlives the main world; a reload puts the new
-        /// template into the old slot, so host and clients keep the same ids however often each of them loaded.
-        /// </summary>
-        private static readonly Dictionary<string, int> Slots = new();
-
         private static object _spawnRoutine;
 
         public static void Build(BuiltExpansion b)
@@ -155,10 +149,12 @@ namespace MapExpansions.World
             OpenObserver(d, go);
 
             var p = go.GetComponent<Property>();
+            float templatePrice = p.Price;
+            int templateCapacity = p.EmployeeCapacity;
             p.propertyName = d.Name;
             p.propertyCode = d.Code;
-            p.Price = d.Price;
-            p.EmployeeCapacity = d.EmployeeCapacity;
+            if (d.Price.HasValue) p.Price = d.Price.Value;
+            if (d.EmployeeCapacity.HasValue) p.EmployeeCapacity = d.EmployeeCapacity.Value;
             p.OwnedByDefault = false;
             p.IsOwnedVariable = string.Empty;
             p.AvailableInDemo = true;
@@ -176,8 +172,9 @@ namespace MapExpansions.World
             c.Poster = CopyPoster(d, src, templates, out c.PosterPosition, out c.PosterRotation);
             p.ListingPoster = c.Poster;
 
-            Core.Log.Msg($"properties: '{b.Id}' template '{d.Code}' from '{d.Template}': {guids} GUIDs replaced, {p.Grids?.Count ?? 0} grids, " +
-                         $"{p.LoadingDocks?.Length ?? 0} docks, {p.EmployeeIdlePoints?.Length ?? 0} idle points, stands at {c.Position}");
+            Core.Log.Msg($"properties: '{b.Id}' template '{d.Code}' from '{d.Template}' ({(p.TryCast<Business>() != null ? "business" : "property")}): " +
+                         $"{guids} GUIDs replaced, {p.Grids?.Count ?? 0} grids, {p.LoadingDocks?.Length ?? 0} docks, {p.EmployeeIdlePoints?.Length ?? 0} idle points, " +
+                         $"price {p.Price} (template {templatePrice}), {p.EmployeeCapacity} employees (template {templateCapacity}), stands at {c.Position}");
             return c;
         }
 
@@ -342,8 +339,8 @@ namespace MapExpansions.World
             Check("disposal area", p.DisposalArea != null ? p.DisposalArea.transform : null);
             if (p.EmployeeIdlePoints != null)
                 for (int i = 0; i < p.EmployeeIdlePoints.Length; i++) Check($"idle point {i}", p.EmployeeIdlePoints[i]);
-            if ((p.EmployeeIdlePoints?.Length ?? 0) < d.EmployeeCapacity)
-                Core.Log.Warning($"properties: '{d.Code}' has {p.EmployeeIdlePoints?.Length ?? 0} idle points for {d.EmployeeCapacity} employees");
+            if ((p.EmployeeIdlePoints?.Length ?? 0) < p.EmployeeCapacity)
+                Core.Log.Warning($"properties: '{d.Code}' has {p.EmployeeIdlePoints?.Length ?? 0} idle points for {p.EmployeeCapacity} employees");
         }
 
         /// <summary>
@@ -431,37 +428,8 @@ namespace MapExpansions.World
             return poster;
         }
 
-        private static bool Register(Copy c)
-        {
-            var nm = InstanceFinder.NetworkManager;
-            if (nm == null)
-            {
-                Core.Log.Error($"properties: no NetworkManager; '{c.Def.Code}' cannot be spawned");
-                return false;
-            }
-            var nob = c.Template.GetComponent<NetworkObject>();
-            var prefabs = nm.SpawnablePrefabs;
-            var single = prefabs.TryCast<SinglePrefabObjects>();
-            if (Slots.TryGetValue(c.Def.Code, out int slot) && single != null && slot < single._prefabs.Count)
-            {
-                single._prefabs[slot] = nob;
-                single.InitializePrefabRange(slot);
-                Core.Log.Msg($"properties: '{c.Def.Code}' takes its prefab slot {slot} again (id {nob.PrefabId})");
-                return true;
-            }
-            int before = prefabs.GetObjectCount();
-            prefabs.AddObject(nob, true);
-            int after = prefabs.GetObjectCount();
-            if (after != before + 1)
-            {
-                Core.Log.Error($"properties: registering '{c.Def.Code}' as a spawnable prefab left the list at {after} (was {before})");
-                return false;
-            }
-            Slots[c.Def.Code] = before;
-            if (single == null) Core.Log.Warning($"properties: the prefab list is a {prefabs.GetIl2CppType().Name}; a reload adds '{c.Def.Code}' again");
-            Core.Log.Msg($"properties: '{c.Def.Code}' registered as spawnable prefab {before} (id {nob.PrefabId})");
-            return true;
-        }
+        private static bool Register(Copy c) =>
+            SpawnablePrefabs.Register("property:" + c.Def.Code, c.Template.GetComponent<NetworkObject>(), "properties");
 
         /// <summary>
         /// The host starts its server after the scene is initialized and before the save loads. The copies are spawned
@@ -575,40 +543,15 @@ namespace MapExpansions.World
         /// </summary>
         private static void Fit(Copy c, Property p)
         {
-            var roots = new Dictionary<IntPtr, Transform>();
-            int batched = 0, own = 0;
-            foreach (var mr in p.GetComponentsInChildren<MeshRenderer>(true))
-            {
-                if (!mr.isPartOfStaticBatch) continue;
-                var orig = mr.staticBatchRootTransform;
-                if (orig != null && orig.IsChildOf(p.transform))
-                {
-                    own++;
-                    continue;
-                }
-                var key = orig == null ? IntPtr.Zero : orig.Pointer;
-                if (!roots.TryGetValue(key, out var root))
-                {
-                    var m = c.Move * (orig == null ? Matrix4x4.identity : orig.localToWorldMatrix);
-                    root = new GameObject($"{c.Def.Name} batch root {roots.Count}").transform;
-                    root.SetParent(p.transform, false);
-                    // Relative to the property the root is a proper frame, also when the property is mirrored.
-                    var local = p.transform.worldToLocalMatrix * m;
-                    root.localPosition = local.GetColumn(3);
-                    root.localRotation = local.rotation;
-                    root.localScale = local.lossyScale;
-                    roots[key] = root;
-                }
-                mr.staticBatchRootTransform = root;
-                batched++;
-            }
+            var (batched, roots, own) = StaticBatches.Follow(p.transform, c.Move, c.Def.Name);
+            Navigation.PropertyNavigation.Bake(c.Def.Code, p, c.Expansion.Root.transform);
             if (c.Poster != null)
             {
                 c.Poster.SetParent(null, false);
                 c.Poster.SetPositionAndRotation(c.PosterPosition, c.PosterRotation);
             }
             Core.Log.Msg($"properties: '{c.Def.Code}' in the world at {p.transform.position} ({(InstanceFinder.IsServer ? "host" : "client")}): " +
-                         $"{batched} batched renderers moved over {roots.Count} roots, {own} follow the property already" +
+                         $"{batched} batched renderers moved over {roots} roots, {own} follow the property already" +
                          (c.Poster != null ? $", listing at {c.PosterPosition}" : ""));
         }
 
@@ -682,7 +625,8 @@ namespace MapExpansions.World
             new("\"PropertyCode\"\\s*:\\s*\"([^\"]*)\"", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
         /// <summary>
-        /// A save deletes every property file the property manager did not list. A file whose property is not in the
+        /// A save deletes every property file the property manager did not list, and every business file the business
+        /// manager did not list. A file whose property is not in the
         /// world (its expansion failed to build, is switched off or its mod is not installed) is listed anyway, so
         /// ownership, employees and everything built there come back once the property does. Every property the game
         /// knows writes its own file, so a file with an unknown code can only come from a property that is missing.
@@ -690,48 +634,58 @@ namespace MapExpansions.World
         [HarmonyPatch(typeof(PropertyManager), nameof(PropertyManager.WriteData))]
         private static class KeepOrphanedSaves
         {
-            private static void Postfix(PropertyManager __instance, string parentFolderPath, Il2CppSystem.Collections.Generic.List<string> __result)
+            private static void Postfix(PropertyManager __instance, string parentFolderPath, Il2CppSystem.Collections.Generic.List<string> __result) =>
+                KeepOrphans("property", __instance.SaveFolderName, parentFolderPath, __result);
+        }
+
+        [HarmonyPatch(typeof(BusinessManager), nameof(BusinessManager.WriteData))]
+        private static class KeepOrphanedBusinessSaves
+        {
+            private static void Postfix(BusinessManager __instance, string parentFolderPath, Il2CppSystem.Collections.Generic.List<string> __result) =>
+                KeepOrphans("business", __instance.SaveFolderName, parentFolderPath, __result);
+        }
+
+        private static void KeepOrphans(string kind, string saveFolderName, string parentFolderPath, Il2CppSystem.Collections.Generic.List<string> __result)
+        {
+            try
             {
-                try
+                if (__result == null)
                 {
-                    if (__result == null)
+                    Core.Log.Warning($"properties: the {kind} manager listed no files; orphaned expansion {kind} saves are not protected");
+                    return;
+                }
+                var known = new HashSet<string>();
+                var all = Property.Properties;
+                for (int i = 0; all != null && i < all.Count; i++)
+                    if (all[i] != null) known.Add(all[i].PropertyCode);
+                var businesses = Business.Businesses;
+                for (int i = 0; businesses != null && i < businesses.Count; i++)
+                    if (businesses[i] != null) known.Add(businesses[i].PropertyCode);
+                var folder = System.IO.Path.Combine(parentFolderPath, saveFolderName);
+                if (!System.IO.Directory.Exists(folder)) return;
+                foreach (var file in System.IO.Directory.GetFiles(folder, "*.json"))
+                {
+                    string text;
+                    try
                     {
-                        Core.Log.Warning("properties: the property manager listed no files; orphaned expansion properties are not protected");
-                        return;
+                        text = System.IO.File.ReadAllText(file);
                     }
-                    var known = new HashSet<string>();
-                    var all = Property.Properties;
-                    for (int i = 0; all != null && i < all.Count; i++)
-                        if (all[i] != null) known.Add(all[i].PropertyCode);
-                    var businesses = Business.Businesses;
-                    for (int i = 0; businesses != null && i < businesses.Count; i++)
-                        if (businesses[i] != null) known.Add(businesses[i].PropertyCode);
-                    var folder = System.IO.Path.Combine(parentFolderPath, __instance.SaveFolderName);
-                    if (!System.IO.Directory.Exists(folder)) return;
-                    foreach (var file in System.IO.Directory.GetFiles(folder, "*.json"))
+                    catch (Exception e)
                     {
-                        string text;
-                        try
-                        {
-                            text = System.IO.File.ReadAllText(file);
-                        }
-                        catch (Exception e)
-                        {
-                            Core.Log.Warning($"properties: could not read '{file}' to check it before the save; it is kept: {e.Message}");
-                            __result.Add(System.IO.Path.GetFileName(file));
-                            continue;
-                        }
-                        var m = SavedCode.Match(text);
-                        if (!m.Success || known.Contains(m.Groups[1].Value)) continue;
-                        string code = m.Groups[1].Value;
+                        Core.Log.Warning($"properties: could not read '{file}' to check it before the save; it is kept: {e.Message}");
                         __result.Add(System.IO.Path.GetFileName(file));
-                        Core.Log.Warning($"properties: '{code}' is not in the world; its saved state '{System.IO.Path.GetFileName(file)}' is kept unchanged");
+                        continue;
                     }
+                    var m = SavedCode.Match(text);
+                    if (!m.Success || known.Contains(m.Groups[1].Value)) continue;
+                    string code = m.Groups[1].Value;
+                    __result.Add(System.IO.Path.GetFileName(file));
+                    Core.Log.Warning($"properties: '{code}' is not in the world; its saved state '{System.IO.Path.GetFileName(file)}' is kept unchanged");
                 }
-                catch (Exception e)
-                {
-                    Core.Log.Error($"properties: checking for orphaned expansion properties failed; the save may delete them: {e}");
-                }
+            }
+            catch (Exception e)
+            {
+                Core.Log.Error($"properties: checking for orphaned expansion {kind} saves failed; the save may delete them: {e}");
             }
         }
 
