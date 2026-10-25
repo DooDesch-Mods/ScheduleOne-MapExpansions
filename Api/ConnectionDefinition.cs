@@ -196,10 +196,10 @@ namespace MapExpansions
         public WingWalls EndWingWalls { get; set; }
 
         /// <summary>
-        /// Metres of tunnel behind the route's first portal that lie under a rock mantle, as wide and high as the
-        /// facade, with flanks that fall into the ground at 45°. For a tunnel that leaves its hill before the portal:
-        /// seen from the side, its last metres lie in rock instead of standing free. The mantle should end inside the
-        /// hill. 0 builds none.
+        /// Metres of tunnel behind the route's first portal that lie under a rock mantle on upright sides. At its far
+        /// end it is as wide and high as the facade, and it narrows to the portal's frame. For a tunnel that leaves its
+        /// hill before the portal: seen from the side, its last metres lie in rock instead of standing free. The mantle
+        /// should end inside the hill. 0 builds none.
         /// </summary>
         public float StartCover { get; set; }
 

@@ -275,11 +275,10 @@ namespace MapExpansions.Connections
 
         /// <summary>
         /// The rock mantle over the tunnel behind the portal at route distance <paramref name="at"/>, over
-        /// <paramref name="length"/> metres into the tunnel: a vault over the shell with flanks from its foot down to
-        /// <see cref="WingDepth"/> under the road at 45°, swept along the route. At the portal it lies just inside the
-        /// facade's outline and grows to <see cref="ConnectionDefinition.PortalMargin"/> at its far end, so it runs out
-        /// onto the facade. At the portal the facade closes it and the flanks get a face of their own a few centimetres
-        /// behind the facade; the far end is closed against the shell.
+        /// <paramref name="length"/> metres into the tunnel: a vault over the shell on upright sides down to
+        /// <see cref="WingDepth"/> under the road, swept along the route. At the portal it lies just inside the facade's
+        /// outline and grows to <see cref="ConnectionDefinition.PortalMargin"/> at its far end, so it runs out onto the
+        /// facade. Both ends are closed against the shell, the one at the portal a few centimetres behind the facade.
         /// </summary>
         private static bool Cover(BuiltExpansion b, BuiltConnection conn, float at, float length, bool atStart, Materials mats, int layer)
         {
@@ -316,9 +315,8 @@ namespace MapExpansions.Connections
             for (int k = 0; k < profiles[0].Count; k++) Sweep(md, curve, profiles, k, i0, i1, origin, mats.Shell.Tiling);
 
             Vector3 outward = atStart ? -curve.Forward(portal) : curve.Forward(portal);
-            CoverFlanks(md, conn, portal, M(portal), origin, outward, -outward * 0.05f, mats.Shell.Tiling);
-            CoverFlanks(md, conn, back, M(back), origin, -outward, Vector3.zero, mats.Shell.Tiling);
-            CoverEnd(md, conn, back, M(back), origin, -outward, mats.Shell.Tiling);
+            CoverEnd(md, conn, portal, M(portal), origin, outward, -outward * 0.05f, mats.Shell.Tiling);
+            CoverEnd(md, conn, back, M(back), origin, -outward, Vector3.zero, mats.Shell.Tiling);
 
             AttachMesh(b, go, md, mats);
             Core.Log.Msg($"tunnel: '{b.Id}' {conn.Name}: rock mantle at the {end} portal over {Mathf.Abs(curve.Distance[i1] - curve.Distance[i0]):0.#} m " +
@@ -326,50 +324,44 @@ namespace MapExpansions.Connections
             return true;
         }
 
-        /// <summary>Half width and rise of a rock mantle's vault <paramref name="m"/> metres over the shell at sample s, and the half width of its flanks' foot.</summary>
-        private static (float x, float rise, float foot) CoverSize(BuiltConnection conn, int s, float m)
+        /// <summary>Half width and rise of a rock mantle's vault <paramref name="m"/> metres over the shell at sample s.</summary>
+        private static (float x, float rise) CoverSize(BuiltConnection conn, int s, float m)
         {
             var d = conn.Definition;
-            float x = HalfWidth(conn, s) + d.ShellThickness + m;
-            return (x, d.CrownHeight + d.ShellThickness - d.WallHeight + m, x + d.WallHeight + WingDepth);
+            return (HalfWidth(conn, s) + d.ShellThickness + m, d.CrownHeight + d.ShellThickness - d.WallHeight + m);
         }
 
         /// <summary>
-        /// The mantle's cross-section from the left flank's foot over the vault to the right one's, facing out. Flanks and
-        /// vault are runs of their own, so the edge between them keeps its own normals and is not shaded round.
+        /// The mantle's cross-section from the foot of its left side over the vault to the foot of its right one, facing
+        /// out. Sides and vault are runs of their own, so the edge between them keeps its own normals and is not shaded round.
         /// </summary>
         private static List<Run> CoverRuns(BuiltConnection conn, int s, float m)
         {
-            var (x, rise, foot) = CoverSize(conn, s, m);
+            var (x, rise) = CoverSize(conn, s, m);
             float h = conn.Definition.WallHeight;
             return new List<Run>
             {
-                new(SubShell, new Vector2(-foot, -WingDepth), new Vector2(-x, h)),
+                new(SubShell, new Vector2(-x, -WingDepth), new Vector2(-x, h)),
                 Arc(SubShell, x, h, rise, false),
-                new(SubShell, new Vector2(x, h), new Vector2(foot, -WingDepth)),
+                new(SubShell, new Vector2(x, h), new Vector2(x, -WingDepth)),
             };
         }
 
-        /// <summary>The faces of both flanks across the route at sample s, moved by <paramref name="shift"/>.</summary>
-        private static void CoverFlanks(MeshData md, BuiltConnection conn, int s, float m, Vector3 origin, Vector3 facing, Vector3 shift, float tiling)
-        {
-            var (x, _, foot) = CoverSize(conn, s, m);
-            float h = conn.Definition.WallHeight;
-            Vector3 c = conn.Curve.Points[s] - origin + shift, r = conn.Curve.Right(s);
-            Vector3 W(float px, float py) => c + r * px + Vector3.up * py;
-            foreach (float sign in new[] { -1f, 1f })
-                Quad(md, W(sign * x, h), W(sign * foot, -WingDepth), W(sign * x, -WingDepth), W(sign * x, -WingDepth), facing, tiling, r);
-        }
-
-        /// <summary>Closes the mantle's vault against the outside of the shell at sample s.</summary>
-        private static void CoverEnd(MeshData md, BuiltConnection conn, int s, float m, Vector3 origin, Vector3 facing, float tiling)
+        /// <summary>Closes the mantle against the outside of the shell at sample s, moved by <paramref name="shift"/>.</summary>
+        private static void CoverEnd(MeshData md, BuiltConnection conn, int s, float m, Vector3 origin, Vector3 facing, Vector3 shift, float tiling)
         {
             var d = conn.Definition;
-            var (x, rise, _) = CoverSize(conn, s, m);
+            var (x, rise) = CoverSize(conn, s, m);
             float e = HalfWidth(conn, s) + d.ShellThickness;
             var shell = Outline(e, d.WallHeight, d.CrownHeight + d.ShellThickness - d.WallHeight);
             var outer = Outline(x, d.WallHeight, rise);
-            Vector3 c = conn.Curve.Points[s] - origin, r = conn.Curve.Right(s);
+            // The sides reach as deep as the mantle's, not only to the slab.
+            foreach (var pts in new[] { shell, outer })
+            {
+                pts[0] = new Vector2(pts[0].x, -WingDepth);
+                pts[pts.Count - 1] = new Vector2(pts[pts.Count - 1].x, -WingDepth);
+            }
+            Vector3 c = conn.Curve.Points[s] - origin + shift, r = conn.Curve.Right(s);
             Vector3 W(Vector2 p) => c + r * p.x + Vector3.up * p.y;
             for (int i = 0; i < shell.Count - 1; i++)
                 Quad(md, W(shell[i]), W(shell[i + 1]), W(outer[i + 1]), W(outer[i]), facing, tiling, r);
