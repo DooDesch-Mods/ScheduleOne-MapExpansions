@@ -97,11 +97,18 @@ namespace MapExpansions.Connections
                     start = end;
                 }
             }
+            var tunnels = stretches.Where(s => s.style == RouteStyle.Tunnel && s.to - s.from >= 0.1f).ToList();
+            int covers = 0;
+            if (tunnels.Count > 0)
+            {
+                if (Cover(b, conn, tunnels[0].from, def.StartCover, true, mats, layer)) covers++;
+                if (Cover(b, conn, tunnels[tunnels.Count - 1].to, def.EndCover, false, mats, layer)) covers++;
+            }
             var range = conn.BuiltRange;
             AddApproach(conn, range);
             Core.Log.Msg($"tunnel: '{b.Id}' {conn.Name}: route {curve.Length:0} m, {curve.Count} samples, " +
                          $"{string.Join(", ", stretches.Select(s => $"{s.style} {s.from:0}..{s.to:0}"))}; built {range.from:0}..{range.to:0} m in {chunks} chunks, " +
-                         $"{lights} lamps, {conn.Interior.Count} clearance boxes, layer {LayerMask.LayerToName(layer)}, {sw.ElapsedMilliseconds} ms");
+                         $"{lights} lamps, {covers} rock mantles, {conn.Interior.Count} clearance boxes, layer {LayerMask.LayerToName(layer)}, {sw.ElapsedMilliseconds} ms");
             return conn;
         }
 
@@ -238,7 +245,13 @@ namespace MapExpansions.Connections
             }
             if (openFirst) EndCap(md, conn, style, i0, origin, -curve.Forward(i0), mats);
             if (openLast) EndCap(md, conn, style, i1, origin, curve.Forward(i1), mats);
+            AttachMesh(b, go, md, mats);
+            return go;
+        }
 
+        /// <summary>Gives <paramref name="go"/> the mesh of <paramref name="md"/> with the four materials and a mesh collider on it.</summary>
+        private static void AttachMesh(BuiltExpansion b, GameObject go, MeshData md, Materials mats)
+        {
             var mesh = b.Own(new Mesh { name = go.name });
             if (md.Vertices.Count > 65535) mesh.indexFormat = IndexFormat.UInt32;
             mesh.SetVertices(ToIl2Cpp(md.Vertices));
@@ -255,7 +268,106 @@ namespace MapExpansions.Connections
             mr.shadowCastingMode = ShadowCastingMode.On;
             var mc = go.AddComponent<MeshCollider>();
             mc.sharedMesh = mesh;
-            return go;
+        }
+
+        /// <summary>Metres by which a rock mantle stays inside the facade's outline, so the facade's edge stands proud of the rock.</summary>
+        private const float CoverInset = 0.3f;
+
+        /// <summary>
+        /// The rock mantle over the tunnel behind the portal at route distance <paramref name="at"/>, over
+        /// <paramref name="length"/> metres into the tunnel: the facade's outline, a little inside it, swept along the
+        /// route, with flanks from the foot of the vault down to <see cref="WingDepth"/> under the road at 45°. At the
+        /// portal the facade closes it and the flanks get a face of their own a few centimetres behind the facade; the
+        /// far end is closed against the shell.
+        /// </summary>
+        private static bool Cover(BuiltExpansion b, BuiltConnection conn, float at, float length, bool atStart, Materials mats, int layer)
+        {
+            if (length <= 0f) return false;
+            var d = conn.Definition;
+            var curve = conn.Curve;
+            string end = atStart ? "start" : "end";
+            if (d.PortalMargin <= CoverInset)
+            {
+                Core.Log.Warning($"tunnel: {conn.Name}: rock mantle at the {end} portal left out; it follows the facade, and PortalMargin {d.PortalMargin:0.##} m builds none");
+                return false;
+            }
+            float far = atStart ? Mathf.Min(curve.Length, at + length) : Mathf.Max(0f, at - length);
+            int portal = curve.IndexAt(at), back = curve.IndexAt(far);
+            int i0 = Mathf.Min(portal, back), i1 = Mathf.Max(portal, back);
+            if (i1 <= i0)
+            {
+                Core.Log.Warning($"tunnel: {conn.Name}: rock mantle at the {end} portal left out; {length:0.##} m cover no sample of the route");
+                return false;
+            }
+
+            var go = new GameObject($"{conn.Root.name}.Cover.{end}") { layer = layer };
+            go.transform.SetParent(conn.Root.transform, false);
+            Vector3 origin = curve.Points[i0];
+            go.transform.position = origin;
+
+            var md = new MeshData();
+            var profiles = new List<List<Run>>(i1 - i0 + 1);
+            for (int s = i0; s <= i1; s++) profiles.Add(CoverRuns(conn, s));
+            for (int k = 0; k < profiles[0].Count; k++) Sweep(md, curve, profiles, k, i0, i1, origin, mats.Shell.Tiling);
+
+            Vector3 outward = atStart ? -curve.Forward(portal) : curve.Forward(portal);
+            CoverFlanks(md, conn, portal, origin, outward, -outward * 0.05f, mats.Shell.Tiling);
+            CoverFlanks(md, conn, back, origin, -outward, Vector3.zero, mats.Shell.Tiling);
+            CoverEnd(md, conn, back, origin, -outward, mats.Shell.Tiling);
+
+            AttachMesh(b, go, md, mats);
+            Core.Log.Msg($"tunnel: '{b.Id}' {conn.Name}: rock mantle at the {end} portal over {Mathf.Abs(curve.Distance[i1] - curve.Distance[i0]):0.#} m " +
+                         $"({curve.Distance[i0]:0}..{curve.Distance[i1]:0} m)");
+            return true;
+        }
+
+        /// <summary>Half width and rise of a rock mantle's vault at sample s, and the half width of its flanks' foot.</summary>
+        private static (float x, float rise, float foot) CoverSize(BuiltConnection conn, int s)
+        {
+            var d = conn.Definition;
+            float m = d.PortalMargin - CoverInset, x = HalfWidth(conn, s) + d.ShellThickness + m;
+            return (x, d.CrownHeight + d.ShellThickness - d.WallHeight + m, x + d.WallHeight + WingDepth);
+        }
+
+        /// <summary>
+        /// The mantle's cross-section from the left flank's foot over the vault to the right one's, facing out. Flanks and
+        /// vault are runs of their own, so the edge between them keeps its own normals and is not shaded round.
+        /// </summary>
+        private static List<Run> CoverRuns(BuiltConnection conn, int s)
+        {
+            var (x, rise, foot) = CoverSize(conn, s);
+            float h = conn.Definition.WallHeight;
+            return new List<Run>
+            {
+                new(SubShell, new Vector2(-foot, -WingDepth), new Vector2(-x, h)),
+                Arc(SubShell, x, h, rise, false),
+                new(SubShell, new Vector2(x, h), new Vector2(foot, -WingDepth)),
+            };
+        }
+
+        /// <summary>The faces of both flanks across the route at sample s, moved by <paramref name="shift"/>.</summary>
+        private static void CoverFlanks(MeshData md, BuiltConnection conn, int s, Vector3 origin, Vector3 facing, Vector3 shift, float tiling)
+        {
+            var (x, _, foot) = CoverSize(conn, s);
+            float h = conn.Definition.WallHeight;
+            Vector3 c = conn.Curve.Points[s] - origin + shift, r = conn.Curve.Right(s);
+            Vector3 W(float px, float py) => c + r * px + Vector3.up * py;
+            foreach (float sign in new[] { -1f, 1f })
+                Quad(md, W(sign * x, h), W(sign * foot, -WingDepth), W(sign * x, -WingDepth), W(sign * x, -WingDepth), facing, tiling, r);
+        }
+
+        /// <summary>Closes the mantle's vault against the outside of the shell at sample s.</summary>
+        private static void CoverEnd(MeshData md, BuiltConnection conn, int s, Vector3 origin, Vector3 facing, float tiling)
+        {
+            var d = conn.Definition;
+            var (x, rise, _) = CoverSize(conn, s);
+            float e = HalfWidth(conn, s) + d.ShellThickness;
+            var shell = Outline(e, d.WallHeight, d.CrownHeight + d.ShellThickness - d.WallHeight);
+            var outer = Outline(x, d.WallHeight, rise);
+            Vector3 c = conn.Curve.Points[s] - origin, r = conn.Curve.Right(s);
+            Vector3 W(Vector2 p) => c + r * p.x + Vector3.up * p.y;
+            for (int i = 0; i < shell.Count - 1; i++)
+                Quad(md, W(shell[i]), W(shell[i + 1]), W(outer[i + 1]), W(outer[i]), facing, tiling, r);
         }
 
         private static Il2CppSystem.Collections.Generic.List<Vector3> ToIl2Cpp(List<Vector3> src)

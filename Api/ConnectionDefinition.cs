@@ -187,6 +187,17 @@ namespace MapExpansions
         /// <summary>As <see cref="StartWingWalls"/>, at the portal at the end of the built range.</summary>
         public WingWalls EndWingWalls { get; set; }
 
+        /// <summary>
+        /// Metres of tunnel behind the route's first portal that lie under a rock mantle, as wide and high as the
+        /// facade, with flanks that fall into the ground at 45°. For a tunnel that leaves its hill before the portal:
+        /// seen from the side, its last metres lie in rock instead of standing free. The mantle should end inside the
+        /// hill. 0 builds none.
+        /// </summary>
+        public float StartCover { get; set; }
+
+        /// <summary>As <see cref="StartCover"/>, behind the route's last portal.</summary>
+        public float EndCover { get; set; }
+
         public ConnectionDefinition Add(PathPoint point, RouteStyle style)
         {
             Route.Add(new RoutePoint(point, style));
