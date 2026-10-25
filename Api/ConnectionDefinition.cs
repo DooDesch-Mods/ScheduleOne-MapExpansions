@@ -133,6 +133,14 @@ namespace MapExpansions
         /// </summary>
         public float PortalMargin { get; set; } = 4f;
 
+        /// <summary>
+        /// <see cref="PortalMargin"/> at the route's first portal only, for a portal whose surroundings already close the
+        /// slope, such as a rock mantle. Unset uses <see cref="PortalMargin"/>.
+        /// </summary>
+        public float? StartPortalMargin { get; set; }
+        /// <summary>As <see cref="StartPortalMargin"/>, at the route's last portal.</summary>
+        public float? EndPortalMargin { get; set; }
+
         /// <summary>Metres between two tunnel lights.</summary>
         public float LightSpacing { get; set; } = 16f;
 

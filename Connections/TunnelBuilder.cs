@@ -233,12 +233,12 @@ namespace MapExpansions.Connections
                 if (first)
                 {
                     Ring(md, conn, i0, origin, -curve.Forward(i0), mats.Shell.Tiling);
-                    Facade(md, conn, i0, origin, -curve.Forward(i0), mats.Wall.Tiling);
+                    Facade(md, conn, i0, origin, -curve.Forward(i0), mats.Wall.Tiling, true);
                 }
                 if (last)
                 {
                     Ring(md, conn, i1, origin, curve.Forward(i1), mats.Shell.Tiling);
-                    Facade(md, conn, i1, origin, curve.Forward(i1), mats.Wall.Tiling);
+                    Facade(md, conn, i1, origin, curve.Forward(i1), mats.Wall.Tiling, false);
                 }
                 if (openFirst) WingWall(md, conn, i0, origin, def.StartWingWalls, true, mats.Wall.Tiling);
                 if (openLast) WingWall(md, conn, i1, origin, def.EndWingWalls, false, mats.Wall.Tiling);
@@ -275,10 +275,11 @@ namespace MapExpansions.Connections
 
         /// <summary>
         /// The rock mantle over the tunnel behind the portal at route distance <paramref name="at"/>, over
-        /// <paramref name="length"/> metres into the tunnel: the facade's outline, a little inside it, swept along the
-        /// route, with flanks from the foot of the vault down to <see cref="WingDepth"/> under the road at 45°. At the
-        /// portal the facade closes it and the flanks get a face of their own a few centimetres behind the facade; the
-        /// far end is closed against the shell.
+        /// <paramref name="length"/> metres into the tunnel: a vault over the shell with flanks from its foot down to
+        /// <see cref="WingDepth"/> under the road at 45°, swept along the route. At the portal it lies just inside the
+        /// facade's outline and grows to <see cref="ConnectionDefinition.PortalMargin"/> at its far end, so it runs out
+        /// onto the facade. At the portal the facade closes it and the flanks get a face of their own a few centimetres
+        /// behind the facade; the far end is closed against the shell.
         /// </summary>
         private static bool Cover(BuiltExpansion b, BuiltConnection conn, float at, float length, bool atStart, Materials mats, int layer)
         {
@@ -286,11 +287,13 @@ namespace MapExpansions.Connections
             var d = conn.Definition;
             var curve = conn.Curve;
             string end = atStart ? "start" : "end";
-            if (d.PortalMargin <= CoverInset)
+            float near = Margin(d, atStart) - CoverInset;
+            if (near <= 0f)
             {
-                Core.Log.Warning($"tunnel: {conn.Name}: rock mantle at the {end} portal left out; it follows the facade, and PortalMargin {d.PortalMargin:0.##} m builds none");
+                Core.Log.Warning($"tunnel: {conn.Name}: rock mantle at the {end} portal left out; it starts on the facade, and a portal margin of {Margin(d, atStart):0.##} m builds none");
                 return false;
             }
+            float farMargin = Mathf.Max(near, d.PortalMargin - CoverInset);
             float far = atStart ? Mathf.Min(curve.Length, at + length) : Mathf.Max(0f, at - length);
             int portal = curve.IndexAt(at), back = curve.IndexAt(far);
             int i0 = Mathf.Min(portal, back), i1 = Mathf.Max(portal, back);
@@ -299,6 +302,8 @@ namespace MapExpansions.Connections
                 Core.Log.Warning($"tunnel: {conn.Name}: rock mantle at the {end} portal left out; {length:0.##} m cover no sample of the route");
                 return false;
             }
+            float span = Mathf.Max(0.01f, Mathf.Abs(curve.Distance[back] - curve.Distance[portal]));
+            float M(int s) => Mathf.Lerp(near, farMargin, Mathf.Abs(curve.Distance[s] - curve.Distance[portal]) / span);
 
             var go = new GameObject($"{conn.Root.name}.Cover.{end}") { layer = layer };
             go.transform.SetParent(conn.Root.transform, false);
@@ -307,25 +312,25 @@ namespace MapExpansions.Connections
 
             var md = new MeshData();
             var profiles = new List<List<Run>>(i1 - i0 + 1);
-            for (int s = i0; s <= i1; s++) profiles.Add(CoverRuns(conn, s));
+            for (int s = i0; s <= i1; s++) profiles.Add(CoverRuns(conn, s, M(s)));
             for (int k = 0; k < profiles[0].Count; k++) Sweep(md, curve, profiles, k, i0, i1, origin, mats.Shell.Tiling);
 
             Vector3 outward = atStart ? -curve.Forward(portal) : curve.Forward(portal);
-            CoverFlanks(md, conn, portal, origin, outward, -outward * 0.05f, mats.Shell.Tiling);
-            CoverFlanks(md, conn, back, origin, -outward, Vector3.zero, mats.Shell.Tiling);
-            CoverEnd(md, conn, back, origin, -outward, mats.Shell.Tiling);
+            CoverFlanks(md, conn, portal, M(portal), origin, outward, -outward * 0.05f, mats.Shell.Tiling);
+            CoverFlanks(md, conn, back, M(back), origin, -outward, Vector3.zero, mats.Shell.Tiling);
+            CoverEnd(md, conn, back, M(back), origin, -outward, mats.Shell.Tiling);
 
             AttachMesh(b, go, md, mats);
             Core.Log.Msg($"tunnel: '{b.Id}' {conn.Name}: rock mantle at the {end} portal over {Mathf.Abs(curve.Distance[i1] - curve.Distance[i0]):0.#} m " +
-                         $"({curve.Distance[i0]:0}..{curve.Distance[i1]:0} m)");
+                         $"({curve.Distance[i0]:0}..{curve.Distance[i1]:0} m), {near:0.#} m over the shell at the portal, {farMargin:0.#} m at its far end");
             return true;
         }
 
-        /// <summary>Half width and rise of a rock mantle's vault at sample s, and the half width of its flanks' foot.</summary>
-        private static (float x, float rise, float foot) CoverSize(BuiltConnection conn, int s)
+        /// <summary>Half width and rise of a rock mantle's vault <paramref name="m"/> metres over the shell at sample s, and the half width of its flanks' foot.</summary>
+        private static (float x, float rise, float foot) CoverSize(BuiltConnection conn, int s, float m)
         {
             var d = conn.Definition;
-            float m = d.PortalMargin - CoverInset, x = HalfWidth(conn, s) + d.ShellThickness + m;
+            float x = HalfWidth(conn, s) + d.ShellThickness + m;
             return (x, d.CrownHeight + d.ShellThickness - d.WallHeight + m, x + d.WallHeight + WingDepth);
         }
 
@@ -333,9 +338,9 @@ namespace MapExpansions.Connections
         /// The mantle's cross-section from the left flank's foot over the vault to the right one's, facing out. Flanks and
         /// vault are runs of their own, so the edge between them keeps its own normals and is not shaded round.
         /// </summary>
-        private static List<Run> CoverRuns(BuiltConnection conn, int s)
+        private static List<Run> CoverRuns(BuiltConnection conn, int s, float m)
         {
-            var (x, rise, foot) = CoverSize(conn, s);
+            var (x, rise, foot) = CoverSize(conn, s, m);
             float h = conn.Definition.WallHeight;
             return new List<Run>
             {
@@ -346,9 +351,9 @@ namespace MapExpansions.Connections
         }
 
         /// <summary>The faces of both flanks across the route at sample s, moved by <paramref name="shift"/>.</summary>
-        private static void CoverFlanks(MeshData md, BuiltConnection conn, int s, Vector3 origin, Vector3 facing, Vector3 shift, float tiling)
+        private static void CoverFlanks(MeshData md, BuiltConnection conn, int s, float m, Vector3 origin, Vector3 facing, Vector3 shift, float tiling)
         {
-            var (x, _, foot) = CoverSize(conn, s);
+            var (x, _, foot) = CoverSize(conn, s, m);
             float h = conn.Definition.WallHeight;
             Vector3 c = conn.Curve.Points[s] - origin + shift, r = conn.Curve.Right(s);
             Vector3 W(float px, float py) => c + r * px + Vector3.up * py;
@@ -357,10 +362,10 @@ namespace MapExpansions.Connections
         }
 
         /// <summary>Closes the mantle's vault against the outside of the shell at sample s.</summary>
-        private static void CoverEnd(MeshData md, BuiltConnection conn, int s, Vector3 origin, Vector3 facing, float tiling)
+        private static void CoverEnd(MeshData md, BuiltConnection conn, int s, float m, Vector3 origin, Vector3 facing, float tiling)
         {
             var d = conn.Definition;
-            var (x, rise, _) = CoverSize(conn, s);
+            var (x, rise, _) = CoverSize(conn, s, m);
             float e = HalfWidth(conn, s) + d.ShellThickness;
             var shell = Outline(e, d.WallHeight, d.CrownHeight + d.ShellThickness - d.WallHeight);
             var outer = Outline(x, d.WallHeight, rise);
@@ -369,6 +374,10 @@ namespace MapExpansions.Connections
             for (int i = 0; i < shell.Count - 1; i++)
                 Quad(md, W(shell[i]), W(shell[i + 1]), W(outer[i + 1]), W(outer[i]), facing, tiling, r);
         }
+
+        /// <summary>The facade's margin at the route's first (<paramref name="atStart"/>) or last portal.</summary>
+        private static float Margin(ConnectionDefinition d, bool atStart) =>
+            Mathf.Max(0f, (atStart ? d.StartPortalMargin : d.EndPortalMargin) ?? d.PortalMargin);
 
         private static Il2CppSystem.Collections.Generic.List<Vector3> ToIl2Cpp(List<Vector3> src)
         {
@@ -475,15 +484,15 @@ namespace MapExpansions.Connections
         }
 
         /// <summary>
-        /// A frame around the mouth: from the outside of the shell to the same outline <see cref="ConnectionDefinition.PortalMargin"/>
-        /// wider and higher, so its top follows the vault. Its outer edge runs <see cref="FacadeDepth"/> back into the
+        /// A frame around the mouth: from the outside of the shell to the same outline the portal's margin
+        /// (<see cref="ConnectionDefinition.PortalMargin"/> or its per-end override) wider and higher, so its top follows the vault. Its outer edge runs <see cref="FacadeDepth"/> back into the
         /// slope, so seen from the side it is a slab and not a sheet.
         /// </summary>
-        private static void Facade(MeshData md, BuiltConnection conn, int s, Vector3 origin, Vector3 facing, float tiling)
+        private static void Facade(MeshData md, BuiltConnection conn, int s, Vector3 origin, Vector3 facing, float tiling, bool atStart)
         {
             var d = conn.Definition;
             var curve = conn.Curve;
-            float m = d.PortalMargin;
+            float m = Margin(d, atStart);
             if (m <= 0f) return;
             float e = HalfWidth(conn, s) + d.ShellThickness, rise = d.CrownHeight + d.ShellThickness - d.WallHeight;
             var shell = Outline(e, d.WallHeight, rise);
@@ -534,10 +543,10 @@ namespace MapExpansions.Connections
         /// Height of a wing wall over the road at sample s: where the outside of the shell meets the portal frame's
         /// outer edge, so the wall stays inside the frame's outline.
         /// </summary>
-        private static float WingTop(BuiltConnection conn, int s)
+        private static float WingTop(BuiltConnection conn, int s, bool atStart)
         {
             var d = conn.Definition;
-            float e = HalfWidth(conn, s) + d.ShellThickness, m = Mathf.Max(0f, d.PortalMargin);
+            float e = HalfWidth(conn, s) + d.ShellThickness, m = Margin(d, atStart);
             float rise = d.CrownHeight + d.ShellThickness - d.WallHeight + m;
             float x = Mathf.Clamp01(e / (e + m));
             return d.WallHeight + rise * Mathf.Sqrt(1f - x * x);
@@ -559,7 +568,7 @@ namespace MapExpansions.Connections
                 Core.Log.Warning($"tunnel: {conn.Name}: wing walls at the {(atStart ? "start" : "end")} left out; ApproachLength {length:0.##} m is shorter than {WingStep} m");
                 return;
             }
-            float w = HalfWidth(conn, s), e = w + d.ShellThickness, top = WingTop(conn, s);
+            float w = HalfWidth(conn, s), e = w + d.ShellThickness, top = WingTop(conn, s, atStart);
             int n = Mathf.CeilToInt(length / WingStep);
             float d0 = curve.Distance[s], dir = atStart ? -1f : 1f;
             var centres = new Vector3[n + 1];
@@ -694,7 +703,7 @@ namespace MapExpansions.Connections
                     bool positive = (wings & (atStart ? WingWalls.Right : WingWalls.Left)) != 0;
                     if (negative) minX = -wall;
                     if (positive) maxX = wall;
-                    top = Mathf.Max(top, WingTop(conn, portal));
+                    top = Mathf.Max(top, WingTop(conn, portal, atStart));
                 }
                 var shift = Vector3.Cross(Vector3.up, new Vector3(pc.x - pa.x, 0f, pc.z - pa.z).normalized) * ((minX + maxX) * 0.5f);
                 conn.Approach.Add(OrientedBox.Along(pa + shift, pc + shift, maxX - minX, -0.15f, top));
