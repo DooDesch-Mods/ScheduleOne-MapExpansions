@@ -1,3 +1,6 @@
+using HarmonyLib;
+using Il2CppScheduleOne.Avatar;
+using Il2CppScheduleOne.Core.Avatar;
 using Il2CppScheduleOne.NPCs;
 using Il2CppScheduleOne.NPCs.Framework;
 using UnityEngine;
@@ -27,9 +30,16 @@ namespace MapExpansions
         /// <summary>The character's data as the source scene defines it. Kept loaded for the whole session.</summary>
         public BaseNPCDataObject Data { get; internal set; }
 
+        /// <summary>Avatars that wear a source character's look, by the pointer of their appearance component.</summary>
+        private static readonly Dictionary<IntPtr, (SourceCharacter Character, NPC Npc)> Worn = new();
+
+        /// <summary>True while this class dresses an avatar, so its own calls do not count as someone else's.</summary>
+        private static bool _dressing;
+
         /// <summary>
         /// Gives a living NPC this character's body, clothes and distant-view picture. Call it on every peer once the NPC
-        /// exists; the look is local to each peer. The NPC keeps the look when the game re-applies its data.
+        /// exists; the look is local to each peer. The NPC keeps the look when the game re-applies its data, and when
+        /// another mod puts a body or an outfit on it later, as S1API does with a custom NPC's appearance defaults.
         /// </summary>
         /// <returns>False when the NPC or the character's look is missing; the log names the reason.</returns>
         public bool ApplyAppearance(NPC npc)
@@ -71,11 +81,63 @@ namespace MapExpansions
                 Core.Log.Warning($"characters: '{npc.name}' has no avatar yet; '{ObjectName}' applies with its next data load");
                 return true;
             }
-            avatar.Appearance.ApplyNakedAppearance(look.DefaultAppearance.Appearance);
-            if (look.DefaultOutfit != null) avatar.Appearance.ApplyOutfit(look.DefaultOutfit);
-            if (look.Impostor != null) avatar.SetImpostorTexture(look.Impostor);
+            Worn[avatar.Appearance.Pointer] = (this, npc);
+            Dress(avatar, look);
             Core.Log.Msg($"characters: '{npc.name}' looks like '{ObjectName}' now (outfit {(look.DefaultOutfit != null ? look.DefaultOutfit.name : "none")})");
             return true;
+        }
+
+        private static void Dress(Il2CppScheduleOne.AvatarFramework.Avatar avatar, Appearance look)
+        {
+            _dressing = true;
+            try
+            {
+                avatar.Appearance.ApplyNakedAppearance(look.DefaultAppearance.Appearance);
+                if (look.DefaultOutfit != null) avatar.Appearance.ApplyOutfit(look.DefaultOutfit);
+                if (look.Impostor != null) avatar.SetImpostorTexture(look.Impostor);
+            }
+            finally
+            {
+                _dressing = false;
+            }
+        }
+
+        /// <summary>Puts the source look back on an avatar that someone else just gave a body or an outfit.</summary>
+        private static void Restore(AvatarAppearance appearance, string what)
+        {
+            if (_dressing || appearance == null || !Worn.TryGetValue(appearance.Pointer, out var worn)) return;
+            if (worn.Npc == null || worn.Npc.Avatar?.Appearance == null || worn.Npc.Avatar.Appearance.Pointer != appearance.Pointer)
+            {
+                Worn.Remove(appearance.Pointer);
+                Core.Log.Msg($"characters: an avatar that wore '{worn.Character.ObjectName}' belongs to no living NPC any more; it is left alone");
+                return;
+            }
+            var look = worn.Character.Data?.GetOriginalData()?.Appearance;
+            if (look?.DefaultAppearance == null)
+            {
+                Core.Log.Error($"characters: '{worn.Npc.name}' got another {what} and '{worn.Character.ObjectName}' has no look to restore");
+                return;
+            }
+            Dress(worn.Npc.Avatar, look);
+            Core.Log.Msg($"characters: '{worn.Npc.name}' got another {what}; it looks like '{worn.Character.ObjectName}' again");
+        }
+
+        [HarmonyPatch(typeof(AvatarAppearance), nameof(AvatarAppearance.ApplyNakedAppearance), new[] { typeof(NakedAppearance) })]
+        private static class KeepBody
+        {
+            private static void Postfix(AvatarAppearance __instance) => Restore(__instance, "body");
+        }
+
+        [HarmonyPatch(typeof(AvatarAppearance), nameof(AvatarAppearance.ApplyOutfit), new[] { typeof(Il2CppSystem.Collections.Generic.List<SerializedAvatarObject>) })]
+        private static class KeepOutfit
+        {
+            private static void Postfix(AvatarAppearance __instance) => Restore(__instance, "outfit");
+        }
+
+        [HarmonyPatch(typeof(AvatarAppearance), nameof(AvatarAppearance.ApplyOutfit), new[] { typeof(Outfit) })]
+        private static class KeepOutfitAsset
+        {
+            private static void Postfix(AvatarAppearance __instance) => Restore(__instance, "outfit");
         }
     }
 }
