@@ -1,3 +1,4 @@
+using Il2CppInterop.Runtime;
 using MapExpansions.Lifecycle;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -44,6 +45,13 @@ namespace MapExpansions.World
                 if (rule.Effect == ObjectEffect.ExactCollision)
                 {
                     ExactCollision(b, part, rule, area);
+                    continue;
+                }
+                if (rule.Effect == ObjectEffect.Hollow)
+                {
+                    var openings = rule.Openings.Select(o => rule.Side == WorldSide.Main ? o : b.Frame.ToWorld(o)).ToList();
+                    var windows = rule.Windows.Select(o => rule.Side == WorldSide.Main ? o : b.Frame.ToWorld(o)).ToList();
+                    Hollow(b, part, rule, area, openings, windows, offColliders);
                     continue;
                 }
                 if (rule.Effect == ObjectEffect.Cut)
@@ -294,6 +302,317 @@ namespace MapExpansions.World
             if (failed > 0) Core.Log.Warning($"{line}; {failed} failed");
             else if (changed == 0) Core.Log.Warning(line + "; no convex mesh collider matched");
             else Core.Log.Msg(line);
+        }
+
+        private const float ShellThickness = 0.2f;
+
+        /// <summary>
+        /// Replaces every solid box collider the rule selects by a shell of thin boxes outside its faces, so the inside
+        /// matches the faces drawn and the outside is <see cref="ShellThickness"/> larger. Faces are split around the
+        /// openings that cross them. Boxes too thin to hold a room stay solid. A rule with a lining also gets inside walls
+        /// and a ceiling, open at the openings and the windows.
+        /// </summary>
+        private static void Hollow(BuiltExpansion b, SceneIndex.Part part, ObjectRule rule, Bounds area, List<Bounds> openings, List<Bounds> windows,
+            HashSet<IntPtr> offColliders)
+        {
+            int hollowed = 0, thin = 0, pieces = 0;
+            var used = new HashSet<int>();
+            var added = new List<Collider>();
+            var liners = new List<Renderer>();
+            bool lined = rule.Bands.Count > 0 || rule.CeilingMaterial != null;
+            foreach (var c in part.Colliders)
+            {
+                if (c == null || !c.enabled || c.isTrigger || !SceneIndex.MatchesSelfOrAncestor(c.transform, rule, area)) continue;
+                var box = c.TryCast<BoxCollider>();
+                if (box == null) continue;
+                var t = box.transform;
+                var path = MeshCarver.Path(t);
+                var scale = new Vector3(Mathf.Abs(t.lossyScale.x), Mathf.Abs(t.lossyScale.y), Mathf.Abs(t.lossyScale.z));
+                var size = Vector3.Scale(box.size, scale);
+                if (Mathf.Min(size.x, Mathf.Min(size.y, size.z)) < ShellThickness * 4f || scale.x < 1e-4f || scale.y < 1e-4f || scale.z < 1e-4f)
+                {
+                    thin++;
+                    Core.Log.Msg($"rules: '{b.Id}' {rule}: box '{path}' is {size.x:0.00} x {size.y:0.00} x {size.z:0.00} m, too thin for a room; it stays solid");
+                    continue;
+                }
+                var shell = new GameObject("MapExpansions.Shell " + box.name);
+                shell.layer = box.gameObject.layer;
+                shell.transform.SetParent(t, false);
+                var holes = openings.Select(o => LocalBox(t, o)).ToList();
+                var th = new Vector3(ShellThickness / scale.x, ShellThickness / scale.y, ShellThickness / scale.z);
+                int before = pieces;
+                for (int axis = 0; axis < 3; axis++)
+                    for (int side = -1; side <= 1; side += 2)
+                        pieces += ShellFace(shell, box, th, axis, side, holes, used, added);
+                box.enabled = false;
+                offColliders.Add(box.Pointer);
+                hollowed++;
+                if (lined)
+                {
+                    var liner = Line(b, rule, shell, box, scale, holes.Concat(windows.Select(w => LocalBox(t, w))).ToList(), path);
+                    if (liner != null) liners.Add(liner);
+                }
+                Core.Log.Msg($"rules: '{b.Id}' {rule}: box '{path}' ({size.x:0.00} x {size.y:0.00} x {size.z:0.00} m) is now a shell of {pieces - before} boxes");
+            }
+            // The shell joins the index, so later rules and the clearing of the connections treat it like the box it replaces.
+            part.Colliders.AddRange(added);
+            part.Renderers.AddRange(liners);
+            string line = $"rules: '{b.Id}' {rule}: {hollowed} boxes hollowed into {pieces} pieces, {thin} too thin, {used.Count} of {openings.Count} openings cut";
+            if (lined) line += $", {liners.Count} lined";
+            if (hollowed == 0) Core.Log.Warning(line + "; no box changed");
+            else if (lined && liners.Count < hollowed) Core.Log.Warning(line + "; a lining is missing");
+            else if (used.Count < openings.Count) Core.Log.Warning(line + "; an opening crosses no face");
+            else Core.Log.Msg(line);
+        }
+
+        /// <summary>Adds the boxes of one face, along <paramref name="axis"/> on <paramref name="side"/>, in the box's local space.</summary>
+        private static int ShellFace(GameObject shell, BoxCollider box, Vector3 th, int axis, int side, List<Bounds> holes, HashSet<int> used, List<Collider> added)
+        {
+            int u = (axis + 1) % 3, v = (axis + 2) % 3;
+            var c = box.center;
+            var s = box.size;
+            float inner = c[axis] + side * s[axis] * 0.5f;
+            float outer = inner + side * th[axis];
+            float a0 = Mathf.Min(inner, outer), a1 = Mathf.Max(inner, outer);
+            // The faces reach over the edges by the thickness, so the corners close.
+            float u0 = c[u] - s[u] * 0.5f - th[u], u1 = c[u] + s[u] * 0.5f + th[u];
+            float v0 = c[v] - s[v] * 0.5f - th[v], v1 = c[v] + s[v] * 0.5f + th[v];
+
+            var cuts = new List<(float u0, float u1, float v0, float v1)>();
+            for (int i = 0; i < holes.Count; i++)
+            {
+                var h = holes[i];
+                if (h.max[axis] < a0 || h.min[axis] > a1) continue;
+                float hu0 = Mathf.Max(h.min[u], u0), hu1 = Mathf.Min(h.max[u], u1);
+                float hv0 = Mathf.Max(h.min[v], v0), hv1 = Mathf.Min(h.max[v], v1);
+                if (hu1 <= hu0 || hv1 <= hv0) continue;
+                cuts.Add((hu0, hu1, hv0, hv1));
+                used.Add(i);
+            }
+
+            var stops = new List<float> { u0, u1 };
+            foreach (var h in cuts)
+            {
+                stops.Add(h.u0);
+                stops.Add(h.u1);
+            }
+            stops.Sort();
+            int count = 0;
+            for (int i = 0; i + 1 < stops.Count; i++)
+            {
+                float s0 = stops[i], s1 = stops[i + 1];
+                if (s1 - s0 < 1e-4f) continue;
+                float mid = (s0 + s1) * 0.5f;
+                var gaps = cuts.Where(h => h.u0 <= mid && h.u1 >= mid).Select(h => (h.v0, h.v1)).OrderBy(g => g.v0).ToList();
+                float from = v0;
+                foreach (var (g0, g1) in gaps)
+                {
+                    if (g0 > from) count += ShellBox(shell, axis, u, v, a0, a1, s0, s1, from, g0, added);
+                    from = Mathf.Max(from, g1);
+                }
+                if (v1 > from) count += ShellBox(shell, axis, u, v, a0, a1, s0, s1, from, v1, added);
+            }
+            return count;
+        }
+
+        private static int ShellBox(GameObject shell, int axis, int u, int v, float a0, float a1, float u0, float u1, float v0, float v1, List<Collider> added)
+        {
+            if (v1 - v0 < 1e-4f) return 0;
+            var center = Vector3.zero;
+            var size = Vector3.zero;
+            center[axis] = (a0 + a1) * 0.5f;
+            size[axis] = a1 - a0;
+            center[u] = (u0 + u1) * 0.5f;
+            size[u] = u1 - u0;
+            center[v] = (v0 + v1) * 0.5f;
+            size[v] = v1 - v0;
+            var piece = shell.AddComponent<BoxCollider>();
+            piece.center = center;
+            piece.size = size;
+            added.Add(piece);
+            return 1;
+        }
+
+        // Metres between a box face and its lining, so the two never draw at the same depth.
+        private const float LiningInset = 0.01f;
+        // Metres a hole may stand off a face and still cut it, for a window box drawn around the glass.
+        private const float HoleReach = 0.3f;
+        private static readonly Dictionary<string, Material> LiningMaterials = new();
+
+        /// <summary>
+        /// Lines the inside of <paramref name="box"/> with walls in <see cref="ObjectRule.Bands"/> and a ceiling, one mesh
+        /// with a submesh per material, cut around <paramref name="holes"/> (box-local). Returns its renderer, or null.
+        /// </summary>
+        private static Renderer Line(BuiltExpansion b, ObjectRule rule, GameObject shell, BoxCollider box, Vector3 scale, List<Bounds> holes, string path)
+        {
+            var t = box.transform;
+            int up = 0;
+            float upSign = 1f, best = -1f;
+            for (int i = 0; i < 3; i++)
+            {
+                var axis = Vector3.zero;
+                axis[i] = 1f;
+                float d = Vector3.Dot(t.TransformDirection(axis).normalized, Vector3.up);
+                if (Mathf.Abs(d) <= best) continue;
+                best = Mathf.Abs(d);
+                up = i;
+                upSign = Mathf.Sign(d);
+            }
+            if (best < 0.9f)
+            {
+                Core.Log.Warning($"rules: '{b.Id}' {rule}: box '{path}' has no upright axis; it gets no lining");
+                return null;
+            }
+
+            var c = box.center;
+            var s = box.size;
+            var ins = new Vector3(LiningInset / scale.x, LiningInset / scale.y, LiningInset / scale.z);
+            float floor = c[up] - upSign * s[up] * 0.5f;
+            var bands = rule.Bands.OrderBy(x => x.From).ToList();
+
+            var mats = new List<Material>();
+            var slots = new Dictionary<string, int>();
+            var tris = new List<List<int>>();
+            var verts = new List<Vector3>();
+            var uvs = new List<Vector2>();
+            int Slot(string name)
+            {
+                if (name == null) return -1;
+                if (slots.TryGetValue(name, out var i)) return i;
+                var m = FindMaterial(b.Id, rule, name);
+                slots[name] = i = m == null ? -1 : mats.Count;
+                if (m == null) return -1;
+                mats.Add(m);
+                tris.Add(new List<int>());
+                return i;
+            }
+            int BandAt(float local)
+            {
+                if (bands.Count == 0) return -1;
+                float height = (local - floor) * upSign * scale[up];
+                var band = bands[0];
+                foreach (var x in bands)
+                    if (x.From <= height) band = x;
+                return Slot(band.Material);
+            }
+
+            int quads = 0;
+            void Face(int axis, float plane, float inward, int u, int v, List<float> extraV, Func<float, int> slotAt)
+            {
+                float reach = HoleReach / scale[axis];
+                var cross = holes.Where(h => h.min[axis] <= plane + reach && h.max[axis] >= plane - reach).ToList();
+                float u0 = c[u] - s[u] * 0.5f + ins[u], u1 = c[u] + s[u] * 0.5f - ins[u];
+                float v0 = c[v] - s[v] * 0.5f + ins[v], v1 = c[v] + s[v] * 0.5f - ins[v];
+                var us = new List<float> { u0, u1 };
+                var vs = new List<float> { v0, v1 };
+                foreach (var h in cross)
+                {
+                    us.Add(Mathf.Clamp(h.min[u], u0, u1));
+                    us.Add(Mathf.Clamp(h.max[u], u0, u1));
+                    vs.Add(Mathf.Clamp(h.min[v], v0, v1));
+                    vs.Add(Mathf.Clamp(h.max[v], v0, v1));
+                }
+                vs.AddRange(extraV.Select(x => Mathf.Clamp(x, v0, v1)));
+                us = us.Distinct().OrderBy(x => x).ToList();
+                vs = vs.Distinct().OrderBy(x => x).ToList();
+                var normal = Vector3.zero;
+                normal[axis] = inward;
+                var inwardWorld = t.TransformDirection(normal);
+                for (int i = 0; i + 1 < us.Count; i++)
+                for (int j = 0; j + 1 < vs.Count; j++)
+                {
+                    float a0 = us[i], a1 = us[i + 1], b0 = vs[j], b1 = vs[j + 1];
+                    if (a1 - a0 < 1e-4f || b1 - b0 < 1e-4f) continue;
+                    float um = (a0 + a1) * 0.5f, vm = (b0 + b1) * 0.5f;
+                    if (cross.Any(h => um > h.min[u] && um < h.max[u] && vm > h.min[v] && vm < h.max[v])) continue;
+                    int slot = slotAt(vm);
+                    if (slot < 0) continue;
+                    int first = verts.Count;
+                    foreach (var (pu, pv) in new[] { (a0, b0), (a1, b0), (a1, b1), (a0, b1) })
+                    {
+                        var p = Vector3.zero;
+                        p[axis] = plane;
+                        p[u] = pu;
+                        p[v] = pv;
+                        verts.Add(p);
+                        uvs.Add(new Vector2(pu * scale[u], pv * scale[v]));
+                    }
+                    var w0 = t.TransformPoint(verts[first]);
+                    bool front = Vector3.Dot(Vector3.Cross(t.TransformPoint(verts[first + 1]) - w0, t.TransformPoint(verts[first + 2]) - w0), inwardWorld) > 0f;
+                    tris[slot].AddRange(front
+                        ? new[] { first, first + 1, first + 2, first, first + 2, first + 3 }
+                        : new[] { first, first + 2, first + 1, first, first + 3, first + 2 });
+                    quads++;
+                }
+            }
+
+            var bandStops = bands.Select(x => floor + upSign * x.From / scale[up]).ToList();
+            var none = new List<float>();
+            for (int axis = 0; axis < 3; axis++)
+            {
+                if (axis == up) continue;
+                int along = 3 - up - axis;
+                for (int side = -1; side <= 1; side += 2)
+                    Face(axis, c[axis] + side * (s[axis] * 0.5f - ins[axis]), -side, along, up, bandStops, BandAt);
+            }
+            int ceiling = Slot(rule.CeilingMaterial);
+            Face(up, c[up] + upSign * (s[up] * 0.5f - ins[up]), -upSign, (up + 1) % 3, (up + 2) % 3, none, _ => ceiling);
+
+            if (quads == 0)
+            {
+                Core.Log.Warning($"rules: '{b.Id}' {rule}: box '{path}' got no lining; no material of it was found");
+                return null;
+            }
+            var name = "MapExpansions.Lining " + box.name;
+            var mesh = b.Own(new Mesh { name = name });
+            mesh.vertices = verts.ToArray();
+            mesh.uv = uvs.ToArray();
+            mesh.subMeshCount = tris.Count;
+            for (int i = 0; i < tris.Count; i++)
+                mesh.SetTriangles(tris[i].ToArray(), i);
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            var go = new GameObject(name);
+            go.layer = box.gameObject.layer;
+            go.transform.SetParent(shell.transform, false);
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var mr = go.AddComponent<MeshRenderer>();
+            mr.sharedMaterials = mats.ToArray();
+            mr.shadowCastingMode = ShadowCastingMode.Off;
+            Core.Log.Msg($"rules: '{b.Id}' {rule}: box '{path}' lined with {quads} quads in {string.Join(", ", mats.Select(m => m.name))}");
+            return mr;
+        }
+
+        /// <summary>A loaded material by name; the first found is kept for later builds while it lives.</summary>
+        private static Material FindMaterial(string id, ObjectRule rule, string name)
+        {
+            if (LiningMaterials.TryGetValue(name, out var known) && known != null) return known;
+            foreach (var o in Resources.FindObjectsOfTypeAll(Il2CppType.Of<Material>()))
+            {
+                var m = o.TryCast<Material>();
+                if (m == null || m.name != name) continue;
+                LiningMaterials[name] = m;
+                return m;
+            }
+            Core.Log.Error($"rules: '{id}' {rule}: no loaded material '{name}'; the lining leaves its part out");
+            return null;
+        }
+
+        /// <summary>A world box in the local space of <paramref name="t"/>, as the box around its eight corners there.</summary>
+        private static Bounds LocalBox(Transform t, Bounds world)
+        {
+            var min = Vector3.positiveInfinity;
+            var max = Vector3.negativeInfinity;
+            for (int i = 0; i < 8; i++)
+            {
+                var corner = new Vector3((i & 1) == 0 ? world.min.x : world.max.x, (i & 2) == 0 ? world.min.y : world.max.y, (i & 4) == 0 ? world.min.z : world.max.z);
+                var p = t.InverseTransformPoint(corner);
+                min = Vector3.Min(min, p);
+                max = Vector3.Max(max, p);
+            }
+            var b = new Bounds();
+            b.SetMinMax(min, max);
+            return b;
         }
 
         /// <summary>
