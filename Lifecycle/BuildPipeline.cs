@@ -87,6 +87,7 @@ namespace MapExpansions.Lifecycle
                 try
                 {
                     BuildWorld(b, index, built);
+                    Places.Build(b);
                     WeatherCover.Add(b);
                     SeparateViews.Add(b, index);
                     Registry.SetState(b.Id, ExpansionState.Placed);

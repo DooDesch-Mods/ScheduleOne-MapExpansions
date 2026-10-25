@@ -79,6 +79,7 @@ namespace MapExpansions.Debug
                 {
                     case "mxstate": State(); break;
                     case "mxwhere": Where(); break;
+                    case "mxnpc" when parts.Length > 1: Npc(parts[1]); break;
                     case "mxtp": Tp(parts); break;
                     case "mxcam": Cam(parts); break;
                     case "mxframe": MelonCoroutines.Start(Frame(parts.Length > 1 ? F(parts[1]) : 3f)); break;
@@ -135,6 +136,26 @@ namespace MapExpansions.Debug
                 Core.Log.Msg($"[dev] mxstate: region {(int)r.Region} '{r.Definition.Name}' of '{r.ExpansionId}', stand-in {r.StandIn}, " +
                              $"zone {(r.Zone != null ? "present" : "missing")}");
             Core.Log.Msg($"[dev] mxstate: {NavLinks.Count} NavMesh links, vehicle graph mask extra {Navigation.VehicleNavigation.ExtraMask}");
+        }
+
+        private static void Npc(string idPart)
+        {
+            int found = 0;
+            foreach (var npc in Il2CppScheduleOne.NPCs.NPCManager.NPCRegistry)
+            {
+                if (npc == null || npc.ID == null || npc.ID.IndexOf(idPart, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                found++;
+                var pos = npc.transform.position;
+                var sm = npc.GetComponentInChildren<Il2CppScheduleOne.NPCs.NPCScheduleManager>(true);
+                var action = sm != null && sm.ActiveAction != null ? $"{sm.ActiveAction.GetIl2CppType().Name} '{sm.ActiveAction.name}'" : "none";
+                var car = npc.IsInVehicle && npc.CurrentVehicle != null ? $"in '{npc.CurrentVehicle.name}' at {npc.CurrentVehicle.transform.position}" : "on foot";
+                string exp = MapExpansionsApi.ExpansionAt(pos) ?? "main world";
+                var customer = npc.GetComponent<Il2CppScheduleOne.Economy.Customer>();
+                var regionData = Singleton<Map>.Instance?.GetRegionData(npc.Region);
+                string deal = customer == null ? "not a customer" : $"customer, {regionData?.RegionDeliveryLocations?.Length ?? 0} deal places in the region";
+                Core.Log.Msg($"[dev] mxnpc: '{npc.ID}' at {pos} ({exp}), region {(int)npc.Region}, visible {npc.isVisible}, action {action}, {car}, {deal}");
+            }
+            if (found == 0) Core.Log.Warning($"[dev] mxnpc: no NPC id contains '{idPart}'");
         }
 
         private static void Where()

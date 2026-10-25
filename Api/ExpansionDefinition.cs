@@ -42,6 +42,15 @@ namespace MapExpansions
         /// <summary>Named places inside the expansion, resolved through <see cref="LocationRef"/>.</summary>
         public List<LocationDefinition> Locations { get; } = new();
 
+        /// <summary>Buildings NPCs can enter, created on every peer when the expansion is built.</summary>
+        public List<BuildingDefinition> Buildings { get; } = new();
+
+        /// <summary>Parking lots for NPC cars, created on every peer when the expansion is built.</summary>
+        public List<ParkingLotDefinition> ParkingLots { get; } = new();
+
+        /// <summary>Places where customers of the expansion's regions wait for deals.</summary>
+        public List<DealLocationDefinition> DealLocations { get; } = new();
+
         /// <summary>
         /// Local rectangle the vehicle graph covers, in addition to the connections. Empty means the bounds of the
         /// source terrains.

@@ -35,7 +35,7 @@ namespace MapExpansions
     public static class MapExpansionsApi
     {
         /// <summary>Version of this API. Raised when a public member changes.</summary>
-        public const string ApiVersion = "0.2.0";
+        public const string ApiVersion = "0.3.0";
 
         /// <summary>
         /// Raised when an expansion is placed and joined in the main world, once per world load. The argument is the
@@ -68,6 +68,29 @@ namespace MapExpansions
             return true;
         }
 
+        /// <summary>
+        /// World position of an expansion-local point, from the registered definition. It holds before the expansion is
+        /// placed, for setup code such as NPC spawn points; it says nothing about whether the expansion gets built.
+        /// </summary>
+        public static bool TryToWorldFromDefinition(string expansionId, Vector3 local, out Vector3 world)
+        {
+            world = default;
+            var def = Registry.GetDefinition(expansionId);
+            if (def == null) return false;
+            world = Frame.Of(def).ToWorld(local);
+            return true;
+        }
+
+        /// <summary>World rotation of an expansion-local facing in degrees, from the registered definition.</summary>
+        public static bool TryToWorldRotationFromDefinition(string expansionId, float localYaw, out Quaternion rotation)
+        {
+            rotation = Quaternion.identity;
+            var def = Registry.GetDefinition(expansionId);
+            if (def == null) return false;
+            rotation = Frame.Of(def).Rotation * Quaternion.Euler(0f, localYaw, 0f);
+            return true;
+        }
+
         /// <summary>Expansion-local position of a world point. False while the expansion is not placed.</summary>
         public static bool TryToLocal(string expansionId, Vector3 world, out Vector3 local)
         {
@@ -94,6 +117,19 @@ namespace MapExpansions
                 return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// A character of the expansion's source scene by its object name, such as "Pam". Known from the main menu on,
+        /// once the source is captured.
+        /// </summary>
+        public static bool TryGetSourceCharacter(string expansionId, string objectName, out SourceCharacter character)
+        {
+            character = null;
+            var def = Registry.GetDefinition(expansionId);
+            var src = def != null ? Source.SourceCapture.Get(def.Source.Key) : null;
+            character = src?.Characters.FirstOrDefault(c => string.Equals(c.ObjectName, objectName, StringComparison.Ordinal));
+            return character != null;
         }
 
         /// <summary>Id of the expansion whose region contains the world point, or null.</summary>
