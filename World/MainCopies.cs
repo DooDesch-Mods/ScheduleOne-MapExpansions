@@ -1,0 +1,359 @@
+using System.Collections;
+using Il2CppFishNet;
+using Il2CppFishNet.Object;
+using Il2CppFishNet.Observing;
+using MapExpansions.Lifecycle;
+using MelonLoader;
+using UnityEngine;
+using UnityEngine.SceneManagement;
+using Object = UnityEngine.Object;
+
+namespace MapExpansions.World
+{
+    /// <summary>
+    /// Copies main-world objects into expansions. Each peer builds the plain part of a copy itself. Networked objects
+    /// below a template, such as doors, are taken out of it and registered as spawnable prefabs; the host spawns them
+    /// where they belong, so their state is shared like the original's.
+    /// </summary>
+    internal static class MainCopies
+    {
+        /// <summary>A networked object of a copy: registered on every peer, spawned by the host, found on each peer once it exists.</summary>
+        internal sealed class Part
+        {
+            public string Key;
+            public GameObject Template;
+            public Vector3 Position;
+            public Quaternion Rotation;
+            public Vector3 Scale;
+            public NetworkObject Instance;
+        }
+
+        /// <summary>What one definition became on this peer.</summary>
+        internal sealed class Built
+        {
+            public CopyDefinition Def;
+            public GameObject Local;
+            public readonly List<Part> Parts = new();
+        }
+
+        private static readonly List<Part> Parts = new();
+        private static object _spawnRoutine;
+        private static float _nextFind;
+
+        /// <summary>Builds the copies under the expansion's root. Failed copies are logged and left out.</summary>
+        public static List<Built> Build(BuiltExpansion b, IReadOnlyList<CopyDefinition> defs, string owner)
+        {
+            var result = new List<Built>();
+            if (defs.Count == 0) return result;
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var d in defs)
+            {
+                names.Add(FirstSegment(d.Template));
+                if (!string.IsNullOrEmpty(d.Frame)) names.Add(FirstSegment(d.Frame));
+            }
+            var found = FindInMain(names);
+
+            var templates = b.Root.transform.Find("Copy Templates")?.gameObject;
+            if (templates == null)
+            {
+                templates = new GameObject("Copy Templates");
+                templates.SetActive(false);
+                templates.transform.SetParent(b.Root.transform, false);
+            }
+            var holder = b.Root.transform.Find("Copies")?.gameObject;
+            if (holder == null)
+            {
+                holder = new GameObject("Copies");
+                holder.transform.SetParent(b.Root.transform, false);
+            }
+
+            foreach (var d in defs)
+            {
+                try
+                {
+                    var built = BuildOne(b, d, owner, found, templates.transform, holder.transform);
+                    if (built != null) result.Add(built);
+                }
+                catch (Exception e)
+                {
+                    Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}' of '{d.Template}' failed: {e}");
+                }
+            }
+            Core.Log.Msg($"copies: '{b.Id}' {owner}: {result.Count}/{defs.Count} copies built, {result.Sum(x => x.Parts.Count)} networked parts");
+            if (Parts.Count > 0 && _spawnRoutine == null) _spawnRoutine = MelonCoroutines.Start(SpawnWhenNetworked());
+            return result;
+        }
+
+        private static Built BuildOne(BuiltExpansion b, CopyDefinition d, string owner, Dictionary<string, Transform> found,
+            Transform templates, Transform holder)
+        {
+            if (string.IsNullOrEmpty(d.Id) || string.IsNullOrEmpty(d.Template))
+            {
+                Core.Log.Error($"copies: '{b.Id}' {owner} has a copy without id or template ('{d.Id}', '{d.Template}'); it is not built");
+                return null;
+            }
+            var src = Resolve(found, d.Template);
+            if (src == null)
+            {
+                Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': '{d.Template}' is not in the main world; it is not built");
+                return null;
+            }
+            var frame = string.IsNullOrEmpty(d.Frame) ? src : Resolve(found, d.Frame);
+            if (frame == null)
+            {
+                Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': frame '{d.Frame}' is not in the main world; it is not built");
+                return null;
+            }
+
+            Matrix4x4 at;
+            if (string.IsNullOrEmpty(d.Onto))
+                at = Matrix4x4.TRS(b.Root.transform.TransformPoint(d.At.Position),
+                    b.Root.transform.rotation * Quaternion.Euler(0f, d.At.Yaw, 0f), Vector3.one * d.Scale);
+            else
+            {
+                var onto = FindInExpansion(b, d.Onto);
+                if (onto == null)
+                {
+                    Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': '{d.Onto}' is not in the expansion; it is not built");
+                    return null;
+                }
+                at = Matrix4x4.TRS(onto.position, onto.rotation, Vector3.one)
+                     * Matrix4x4.TRS(d.OntoOffset, Quaternion.Euler(d.OntoRotation), Vector3.one * d.Scale);
+            }
+            var frameM = Matrix4x4.TRS(frame.position, frame.rotation, Vector3.one);
+            var move = at * frameM.inverse;
+            var pose = move * src.localToWorldMatrix;
+
+            // Built inactive, so nothing of the copy wakes before its networked parts are out and it stands in place.
+            var go = Object.Instantiate(src.gameObject, templates);
+            go.name = src.name;
+            go.transform.SetPositionAndRotation(pose.GetColumn(3), pose.rotation);
+            go.transform.localScale = pose.lossyScale;
+            Trim(b, d, owner, go);
+
+            var built = new Built { Def = d };
+            var nobs = go.GetComponentsInChildren<NetworkObject>(true);
+            // Outermost first; a networked object inside another one goes along with it.
+            var roots = nobs.Where(n => n != null && !HasNetworkedAncestor(n, go.transform)).ToList();
+            for (int i = 0; i < roots.Count; i++)
+            {
+                var nob = roots[i];
+                var key = $"copy:{b.Id}/{d.Id}/{i}";
+                var t = nob.transform;
+                var part = new Part { Key = key, Template = nob.gameObject, Position = t.position, Rotation = t.rotation, Scale = t.lossyScale };
+                t.SetParent(templates, true);
+                int nested = SpawnablePrefabs.Detach(nob);
+                SpawnablePrefabs.OpenObserver(nob.GetComponent<NetworkObserver>());
+                if (!SpawnablePrefabs.Register(key, nob, "copies"))
+                {
+                    Object.Destroy(nob.gameObject);
+                    continue;
+                }
+                Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}' networked part '{nob.name}' ({nested} nested) stands at {part.Position}");
+                built.Parts.Add(part);
+                Parts.Add(part);
+            }
+
+            if (nobs.Length == 1 && roots.Count == 1 && roots[0].gameObject == go)
+            {
+                // The template is a networked object itself; nothing is left to build locally.
+                Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}' is networked as a whole");
+                return built;
+            }
+
+            go.transform.SetParent(holder, true);
+            go.SetActive(true);
+            var (batched, batchRoots, _) = StaticBatches.Follow(go.transform, move, $"{owner} {d.Id}");
+            built.Local = go;
+            Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}' from '{d.Template}' stands at {go.transform.position}, " +
+                         $"{go.GetComponentsInChildren<Renderer>(true).Length} renderers, {batched} batched over {batchRoots} roots");
+            return built;
+        }
+
+        private static void Trim(BuiltExpansion b, CopyDefinition d, string owner, GameObject go)
+        {
+            foreach (var path in d.Exclude)
+            {
+                var t = string.IsNullOrEmpty(path) ? null : go.transform.Find(path);
+                if (t == null)
+                {
+                    Core.Log.Warning($"copies: '{b.Id}' {owner} copy '{d.Id}': '{path}' to leave out is not below '{d.Template}'");
+                    continue;
+                }
+                Object.DestroyImmediate(t.gameObject);
+            }
+            if (d.OwnMesh) return;
+            int removed = 0;
+            foreach (var c in go.GetComponents<Collider>()) { Object.DestroyImmediate(c); removed++; }
+            var r = go.GetComponent<Renderer>();
+            if (r != null) { Object.DestroyImmediate(r); removed++; }
+            var f = go.GetComponent<MeshFilter>();
+            if (f != null) { Object.DestroyImmediate(f); removed++; }
+            Core.Log.Msg($"copies: '{b.Id}' {owner} copy '{d.Id}' leaves the template's own mesh behind ({removed} components)");
+        }
+
+        private static bool HasNetworkedAncestor(NetworkObject n, Transform top)
+        {
+            for (var p = n.transform.parent; p != null && p != top.parent; p = p.parent)
+                if (p.GetComponent<NetworkObject>() != null) return true;
+            return false;
+        }
+
+        private static string FirstSegment(string path)
+        {
+            int i = path.IndexOf('/');
+            return i < 0 ? path : path.Substring(0, i);
+        }
+
+        /// <summary>A main-world object by path, as in <see cref="CopyDefinition.Template"/>.</summary>
+        public static Transform FindMain(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            return Resolve(FindInMain(new HashSet<string>(StringComparer.Ordinal) { FirstSegment(path) }), path);
+        }
+
+        /// <summary>
+        /// An object of the expansion's source by path: the first object named like the first segment, depth first,
+        /// then its children along the rest. The framework's own holders of copies are skipped.
+        /// </summary>
+        public static Transform FindInExpansion(BuiltExpansion b, string path)
+        {
+            if (b.Root == null || string.IsNullOrEmpty(path)) return null;
+            string first = FirstSegment(path);
+            var stack = new Stack<Transform>();
+            stack.Push(b.Root.transform);
+            while (stack.Count > 0)
+            {
+                var t = stack.Pop();
+                if (t != b.Root.transform && t.name == first)
+                {
+                    int i = path.IndexOf('/');
+                    var hit = i < 0 ? t : t.Find(path.Substring(i + 1));
+                    if (hit != null) return hit;
+                }
+                for (int c = t.childCount - 1; c >= 0; c--)
+                {
+                    var child = t.GetChild(c);
+                    if (t == b.Root.transform && (child.name == "Copies" || child.name == "Copy Templates")) continue;
+                    stack.Push(child);
+                }
+            }
+            return null;
+        }
+
+        private static Transform Resolve(Dictionary<string, Transform> found, string path)
+        {
+            if (!found.TryGetValue(FirstSegment(path), out var t) || t == null) return null;
+            int i = path.IndexOf('/');
+            return i < 0 ? t : t.Find(path.Substring(i + 1));
+        }
+
+        /// <summary>
+        /// The first object of each name in the main scene, depth first in hierarchy order. Roots of expansions and the
+        /// copies made from main-world objects are skipped.
+        /// </summary>
+        private static Dictionary<string, Transform> FindInMain(HashSet<string> names)
+        {
+            var found = new Dictionary<string, Transform>(StringComparer.Ordinal);
+            var scene = SceneManager.GetSceneByName("Main");
+            if (!scene.IsValid())
+            {
+                Core.Log.Error("copies: the main scene is not loaded; no main-world object can be copied");
+                return found;
+            }
+            var stack = new Stack<Transform>();
+            foreach (var root in scene.GetRootGameObjects().Reverse())
+            {
+                if (root == null || root.name.StartsWith("MapExpansions.", StringComparison.Ordinal)) continue;
+                stack.Push(root.transform);
+            }
+            int visited = 0;
+            while (stack.Count > 0 && found.Count < names.Count)
+            {
+                var t = stack.Pop();
+                visited++;
+                string n = t.name;
+                if (names.Contains(n) && !found.ContainsKey(n)) found[n] = t;
+                for (int i = t.childCount - 1; i >= 0; i--) stack.Push(t.GetChild(i));
+            }
+            foreach (var n in names.Where(n => !found.ContainsKey(n)))
+                Core.Log.Error($"copies: no object '{n}' in the main scene ({visited} objects searched)");
+            return found;
+        }
+
+        private static IEnumerator SpawnWhenNetworked()
+        {
+            var wait = System.Diagnostics.Stopwatch.StartNew();
+            while (!InstanceFinder.IsServer && !InstanceFinder.IsClient)
+            {
+                if (wait.Elapsed.TotalMinutes > 3)
+                {
+                    Core.Log.Error("copies: the network did not start within 3 minutes; no networked part is spawned");
+                    _spawnRoutine = null;
+                    yield break;
+                }
+                yield return null;
+            }
+            _spawnRoutine = null;
+            if (!InstanceFinder.IsServer)
+            {
+                Core.Log.Msg($"copies: client; {Parts.Count} networked parts arrive from the host");
+                yield break;
+            }
+            int spawned = 0;
+            foreach (var p in Parts.ToList())
+            {
+                try
+                {
+                    var go = Object.Instantiate(p.Template, p.Position, p.Rotation);
+                    go.name = p.Template.name;
+                    go.transform.localScale = p.Scale;
+                    go.SetActive(true);
+                    var nob = go.GetComponent<NetworkObject>();
+                    InstanceFinder.ServerManager.Spawn(nob, null, default(Scene));
+                    SpawnablePrefabs.RebuildObservers(nob);
+                    p.Instance = nob;
+                    spawned++;
+                }
+                catch (Exception e)
+                {
+                    Core.Log.Error($"copies: spawning '{p.Key}' failed: {e}");
+                }
+            }
+            Core.Log.Msg($"copies: host spawned {spawned}/{Parts.Count} networked parts");
+        }
+
+        /// <summary>On a client the parts arrive from the host; each is matched to its definition by prefab id and place.</summary>
+        public static void Tick()
+        {
+            if (Parts.Count == 0 || Time.unscaledTime < _nextFind) return;
+            _nextFind = Time.unscaledTime + 1f;
+            List<Part> open = null;
+            foreach (var p in Parts)
+                if (p.Instance == null) (open ??= new List<Part>()).Add(p);
+            if (open == null) return;
+            var spawned = InstanceFinder.ClientManager?.Objects?.Spawned;
+            if (spawned == null) return;
+            foreach (var kv in spawned)
+            {
+                var nob = kv.Value;
+                if (nob == null) continue;
+                foreach (var p in open)
+                {
+                    if (p.Instance != null) continue;
+                    var tn = p.Template.GetComponent<NetworkObject>();
+                    if (tn == null || nob.PrefabId != tn.PrefabId) continue;
+                    if ((nob.transform.position - p.Position).sqrMagnitude > 0.25f) continue;
+                    p.Instance = nob;
+                    Core.Log.Msg($"copies: networked part '{p.Key}' arrived at {nob.transform.position}");
+                }
+            }
+        }
+
+        public static void Clear()
+        {
+            Parts.Clear();
+            _nextFind = 0f;
+        }
+    }
+}

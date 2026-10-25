@@ -59,7 +59,7 @@ namespace MapExpansions.Navigation
         }
 
         /// <summary>True when the agent type has a NavMesh within reach of the point, at the point's height.</summary>
-        private static bool Covered(Vector3 p, int agent)
+        internal static bool Covered(Vector3 p, int agent)
         {
             var filter = new NavMeshQueryFilter { agentTypeID = agent, areaMask = NavMesh.AllAreas };
             return NavMesh.SamplePosition(p, out NavMeshHit hit, 0.6f, filter) && Mathf.Abs(hit.position.y - p.y) < 0.5f;

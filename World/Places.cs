@@ -138,10 +138,10 @@ namespace MapExpansions.World
         /// The game parks a car with its rear on the spot's point. A definition names the car's centre, so the point
         /// moves back by half the length of a common car.
         /// </summary>
-        private const float HalfCarLength = 2.3f;
+        internal const float HalfCarLength = 2.3f;
 
         /// <summary>The ground below a point, or the point itself where nothing is below it.</summary>
-        private static Vector3 Ground(Vector3 p)
+        internal static Vector3 Ground(Vector3 p)
         {
             if (Physics.Raycast(p + Vector3.up * 2f, Vector3.down, out var hit, 6f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
                 return hit.point;

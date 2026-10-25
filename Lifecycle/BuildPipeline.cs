@@ -91,6 +91,9 @@ namespace MapExpansions.Lifecycle
                     WeatherCover.Add(b);
                     SeparateViews.Add(b, index);
                     Properties.Build(b);
+                    PoliceStations.Build(b);
+                    MainCopies.Build(b, b.Definition.Copies, "expansion");
+                    Shops.Build(b);
                     Registry.SetState(b.Id, ExpansionState.Placed);
                 }
                 catch (Exception e)
@@ -227,6 +230,9 @@ namespace MapExpansions.Lifecycle
             _navRoutine = null;
             NavLinks.Clear();
             Properties.Clear();
+            PoliceStations.Clear();
+            Shops.Clear();
+            MainCopies.Clear();
             TunnelShadows.Clear();
             WeatherCover.Clear();
             SeparateViews.Clear();
