@@ -35,6 +35,9 @@
     <Reference Include="UnityEngine.AIModule"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.AIModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.AudioModule"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.AudioModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Unity.RenderPipelines.Universal.Runtime"><HintPath>$(WorkspaceLibPath)/game/Unity.RenderPipelines.Universal.Runtime.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UI"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.TextMeshPro"><HintPath>$(WorkspaceLibPath)/game/Unity.TextMeshPro.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppLokoSolo.PinchableScrollRect"><HintPath>$(WorkspaceLibPath)/game/Il2CppLokoSolo.PinchableScrollRect.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Unity.AI.Navigation"><HintPath>$(WorkspaceLibPath)/game/Unity.AI.Navigation.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 

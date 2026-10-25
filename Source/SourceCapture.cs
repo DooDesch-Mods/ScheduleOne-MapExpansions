@@ -28,6 +28,9 @@ namespace MapExpansions.Source
 
         /// <summary>Road links between two entries of <see cref="RoadNodes"/>, by index, as the source scene sets them.</summary>
         public readonly List<(int From, int To, bool OneWay)> RoadLinks = new();
+
+        /// <summary>The source scene's characters, by object name.</summary>
+        public readonly List<SourceCharacter> Characters = new();
     }
 
     internal sealed class NavSource
@@ -257,6 +260,7 @@ namespace MapExpansions.Source
             var captured = new CapturedSource { Key = src.Key, SceneName = sceneName };
             CollectNavMeshes(scene, captured);
             CollectRoadNodes(scene, src, captured);
+            CollectCharacters(scene, captured);
             var sourceRenderers = CountRenderers(sourceRoot);
             Core.Log.Msg($"capture: source renderers={sourceRenderers.renderers} (no mesh {sourceRenderers.noMesh}, " +
                          $"no material {sourceRenderers.noMaterial}, static batch {sourceRenderers.batched})");
@@ -351,6 +355,54 @@ namespace MapExpansions.Source
                 }
             }
             Core.Log.Warning($"capture: no object '{src.RoadNodesName}' in '{src.SceneName}'; vehicles in the expansion find no road node nearby");
+        }
+
+        /// <summary>
+        /// Keeps each character's data and the assets it points to past the scene unload. The scene's NPCs never wake,
+        /// so the data is read from their data assets directly.
+        /// </summary>
+        private static void CollectCharacters(Scene scene, CapturedSource captured)
+        {
+            foreach (var root in scene.GetRootGameObjects())
+            {
+                foreach (var npc in root.GetComponentsInChildren<Il2CppScheduleOne.NPCs.NPC>(true))
+                {
+                    var dataObject = npc._defaultNPCData;
+                    var data = dataObject?.GetOriginalData();
+                    if (data?.BasicInfo == null)
+                    {
+                        Core.Log.Warning($"capture: character '{npc.name}' in '{captured.SceneName}' has no data asset; it is left out");
+                        continue;
+                    }
+                    KeepLoaded(dataObject);
+                    var look = data.Appearance;
+                    if (look != null)
+                    {
+                        KeepLoaded(look.DefaultAppearance);
+                        KeepLoaded(look.DefaultOutfit);
+                        KeepLoaded(look.Impostor);
+                        KeepLoaded(look.Mugshot);
+                        if (look.Mugshot != null) KeepLoaded(look.Mugshot.texture);
+                    }
+                    KeepLoaded(data.Voice?.VoiceDatabase);
+                    captured.Characters.Add(new SourceCharacter
+                    {
+                        ObjectName = npc.name,
+                        Id = data.BasicInfo.ID,
+                        FirstName = data.BasicInfo.FirstName,
+                        LastName = data.BasicInfo.HasLastName ? data.BasicInfo.LastName : string.Empty,
+                        Mugshot = look?.Mugshot,
+                        Data = dataObject,
+                    });
+                }
+            }
+            Core.Log.Msg($"capture: {captured.Characters.Count} characters in '{captured.SceneName}': " +
+                         string.Join(", ", captured.Characters.Select(c => $"{c.ObjectName} ({c.Id}, look {(c.Data.GetOriginalData().Appearance?.DefaultAppearance != null ? "yes" : "no")})")));
+        }
+
+        private static void KeepLoaded(Object o)
+        {
+            if (o != null) o.hideFlags |= HideFlags.DontUnloadUnusedAsset;
         }
 
         private static void Strip(GameObject clone)
