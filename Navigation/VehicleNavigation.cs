@@ -13,11 +13,12 @@ namespace MapExpansions.Navigation
 {
     /// <summary>
     /// Vehicle navigation for one placed expansion. Vanilla vehicles path on the A* recast graph "General Vehicle
-    /// Graph", which ends at the map edge. Two graphs are added with its settings: one over the expansion and the
-    /// approach to the connection, and a clean one over the built stretches, scanned with every other collider
-    /// switched off so terrain and rock above or around the tunnel cannot block it. The graphs are joined to each
-    /// other and to the vanilla graph by node connections across the road; a lookup of the vanilla graph by name
-    /// covers the added ones too.
+    /// Graph", which ends at the map edge. Up to three graphs are added with its settings: one over the expansion and
+    /// the approach to the connection, a clean one over the built stretches, scanned with every other collider
+    /// switched off so terrain and rock above or around the tunnel cannot block it, and one over the main world's own
+    /// road before a built stretch, scanned from colliders, because the vanilla scan leaves out decks and ramps whose
+    /// meshes it cannot read. The graphs are joined to each other and to the vanilla graph by node connections across
+    /// the road; a lookup of the vanilla graph by name covers the added ones too.
     /// </summary>
     internal sealed class VehicleNavigation
     {
@@ -38,7 +39,7 @@ namespace MapExpansions.Navigation
 
         private readonly string _id;
         private readonly List<Join> _joins = new();
-        private int _areaGraph = -1, _corridorGraph = -1;
+        private int _areaGraph = -1, _corridorGraph = -1, _roadGraph = -1;
         private object _watch;
         private bool _alive = true;
 
@@ -82,7 +83,7 @@ namespace MapExpansions.Navigation
             Rect local = def.VehicleArea;
             var area = local.size != Vector2.zero ? b.Frame.ToWorld(local) : TerrainArea(b);
             var areaBounds = new Bounds(new Vector3(area.center.x, 0f, area.center.y), new Vector3(area.width, 0f, area.height));
-            Bounds? corridor = null;
+            Bounds? corridor = null, road = null;
             foreach (var conn in b.Connections)
             {
                 var range = conn.BuiltRange;
@@ -91,9 +92,9 @@ namespace MapExpansions.Navigation
                     var p = conn.Curve.Points[i];
                     float d = conn.Curve.Distance[i];
                     areaBounds.Encapsulate(p);
+                    if (range.to > range.from && d < range.from) road = Grow(road, p);
                     if (range.to <= range.from || d < range.from || d > range.to) continue;
-                    if (corridor == null) corridor = new Bounds(p, Vector3.zero);
-                    else { var c = corridor.Value; c.Encapsulate(p); corridor = c; }
+                    corridor = Grow(corridor, p);
                 }
                 if (conn.Definition.VehicleJoin.HasValue) areaBounds.Encapsulate(b.Frame.Resolve(conn.Definition.VehicleJoin.Value));
             }
@@ -126,34 +127,62 @@ namespace MapExpansions.Navigation
                 yield return null;
             }
 
-            // Joins: vanilla graph to the area graph at the join point, the area graph into and out of the corridor.
+            if (road != null)
+            {
+                var r = road.Value;
+                float halfWidth = b.Connections.Max(x => x.HalfInnerWidth);
+                var rb = new Bounds();
+                rb.SetMinMax(r.min - new Vector3(halfWidth + 4f, 2f, halfWidth + 4f), r.max + new Vector3(halfWidth + 4f, 4f, halfWidth + 4f));
+                sw.Restart();
+                var roadGraph = AddRecast(a, src, $"MapExpansions {b.Id} Road Graph", rb, full: false);
+                if (roadGraph != null)
+                {
+                    _roadGraph = IndexOf(a, roadGraph);
+                    Scan(a, roadGraph, "road", null);
+                    Core.Log.Msg($"vehicle nav: '{b.Id}' road graph {_roadGraph} over {rb.min}..{rb.max} scanned in {sw.ElapsedMilliseconds} ms, " +
+                                 $"{roadGraph.CountNodes()} nodes");
+                }
+                yield return null;
+            }
+
+            // Joins: vanilla graph to the road graph (or the area graph) at the join point, into and out of the corridor.
             foreach (var conn in b.Connections)
             {
                 var curve = conn.Curve;
                 float hw = conn.Definition.RoadWidth * 0.5f;
+                var range = conn.BuiltRange;
+                // A connection that starts on the main world's own road reaches the corridor over the road graph.
+                int approach = _roadGraph >= 0 && range.to > range.from && range.from > 0f ? _roadGraph : _areaGraph;
                 if (conn.Definition.VehicleJoin.HasValue)
                 {
                     var j = b.Frame.Resolve(conn.Definition.VehicleJoin.Value);
                     float d = curve.Project(j, out _);
-                    AddJoins($"{conn.Name} vanilla", general, _areaGraph, curve, d, d, hw);
+                    AddJoins($"{conn.Name} vanilla", general, approach, curve, d, d, hw);
                 }
                 else Core.Log.Warning($"vehicle nav: '{b.Id}' {conn.Name} has no VehicleJoin; vehicles cannot drive from the main world into it");
-                var range = conn.BuiltRange;
                 if (_corridorGraph >= 0 && range.to > range.from)
                 {
-                    AddJoins($"{conn.Name} entry", _areaGraph, _corridorGraph, curve, Mathf.Max(0f, range.from - 3f), range.from + 3f, hw);
+                    AddJoins($"{conn.Name} entry", approach, _corridorGraph, curve, Mathf.Max(0f, range.from - 3f), range.from + 3f, hw);
                     AddJoins($"{conn.Name} exit", _corridorGraph, _areaGraph, curve, range.to - 3f, Mathf.Min(curve.Length, range.to + 3f), hw);
                 }
             }
             ApplyJoins(a, "joined");
 
-            ExtraMask = (_areaGraph >= 0 ? 1 << _areaGraph : 0) | (_corridorGraph >= 0 ? 1 << _corridorGraph : 0);
+            ExtraMask = (_areaGraph >= 0 ? 1 << _areaGraph : 0) | (_corridorGraph >= 0 ? 1 << _corridorGraph : 0) | (_roadGraph >= 0 ? 1 << _roadGraph : 0);
             int seekers = UpdateSeekers();
             AddRoadNodes(a, b);
             Core.Log.Msg($"vehicle nav: '{b.Id}' graph mask {ExtraMask} added to '{GeneralGraphName}' lookups, {seekers} vehicle seekers updated");
 
             foreach (var conn in b.Connections) CheckPath(conn);
             _watch = MelonCoroutines.Start(Watch());
+        }
+
+        private static Bounds Grow(Bounds? b, Vector3 p)
+        {
+            if (b == null) return new Bounds(p, Vector3.zero);
+            var x = b.Value;
+            x.Encapsulate(p);
+            return x;
         }
 
         private static Rect TerrainArea(BuiltExpansion b)

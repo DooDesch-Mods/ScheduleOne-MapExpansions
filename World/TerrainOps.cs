@@ -224,8 +224,9 @@ namespace MapExpansions.World
             public HoleMask(BuiltExpansion owner) => _owner = owner;
 
             /// <summary>
-            /// Marks every hole cell of the terrain whose centre passes the test. The test gets the cell centre's
-            /// world x/z and the terrain height there.
+            /// Marks every hole cell of the terrain that passes the test. The test gets the cell centre's world x/z and
+            /// a terrain height. A cell on a steep slope spans many metres between its corners and is drawn as a
+            /// sliver across that span, so the test runs over the whole span in steps of one metre.
             /// </summary>
             public int Cut(Terrain t, Rect worldArea, Func<float, float, float, bool> isHole, string reason)
             {
@@ -250,8 +251,21 @@ namespace MapExpansions.World
                         int i = y * res + x;
                         if (!e.Solid[i]) continue;
                         float wx = p.x + (x + 0.5f) / res * s.x;
-                        float h = t.SampleHeight(new Vector3(wx, 0f, wz)) + p.y;
-                        if (!isHole(wx, wz, h)) continue;
+                        float cx = s.x / res * 0.5f, cz = s.z / res * 0.5f;
+                        float lo = float.MaxValue, hi = float.MinValue;
+                        foreach (var (dx, dz) in Corners)
+                        {
+                            float ch = t.SampleHeight(new Vector3(wx + dx * cx, 0f, wz + dz * cz)) + p.y;
+                            lo = Mathf.Min(lo, ch);
+                            hi = Mathf.Max(hi, ch);
+                        }
+                        bool hole = false;
+                        for (float h = lo; !hole; h = Mathf.Min(h + 1f, hi))
+                        {
+                            hole = isHole(wx, wz, h);
+                            if (h >= hi) break;
+                        }
+                        if (!hole) continue;
                         e.Solid[i] = false;
                         added++;
                     }
@@ -263,6 +277,8 @@ namespace MapExpansions.World
                 }
                 return added;
             }
+
+            private static readonly (float, float)[] Corners = { (0f, 0f), (-1f, -1f), (1f, -1f), (-1f, 1f), (1f, 1f) };
 
             private Entry Get(Terrain t)
             {
