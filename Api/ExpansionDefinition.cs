@@ -134,6 +134,13 @@ namespace MapExpansions
         /// show as gaps in the sky.
         /// </summary>
         DoubleSided,
+
+        /// <summary>
+        /// Hangs a wall of the same material from the open lower edges of each selected mesh down to
+        /// <see cref="ObjectRule.Bottom"/>. Only edges inside the rule's area count. For a cliff whose lower edge
+        /// floats over the ground, so the view passes under it. The wall has no collider.
+        /// </summary>
+        Skirt,
     }
 
     /// <summary>Selects objects by name in one world, optionally limited to an area.</summary>
@@ -155,6 +162,9 @@ namespace MapExpansions
 
         public ObjectEffect Effect { get; set; } = ObjectEffect.Hide;
 
+        /// <summary>For <see cref="ObjectEffect.Skirt"/>: the height the wall reaches down to, in the same coordinates as <see cref="Area"/>.</summary>
+        public float Bottom { get; set; }
+
         public static ObjectRule In(WorldSide side, string name, ObjectEffect effect, string parent = null) =>
             new() { Side = side, Name = name, Parent = parent, Effect = effect };
 
@@ -163,6 +173,13 @@ namespace MapExpansions
             var b = new Bounds();
             b.SetMinMax(Vector3.Min(min, max), Vector3.Max(min, max));
             Area = b;
+            return this;
+        }
+
+        /// <summary>Sets <see cref="Bottom"/>.</summary>
+        public ObjectRule DownTo(float height)
+        {
+            Bottom = height;
             return this;
         }
 

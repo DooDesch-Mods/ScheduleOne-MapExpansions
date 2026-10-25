@@ -78,7 +78,8 @@ namespace MapExpansions.Navigation
                 yield break;
             }
 
-            // The expansion's area plus the approach of every connection.
+            // The expansion's area plus the part of every connection behind its built range. The stretch before it lies on
+            // the main world's roads; scanned into the area graph it would become islands that no join reaches.
             var def = b.Definition;
             Rect local = def.VehicleArea;
             var area = local.size != Vector2.zero ? b.Frame.ToWorld(local) : TerrainArea(b);
@@ -91,19 +92,21 @@ namespace MapExpansions.Navigation
                 {
                     var p = conn.Curve.Points[i];
                     float d = conn.Curve.Distance[i];
-                    areaBounds.Encapsulate(p);
-                    if (range.to > range.from && d < range.from) road = Grow(road, p);
+                    bool built = range.to > range.from;
+                    if (!built || d > range.to) areaBounds.Encapsulate(p);
+                    if (built && d < range.from) road = Grow(road, p);
                     if (range.to <= range.from || d < range.from || d > range.to) continue;
                     corridor = Grow(corridor, p);
                 }
-                if (conn.Definition.VehicleJoin.HasValue) areaBounds.Encapsulate(b.Frame.Resolve(conn.Definition.VehicleJoin.Value));
+                if (conn.Definition.VehicleJoin.HasValue && !(range.to > range.from && range.from > 0f))
+                    areaBounds.Encapsulate(b.Frame.Resolve(conn.Definition.VehicleJoin.Value));
             }
             areaBounds.Expand(new Vector3(30f, 0f, 30f));
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var areaGraph = AddRecast(a, src, $"MapExpansions {b.Id} Vehicle Graph", areaBounds, full: true);
             if (areaGraph == null) yield break;
             _areaGraph = IndexOf(a, areaGraph);
-            Scan(a, areaGraph, "area", null);
+            Scan(a, areaGraph, "area", null, false);
             Core.Log.Msg($"vehicle nav: '{b.Id}' area graph {_areaGraph} over x {areaBounds.min.x:0}..{areaBounds.max.x:0} z {areaBounds.min.z:0}..{areaBounds.max.z:0} " +
                          $"scanned in {sw.ElapsedMilliseconds} ms, {areaGraph.CountNodes()} nodes");
             yield return null;
@@ -120,7 +123,7 @@ namespace MapExpansions.Navigation
                 if (corridorGraph != null)
                 {
                     _corridorGraph = IndexOf(a, corridorGraph);
-                    Scan(a, corridorGraph, "corridor", b);
+                    Scan(a, corridorGraph, "corridor", b, false);
                     Core.Log.Msg($"vehicle nav: '{b.Id}' corridor graph {_corridorGraph} over {cb.min}..{cb.max} scanned in {sw.ElapsedMilliseconds} ms, " +
                                  $"{corridorGraph.CountNodes()} nodes");
                 }
@@ -138,7 +141,7 @@ namespace MapExpansions.Navigation
                 if (roadGraph != null)
                 {
                     _roadGraph = IndexOf(a, roadGraph);
-                    Scan(a, roadGraph, "road", null);
+                    Scan(a, roadGraph, "road", null, true);
                     Core.Log.Msg($"vehicle nav: '{b.Id}' road graph {_roadGraph} over {rb.min}..{rb.max} scanned in {sw.ElapsedMilliseconds} ms, " +
                                  $"{roadGraph.CountNodes()} nodes");
                 }
@@ -165,6 +168,7 @@ namespace MapExpansions.Navigation
                     AddJoins($"{conn.Name} entry", approach, _corridorGraph, curve, Mathf.Max(0f, range.from - 3f), range.from + 3f, hw);
                     AddJoins($"{conn.Name} exit", _corridorGraph, _areaGraph, curve, range.to - 3f, Mathf.Min(curve.Length, range.to + 3f), hw);
                 }
+                if (approach == _roadGraph) BridgeGaps(a, conn);
             }
             ApplyJoins(a, "joined");
 
@@ -243,14 +247,16 @@ namespace MapExpansions.Navigation
 
         /// <summary>
         /// Scans a graph. For the corridor, every collider in its bounds that the framework did not build is switched
-        /// off for the duration of the scan, which runs in one frame, so no physics step sees the gap.
+        /// off for the duration of the scan, which runs in one frame, so no physics step sees the gap. With
+        /// <paramref name="readable"/>, every mesh collider whose mesh the scan cannot read gets a readable twin for the
+        /// duration of the scan; the vanilla ramps are such colliders.
         /// </summary>
-        private static void Scan(AstarPath a, RecastGraph g, string what, BuiltExpansion corridorOf)
+        private static void Scan(AstarPath a, RecastGraph g, string what, BuiltExpansion corridorOf, bool readable)
         {
+            var bounds = new Bounds(g.forcedBoundsCenter, g.forcedBoundsSize);
             var off = new List<Collider>();
             if (corridorOf != null)
             {
-                var bounds = new Bounds(g.forcedBoundsCenter, g.forcedBoundsSize);
                 foreach (var c in Physics.OverlapBox(bounds.center, bounds.extents, Quaternion.identity, ~0, QueryTriggerInteraction.Collide))
                 {
                     if (c == null || !c.enabled) continue;
@@ -259,6 +265,8 @@ namespace MapExpansions.Navigation
                     off.Add(c);
                 }
             }
+            var twinNames = new List<string>();
+            var twins = readable ? AddReadableTwins(bounds, g.mask, what, twinNames) : new List<GameObject>();
             try
             {
                 a.Scan(g);
@@ -271,8 +279,52 @@ namespace MapExpansions.Navigation
             {
                 foreach (var c in off)
                     if (c != null) c.enabled = true;
+                foreach (var t in twins)
+                {
+                    if (t == null) continue;
+                    var mc = t.GetComponent<MeshCollider>();
+                    var m = mc != null ? mc.sharedMesh : null;
+                    Object.DestroyImmediate(t);
+                    if (m != null) Object.Destroy(m);
+                }
             }
             if (off.Count > 0) Core.Log.Msg($"vehicle nav: {off.Count} foreign colliders were off during the {what} scan and are back on");
+            if (twins.Count > 0)
+            {
+                string names = string.Join(", ", twinNames.GroupBy(x => x).Select(x => x.Count() > 1 ? $"{x.Key} x{x.Count()}" : x.Key));
+                Core.Log.Msg($"vehicle nav: {twins.Count} readable collider twins were in the {what} scan and are gone: {names}");
+            }
+        }
+
+        private static List<GameObject> AddReadableTwins(Bounds bounds, LayerMask mask, string what, List<string> names)
+        {
+            var twins = new List<GameObject>();
+            foreach (var c in Physics.OverlapBox(bounds.center, bounds.extents, Quaternion.identity, mask, QueryTriggerInteraction.Ignore))
+            {
+                var mc = c != null && c.enabled ? c.TryCast<MeshCollider>() : null;
+                var mesh = mc != null ? mc.sharedMesh : null;
+                if (mesh == null || mesh.isReadable) continue;
+                Mesh copy;
+                try { copy = World.MeshCarver.ReadableCopy(mesh, mesh.name + " (nav scan)"); }
+                catch (Exception e)
+                {
+                    Core.Log.Warning($"vehicle nav: '{c.name}' stays out of the {what} scan, its mesh could not be read from the GPU: {e.Message}");
+                    continue;
+                }
+                if (copy == null)
+                {
+                    Core.Log.Warning($"vehicle nav: '{c.name}' stays out of the {what} scan, its mesh has no triangles");
+                    continue;
+                }
+                var t = new GameObject($"MapExpansions nav twin {c.name}") { layer = c.gameObject.layer };
+                t.transform.SetParent(c.transform, false);
+                var twin = t.AddComponent<MeshCollider>();
+                twin.convex = mc.convex;
+                twin.sharedMesh = copy;
+                twins.Add(t);
+                names.Add(c.name);
+            }
+            return twins;
         }
 
         /// <summary>Three node pairs across the road: one on the centre line and one on each side of it.</summary>
@@ -295,6 +347,79 @@ namespace MapExpansions.Navigation
                     PointB = curve.Points[iB] + curve.Right(iB) * (o * halfRoad),
                 });
             }
+        }
+
+        /// <summary>
+        /// The scan keeps a vehicle's radius away from every edge, and two colliders that meet flush, such as a ramp and
+        /// the deck it runs onto, each get that edge. Along the main world's stretch of a connection, every gap in the
+        /// road graph's cover of the route is joined across, where the surface under the route runs on without a step.
+        /// </summary>
+        private void BridgeGaps(AstarPath a, BuiltConnection conn)
+        {
+            var curve = conn.Curve;
+            float until = conn.BuiltRange.from;
+            int lastCovered = -1;
+            bool inGap = false;
+            for (int i = 0; i < curve.Count && curve.Distance[i] <= until; i++)
+            {
+                if (!Covers(a, _roadGraph, curve.Points[i], out _))
+                {
+                    inGap = true;
+                    continue;
+                }
+                if (inGap && lastCovered >= 0)
+                {
+                    Vector3 from = curve.Points[lastCovered], to = curve.Points[i];
+                    float length = curve.Distance[i] - curve.Distance[lastCovered];
+                    string what = $"{conn.Name} gap {curve.Distance[lastCovered]:0}..{curve.Distance[i]:0} m";
+                    if (length > MaxBridge)
+                        Core.Log.Warning($"vehicle nav: '{_id}' {what} is {length:0} m long, more than {MaxBridge:0} m; not bridged");
+                    else if (!Continuous(from, to, out string why))
+                        Core.Log.Warning($"vehicle nav: '{_id}' {what} not bridged: {why}");
+                    else
+                        _joins.Add(new Join { What = what, GraphA = _roadGraph, GraphB = _roadGraph, PointA = from, PointB = to });
+                }
+                lastCovered = i;
+                inGap = false;
+            }
+        }
+
+
+        /// <summary>The graph has a node on the route point: within half a metre across and a metre and a half up or down.</summary>
+        private static bool Covers(AstarPath a, int graph, Vector3 p, out Vector3 at)
+        {
+            var nn = a.GetNearest(p, new NNConstraint { graphMask = new GraphMask { value = 1 << graph } });
+            at = nn.position;
+            var d = nn.position - p;
+            return nn.node != null && new Vector2(d.x, d.z).magnitude < 0.5f && Mathf.Abs(d.y) < 1.5f;
+        }
+
+        private const float MaxBridge = 12f;
+        private const float MaxStep = 0.4f;
+
+        /// <summary>The topmost surface under a line, sampled every metre, has no step higher than a kerb.</summary>
+        private static bool Continuous(Vector3 from, Vector3 to, out string why)
+        {
+            int n = Mathf.Max(2, Mathf.CeilToInt(Vector3.Distance(from, to)));
+            float top = Mathf.Max(from.y, to.y) + 4f;
+            float? last = null;
+            for (int k = 0; k <= n; k++)
+            {
+                var p = Vector3.Lerp(from, to, k / (float)n);
+                if (!Physics.Raycast(new Vector3(p.x, top, p.z), Vector3.down, out var hit, 12f, ~0, QueryTriggerInteraction.Ignore))
+                {
+                    why = $"no surface under ({p.x:0.0}, {p.z:0.0})";
+                    return false;
+                }
+                if (last.HasValue && Mathf.Abs(hit.point.y - last.Value) > MaxStep)
+                {
+                    why = $"a step of {Mathf.Abs(hit.point.y - last.Value):0.00} m at ({p.x:0.0}, {p.z:0.0}) on '{hit.collider.name}'";
+                    return false;
+                }
+                last = hit.point.y;
+            }
+            why = null;
+            return true;
         }
 
         private static GraphNode Nearest(AstarPath a, Vector3 p, int graph, out Vector3 at)
@@ -388,41 +513,205 @@ namespace MapExpansions.Navigation
         }
 
         /// <summary>
-        /// Stuck vehicles are put back onto the nearest node of "Road Nodes". The expansion's own road nodes and nodes
-        /// along each connection join that graph, so a vehicle stuck there stays where it is.
+        /// "Road Nodes" is the road network of vanilla navigation: with roads on, a route enters it at the road link
+        /// nearest the start and leaves it at the link nearest the destination, and a route with endAtRoad stops
+        /// there. The expansion's road nodes and a chain along each connection join that graph, with a road link for
+        /// each edge, so a route into the expansion stays on the road up to the destination. Stuck vehicles are put
+        /// back onto the nearest node of this graph too.
         /// </summary>
-        private static void AddRoadNodes(AstarPath a, BuiltExpansion b)
+        private void AddRoadNodes(AstarPath a, BuiltExpansion b)
         {
             int index = IndexOf(a, RoadNodesGraphName);
             var g = index >= 0 ? a.data.graphs[index]?.TryCast<PointGraph>() : null;
             if (g == null)
             {
-                Core.Log.Warning($"vehicle nav: '{b.Id}' no point graph '{RoadNodesGraphName}'; stuck vehicles return to the main world's roads");
+                Core.Log.Warning($"vehicle nav: '{b.Id}' no point graph '{RoadNodesGraphName}'; vehicles leave the road network at the main world's edge");
                 return;
             }
             var points = new List<Vector3>();
+            var edges = new List<(int From, int To, bool OneWay)>();
             foreach (var p in b.Source.RoadNodes) points.Add(b.Frame.ToWorld(p));
+            int sourceCount = points.Count;
+            edges.AddRange(b.Source.RoadLinks);
+            if (sourceCount > 1 && edges.Count == 0)
+            {
+                Core.Log.Warning($"vehicle nav: '{b.Id}' the source has no road links; its road nodes are chained by distance");
+                for (int i = 0; i < sourceCount; i++)
+                {
+                    int n = Nearest(points, 0, sourceCount, points[i], i);
+                    if (n >= 0 && !edges.Contains((n, i, false))) edges.Add((i, n, false));
+                }
+            }
+            int oneWay = edges.Count(e => e.OneWay);
+            if (oneWay > 0) Core.Log.Msg($"vehicle nav: '{b.Id}' {oneWay} of {edges.Count} source road links are one-way");
+
+            // Vanilla road nodes run per lane and their links one way, with traffic on the right. Each connection gets
+            // a lane each way, and its main-world end joins every lane nearby, so a vehicle turns onto it from either
+            // direction instead of driving round a block to reach the one nearest node.
+            var mainEnds = new List<(int Into, int OutOf, Vector3 At)>();
             foreach (var conn in b.Connections)
-                for (float d = 0f; d <= conn.Curve.Length; d += 20f)
-                    points.Add(conn.Curve.PointAt(d) + Vector3.up * 0.3f);
-            int added = 0;
+            {
+                var curve = conn.Curve;
+                int steps = Mathf.Max(1, Mathf.CeilToInt(curve.Length / RoadLinkStep));
+                int there = points.Count;
+                for (int i = 0; i <= steps; i++)
+                {
+                    float d = curve.Length * i / steps;
+                    points.Add(curve.PointAt(d) + curve.Right(curve.IndexAt(d)) * RoadLaneOffset + Vector3.up * 0.3f);
+                    if (i > 0) edges.Add((points.Count - 2, points.Count - 1, true));
+                }
+                int back = points.Count;
+                for (int i = 0; i <= steps; i++)
+                {
+                    float d = curve.Length * (steps - i) / steps;
+                    points.Add(curve.PointAt(d) - curve.Right(curve.IndexAt(d)) * RoadLaneOffset + Vector3.up * 0.3f);
+                    if (i > 0) edges.Add((points.Count - 2, points.Count - 1, true));
+                }
+                int thereEnd = back - 1, backEnd = points.Count - 1;
+                int inSource = Nearest(points, 0, sourceCount, points[thereEnd], -1);
+                if (inSource >= 0)
+                {
+                    edges.Add((thereEnd, inSource, true));
+                    edges.Add((Nearest(points, 0, sourceCount, points[back], -1), back, true));
+                }
+                else Core.Log.Warning($"vehicle nav: '{b.Id}' {conn.Name} ends with no source road node to join");
+                mainEnds.Add((there, backEnd, curve.Points[0]));
+            }
+
+            // A vanilla link can run tens of metres past the junction with no node near it; the lanes join the links
+            // that pass, from the link's start into the expansion and out of it to the link's end.
+            var passing = new List<(int End, Vector3 From, Vector3 To, bool OneWay, float Factor)>();
+            var factors = new List<float>();
+            foreach (var link in NodeLink.validNodeLinks)
+            {
+                if (link == null || link.end == null) continue;
+                factors.Add(link.costFactor);
+                for (int m = 0; m < mainEnds.Count; m++)
+                    if (Vector3.Distance(link.GetClosestPoint(mainEnds[m].At), mainEnds[m].At) <= MainJoinRadius)
+                        passing.Add((m, link.Start.position, link.end.position, link.oneWay, link.costFactor));
+            }
+            // Vanilla links weigh their length by a cost factor; the added edges use the usual one, or a route compares
+            // a cheap vanilla detour with a full-price way into the expansion.
+            factors.Sort();
+            float factor = factors.Count > 0 ? factors[factors.Count / 2] : 1f;
+            Core.Log.Msg($"vehicle nav: '{b.Id}' {factors.Count} main-world road links, cost factor {(factors.Count > 0 ? factors[0] : 1f):0.###}..{(factors.Count > 0 ? factors[^1] : 1f):0.###}, median {factor:0.###}");
+
+            var nodes = new PointNode[points.Count];
+            int added = 0, connected = 0, joined = 0, missing = 0;
             try
             {
                 a.AddWorkItem(DelegateSupport.ConvertDelegate<Il2CppSystem.Action>(new Action(() =>
                 {
-                    foreach (var p in points)
-                        if (g.AddNode((Int3)p) != null) added++;
+                    var linkNodes = new (List<GraphNode> From, List<GraphNode> To)[passing.Count];
+                    for (int k = 0; k < passing.Count; k++)
+                        linkNodes[k] = (NodesAt(g, passing[k].From), NodesAt(g, passing[k].To));
+                    for (int i = 0; i < points.Count; i++)
+                        if ((nodes[i] = g.AddNode((Int3)points[i])) != null) added++;
+                    foreach (var (from, to, one) in edges)
+                        if (Connect(nodes[from], nodes[to], one, factor)) connected++;
+                    for (int k = 0; k < passing.Count; k++)
+                    {
+                        var (m, _, _, one, f) = passing[k];
+                        var (from, to) = linkNodes[k];
+                        if (from.Count == 0 || to.Count == 0) { missing++; continue; }
+                        foreach (var x in from) if (Connect(x, nodes[mainEnds[m].Into], true, f)) joined++;
+                        foreach (var x in to) if (Connect(nodes[mainEnds[m].OutOf], x, true, f)) joined++;
+                        if (one) continue;
+                        foreach (var x in to) if (Connect(x, nodes[mainEnds[m].Into], true, f)) joined++;
+                        foreach (var x in from) if (Connect(nodes[mainEnds[m].OutOf], x, true, f)) joined++;
+                    }
                 })));
                 a.FlushWorkItems();
                 g.RebuildNodeLookup();
             }
             catch (Exception e)
             {
-                Core.Log.Error($"vehicle nav: '{b.Id}' adding road nodes failed after {added}: {e}");
+                Core.Log.Error($"vehicle nav: '{b.Id}' adding road nodes failed after {added} nodes and {connected} edges: {e}");
                 return;
             }
-            Core.Log.Msg($"vehicle nav: '{b.Id}' {added} road nodes added ({b.Source.RoadNodes.Count} from the source, {points.Count - b.Source.RoadNodes.Count} along connections)");
+
+            _linkRoot = new GameObject($"MapExpansions road links {b.Id}");
+            var ends = new Transform[points.Count];
+            Transform At(int i)
+            {
+                if (ends[i] != null) return ends[i];
+                var t = new GameObject($"road node {i}").transform;
+                t.SetParent(_linkRoot.transform, false);
+                t.position = points[i];
+                return ends[i] = t;
+            }
+            void Link(Transform from, Transform to)
+            {
+                var link = from.gameObject.AddComponent<NodeLink>();
+                // Disabled, so a later graph update does not apply it: Apply joins the nearest nodes of every graph.
+                // The edge is already in the graph; the link only marks where a route enters and leaves the road.
+                link.enabled = false;
+                link.end = to;
+                link.midPosition = (from.position + to.position) / 2f;
+                NodeLink.validNodeLinks.Add(link);
+                _links.Add(link);
+            }
+            foreach (var (from, to, _) in edges) Link(At(from), At(to));
+            Transform Main(Vector3 at)
+            {
+                var t = new GameObject("main road node").transform;
+                t.SetParent(_linkRoot.transform, false);
+                t.position = at;
+                return t;
+            }
+            foreach (var (m, from, to, _, _) in passing)
+            {
+                Link(Main(from), At(mainEnds[m].Into));
+                Link(At(mainEnds[m].OutOf), Main(to));
+            }
+            Core.Log.Msg($"vehicle nav: '{b.Id}' {added} road nodes added ({sourceCount} from the source, {points.Count - sourceCount} in two lanes along connections), " +
+                         $"{connected} of {edges.Count} edges connected, {joined} edges to {passing.Count} main-world road links within {MainJoinRadius:0} m, {_links.Count} road links");
+            foreach (var (m, from, to, one, _) in passing)
+                Core.Log.Msg($"vehicle nav: '{b.Id}' connection {m} joins the main-world road link {from} -> {to}{(one ? " (one way)" : "")}");
+            if (missing > 0) Core.Log.Warning($"vehicle nav: '{b.Id}' {missing} main-world road links have no road node at an end and are not joined");
+            if (passing.Count == 0)
+                Core.Log.Warning($"vehicle nav: '{b.Id}' no main-world road link within {MainJoinRadius:0} m of a connection's start; routes cannot enter it by road");
         }
+
+        private static bool Connect(GraphNode x, GraphNode y, bool oneWay, float factor)
+        {
+            if (x == null || y == null || x == y) return false;
+            uint cost = (uint)Math.Round((x.position - y.position).costMagnitude * factor);
+            x.AddConnection(y, cost);
+            if (!oneWay) y.AddConnection(x, cost);
+            return true;
+        }
+
+        /// <summary>The nodes of the point graph on a road link's end, within half a metre; lanes can share a spot.</summary>
+        private static List<GraphNode> NodesAt(PointGraph g, Vector3 p)
+        {
+            var list = new List<GraphNode>();
+            for (int i = 0; i < g.nodeCount; i++)
+            {
+                var n = g.nodes[i];
+                if (n != null && ((Vector3)n.position - p).sqrMagnitude < 0.25f) list.Add(n);
+            }
+            return list;
+        }
+
+        private static int Nearest(List<Vector3> points, int from, int to, Vector3 p, int skip)
+        {
+            int best = -1;
+            float bestD = float.MaxValue;
+            for (int i = from; i < to; i++)
+            {
+                if (i == skip) continue;
+                float d = (points[i] - p).sqrMagnitude;
+                if (d < bestD) { bestD = d; best = i; }
+            }
+            return best;
+        }
+
+        private const float RoadLinkStep = 10f;
+        private const float RoadLaneOffset = 2f;
+        private const float MainJoinRadius = 10f;
+        private readonly List<NodeLink> _links = new();
+        private GameObject _linkRoot;
 
         /// <summary>Path from before the connection to after it, on the vanilla graph plus the added ones.</summary>
         private void CheckPath(BuiltConnection conn)
@@ -432,7 +721,8 @@ namespace MapExpansions.Navigation
             var path = ABPath.Construct(s, e, null);
             int general = AstarPath.active != null ? IndexOf(AstarPath.active, GeneralGraphName) : -1;
             path.nnConstraint.graphMask = new GraphMask { value = (general >= 0 ? 1 << general : 0) | ExtraMask };
-            path.calculatePartial = true;
+            // No partial path: this A* version leaves the target node flagged after one, and the next search that
+            // reaches that node throws and ends the pathfinding threads for every vehicle.
             AstarPath.StartPath(path);
             path.BlockUntilCalculated();
             int count = path.vectorPath?.Count ?? 0;
@@ -446,7 +736,8 @@ namespace MapExpansions.Navigation
                     if (graphs.Count == 0 || graphs[graphs.Count - 1] != gi) graphs.Add(gi);
                 }
             string line = $"vehicle nav: '{_id}' {conn.Name} path check {s} -> {e}: {path.CompleteState}, {count} points, " +
-                          $"{(count > 1 ? path.GetTotalLength() : 0f):0} m, ends {miss:0.0} m from the target, graphs {string.Join(">", graphs)}";
+                          $"{(count > 1 ? path.GetTotalLength() : 0f):0} m, ends {miss:0.0} m from the target, graphs {string.Join(">", graphs)}" +
+                          (path.error ? $", '{path.errorLog}'" : "");
             if (path.CompleteState == PathCompleteState.Complete && miss < 5f) Core.Log.Msg(line);
             else Core.Log.Error(line + "; vehicles will not drive through the connection");
         }
@@ -456,6 +747,10 @@ namespace MapExpansions.Navigation
             _alive = false;
             if (_watch != null) MelonCoroutines.Stop(_watch);
             _watch = null;
+            foreach (var link in _links) NodeLink.validNodeLinks.Remove(link);
+            _links.Clear();
+            if (_linkRoot != null) Object.Destroy(_linkRoot);
+            _linkRoot = null;
             _joins.Clear();
             ExtraMask = 0;
             Core.Log.Msg($"vehicle nav: '{_id}' released; the added graphs go with the scene");

@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Diagnostics;
 using Il2CppInterop.Runtime;
+using Il2CppPathfinding;
 using MapExpansions.Lifecycle;
 using MelonLoader;
 using Unity.AI.Navigation;
@@ -24,6 +25,9 @@ namespace MapExpansions.Source
 
         /// <summary>Road node positions in source coordinates, in scene order.</summary>
         public readonly List<Vector3> RoadNodes = new();
+
+        /// <summary>Road links between two entries of <see cref="RoadNodes"/>, by index, as the source scene sets them.</summary>
+        public readonly List<(int From, int To, bool OneWay)> RoadLinks = new();
     }
 
     internal sealed class NavSource
@@ -333,7 +337,16 @@ namespace MapExpansions.Source
                 {
                     if (t.name != src.RoadNodesName) continue;
                     for (int i = 0; i < t.childCount; i++) captured.RoadNodes.Add(t.GetChild(i).position);
-                    Core.Log.Msg($"capture: {t.childCount} road nodes under '{t.name}' (root '{root.name}')");
+                    int open = 0;
+                    for (int i = 0; i < t.childCount; i++)
+                        foreach (var link in t.GetChild(i).GetComponents<NodeLink>())
+                        {
+                            int to = link.end != null && link.end.parent == t ? link.end.GetSiblingIndex() : -1;
+                            if (to < 0 || to == i) { open++; continue; }
+                            captured.RoadLinks.Add((i, to, link.oneWay));
+                        }
+                    Core.Log.Msg($"capture: {t.childCount} road nodes and {captured.RoadLinks.Count} road links under '{t.name}' (root '{root.name}')");
+                    if (open > 0) Core.Log.Warning($"capture: {open} road links under '{t.name}' end outside it and are left out");
                     return;
                 }
             }

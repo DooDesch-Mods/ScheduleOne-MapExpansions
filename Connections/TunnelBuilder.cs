@@ -447,10 +447,17 @@ namespace MapExpansions.Connections
             {
                 int e = Mathf.Min(i1, s + step);
                 Vector3 a = curve.Points[s], bb = curve.Points[e];
-                conn.Interior.Add(OrientedBox.Along(a, bb, w * 2f, -0.15f, top));
-                conn.Blocking.Add(OrientedBox.Along(a, bb, w * 2f, 0.3f, top));
-                conn.Footprint.Add(OrientedBox.Along(a, bb, footprintWidth * 2f, -0.02f, footprintTop));
+                // Straight boxes along a bend leave a wedge between each other on the outer side, and the terrain in that
+                // wedge stands inside the tube; each box reaches a little into the next. Clearance and blocking boxes
+                // stop at the ends of the range, so nothing outside a portal is cut.
+                var along = (bb - a).normalized * FootprintOverlap;
+                Vector3 ia = s > i0 ? a - along : a, ib = e < i1 ? bb + along : bb;
+                conn.Interior.Add(OrientedBox.Along(ia, ib, w * 2f, -0.15f, top));
+                conn.Blocking.Add(OrientedBox.Along(ia, ib, w * 2f, 0.3f, top));
+                conn.Footprint.Add(OrientedBox.Along(a - along, bb + along, footprintWidth * 2f, -0.02f, footprintTop));
             }
         }
+
+        private const float FootprintOverlap = 1f;
     }
 }

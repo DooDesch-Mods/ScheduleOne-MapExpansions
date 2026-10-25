@@ -27,6 +27,7 @@ namespace MapExpansions.World
             public int IndexStart;
             public int IndexCount;
             public int BaseVertex;
+            public int Sub;
             public int[] Indices;
         }
 
@@ -79,13 +80,17 @@ namespace MapExpansions.World
                     mesh = clone;
                 }
 
-                if (mesh.isReadable && !batched)
-                {
-                    cut = CarveCpu(mesh, toWorld, boxes);
-                    return cut > 0 ? Outcome.Carved : Outcome.Untouched;
-                }
-                cut = CarveGpu(mesh, first, count, toWorld, boxes, Path(mr.transform));
-                return cut > 0 ? Outcome.Carved : Outcome.Untouched;
+                var materials = mr.sharedMaterials.ToArray();
+                var patch = new MeshPatch(boxes, materials.Length);
+                cut = mesh.isReadable && !batched
+                    ? CarveCpu(mesh, toWorld, boxes, patch)
+                    : CarveGpu(mesh, first, count, toWorld, boxes, Path(mr.transform), patch);
+                if (cut == 0) return Outcome.Untouched;
+                if (patch.Capped)
+                    Core.Log.Warning($"carve: '{Path(mr.transform)}' patch stopped at {patch.Pieces} pieces; part of the hole stays open");
+                if (patch.Build(mr, materials, owner, $"MapExpansions patch {mr.name}") != null)
+                    Core.Log.Msg($"carve: '{Path(mr.transform)}' {patch.Large} large cut triangles drawn again outside the connection in {patch.Pieces} pieces");
+                return Outcome.Carved;
             }
             catch (Exception e)
             {
@@ -169,6 +174,18 @@ namespace MapExpansions.World
             Matrix4x4 toLocal = mr.transform.worldToLocalMatrix * toWorld;
             int first = batched ? mr.subMeshStartIndex : 0;
             int count = batched ? Mathf.Min(mr.sharedMaterials.Length, mesh.subMeshCount - first) : mesh.subMeshCount;
+            return Copy(mesh, first, count, toLocal, true, name);
+        }
+
+        /// <summary>
+        /// A readable copy of a mesh with the same faces, for code that reads vertices on the CPU, such as a navigation
+        /// scan of a collider. Null when the mesh has no triangles.
+        /// </summary>
+        internal static Mesh ReadableCopy(Mesh mesh, string name) =>
+            Copy(mesh, 0, mesh.subMeshCount, Matrix4x4.identity, false, name);
+
+        private static Mesh Copy(Mesh mesh, int first, int count, Matrix4x4 toLocal, bool reverse, string name)
+        {
             bool wide = mesh.indexFormat == IndexFormat.UInt32;
 
             var subs = new List<int[]>();
@@ -210,6 +227,9 @@ namespace MapExpansions.World
             var back = new Mesh { name = name };
             if (local.Length > 65535) back.indexFormat = IndexFormat.UInt32;
             back.vertices = local;
+            // Without texture coordinates every vertex samples one texel, and the face draws as one flat colour.
+            var uv = reverse ? ReadUv(mesh, minV, local.Length, name) : null;
+            if (uv != null) back.uv = uv;
             back.subMeshCount = subs.Count;
             for (int s = 0; s < subs.Count; s++)
             {
@@ -218,8 +238,8 @@ namespace MapExpansions.World
                 for (int t = 0; t + 2 < src.Length; t += 3)
                 {
                     arr[t] = src[t] - minV;
-                    arr[t + 1] = src[t + 2] - minV;
-                    arr[t + 2] = src[t + 1] - minV;
+                    arr[t + 1] = src[reverse ? t + 2 : t + 1] - minV;
+                    arr[t + 2] = src[reverse ? t + 1 : t + 2] - minV;
                 }
                 back.SetTriangles(arr, s, false);
             }
@@ -228,11 +248,49 @@ namespace MapExpansions.World
             return back;
         }
 
-        private static int CarveCpu(Mesh mesh, Matrix4x4 toWorld, IReadOnlyList<OrientedBox> boxes)
+        /// <summary>The first texture coordinates of vertices start..start+count-1; null when the mesh has none.</summary>
+        private static Vector2[] ReadUv(Mesh mesh, int start, int count, string what)
+        {
+            var uv = new Vector2[count];
+            if (mesh.isReadable)
+            {
+                var all = mesh.uv;
+                if (all == null || all.Length < start + count)
+                {
+                    Core.Log.Warning($"carve: '{what}' has no texture coordinates; it draws in one colour");
+                    return null;
+                }
+                for (int i = 0; i < count; i++) uv[i] = all[start + i];
+                return uv;
+            }
+            var read = ReadAttribute(mesh, VertexAttribute.TexCoord0, start, count, what);
+            if (read == null)
+            {
+                Core.Log.Warning($"carve: '{what}' has no readable texture coordinates; it draws in one colour");
+                return null;
+            }
+            for (int i = 0; i < count; i++) uv[i] = read[i];
+            return uv;
+        }
+
+        private static int CarveCpu(Mesh mesh, Matrix4x4 toWorld, IReadOnlyList<OrientedBox> boxes, MeshPatch patch)
         {
             var verts = mesh.vertices;
             var world = new Vector3[verts.Length];
             for (int i = 0; i < verts.Length; i++) world[i] = toWorld.MultiplyPoint3x4(verts[i]);
+            var srcNormals = mesh.normals;
+            var srcUv = mesh.uv;
+            Vector4[] normals = null, uv = null;
+            if (srcNormals != null && srcNormals.Length == verts.Length)
+            {
+                normals = new Vector4[verts.Length];
+                for (int i = 0; i < verts.Length; i++) normals[i] = srcNormals[i];
+            }
+            if (srcUv != null && srcUv.Length == verts.Length)
+            {
+                uv = new Vector4[verts.Length];
+                for (int i = 0; i < verts.Length; i++) uv[i] = srcUv[i];
+            }
             int cut = 0;
             for (int s = 0; s < mesh.subMeshCount; s++)
             {
@@ -241,7 +299,12 @@ namespace MapExpansions.World
                 var keep = new List<int>(tris.Length);
                 for (int t = 0; t + 2 < tris.Length; t += 3)
                 {
-                    if (Hits(world[tris[t]], world[tris[t + 1]], world[tris[t + 2]], boxes)) { cut++; continue; }
+                    if (Hits(world[tris[t]], world[tris[t + 1]], world[tris[t + 2]], boxes))
+                    {
+                        cut++;
+                        if (s < patch.Submeshes) AddToPatch(patch, s, world, normals, uv, toWorld, tris[t], tris[t + 1], tris[t + 2], 0);
+                        continue;
+                    }
                     keep.Add(tris[t]);
                     keep.Add(tris[t + 1]);
                     keep.Add(tris[t + 2]);
@@ -256,7 +319,8 @@ namespace MapExpansions.World
             return cut;
         }
 
-        private static int CarveGpu(Mesh mesh, int first, int count, Matrix4x4 toWorld, IReadOnlyList<OrientedBox> boxes, string what)
+        private static int CarveGpu(Mesh mesh, int first, int count, Matrix4x4 toWorld, IReadOnlyList<OrientedBox> boxes, string what,
+            MeshPatch patch)
         {
             bool wide = mesh.indexFormat == IndexFormat.UInt32;
             var parts = new List<Part>();
@@ -265,7 +329,7 @@ namespace MapExpansions.World
             {
                 var d = mesh.GetSubMesh(s);
                 if (d.topology != MeshTopology.Triangles || d.indexCount == 0) continue;
-                var p = new Part { IndexStart = d.indexStart, IndexCount = d.indexCount, BaseVertex = d.baseVertex };
+                var p = new Part { IndexStart = d.indexStart, IndexCount = d.indexCount, BaseVertex = d.baseVertex, Sub = s - first };
                 p.Indices = ReadIndices(mesh, wide, d.indexStart, d.indexCount);
                 foreach (int i in p.Indices)
                 {
@@ -277,16 +341,30 @@ namespace MapExpansions.World
             }
             if (parts.Count == 0) return 0;
             var world = ReadPositions(mesh, minV, maxV - minV + 1, toWorld);
+            Vector4[] normals = null, uv = null;
+            bool attributesRead = false;
 
             int cut = 0;
-            foreach (var p in parts)
+            for (int pi = 0; pi < parts.Count; pi++)
             {
+                var p = parts[pi];
                 bool changed = false;
                 for (int t = 0; t + 2 < p.Indices.Length; t += 3)
                 {
                     int a = p.Indices[t], b = p.Indices[t + 1], c = p.Indices[t + 2];
                     if (a == b && b == c) continue;
                     if (!Hits(world[a + p.BaseVertex - minV], world[b + p.BaseVertex - minV], world[c + p.BaseVertex - minV], boxes)) continue;
+                    if (p.Sub < patch.Submeshes &&
+                        MeshPatch.IsLarge(world[a + p.BaseVertex - minV], world[b + p.BaseVertex - minV], world[c + p.BaseVertex - minV]))
+                    {
+                        if (!attributesRead)
+                        {
+                            attributesRead = true;
+                            normals = ReadAttribute(mesh, VertexAttribute.Normal, minV, maxV - minV + 1, what);
+                            uv = ReadAttribute(mesh, VertexAttribute.TexCoord0, minV, maxV - minV + 1, what);
+                        }
+                        AddToPatch(patch, p.Sub, world, normals, uv, toWorld, a + p.BaseVertex, b + p.BaseVertex, c + p.BaseVertex, minV);
+                    }
                     p.Indices[t + 1] = a;
                     p.Indices[t + 2] = a;
                     changed = true;
@@ -297,7 +375,86 @@ namespace MapExpansions.World
             return cut;
         }
 
-        private static bool Hits(Vector3 a, Vector3 b, Vector3 c, IReadOnlyList<OrientedBox> boxes)
+        /// <summary>One cut triangle into the patch, by vertex index; <paramref name="minV"/> is the first vertex of the arrays.</summary>
+        private static void AddToPatch(MeshPatch patch, int sub, Vector3[] world, Vector4[] normals, Vector4[] uv, Matrix4x4 toWorld,
+            int a, int b, int c, int minV)
+        {
+            Vector3 pa = world[a - minV], pb = world[b - minV], pc = world[c - minV];
+            var face = Vector3.Cross(pb - pa, pc - pa).normalized;
+            MeshPatch.V Corner(int i, Vector3 p)
+            {
+                var n = normals != null ? toWorld.MultiplyVector(normals[i - minV]).normalized : face;
+                var u = uv != null ? (Vector2)uv[i - minV] : Vector2.zero;
+                return new MeshPatch.V(p, n, u);
+            }
+            patch.Add(sub, Corner(a, pa), Corner(b, pb), Corner(c, pc));
+        }
+
+        /// <summary>
+        /// One vertex attribute of vertices start..start+count-1 from the GPU buffers; null when the mesh has none or
+        /// stores it in a format not read here.
+        /// </summary>
+        private static Vector4[] ReadAttribute(Mesh mesh, VertexAttribute attr, int start, int count, string what)
+        {
+            if (!mesh.HasVertexAttribute(attr)) return null;
+            var format = mesh.GetVertexAttributeFormat(attr);
+            int dims = mesh.GetVertexAttributeDimension(attr);
+            int stream = mesh.GetVertexAttributeStream(attr);
+            int stride = mesh.GetVertexBufferStride(stream);
+            int offset = mesh.GetVertexAttributeOffset(attr);
+            if (stride % 4 != 0)
+            {
+                Core.Log.Warning($"carve: '{what}' {attr} sits in a stream with stride {stride}; the patch goes without it");
+                return null;
+            }
+            int words = stride / 4;
+            var bytes = new byte[count * stride];
+            var buf = mesh.GetVertexBuffer(stream);
+            try
+            {
+                var arr = new Il2CppStructArray<uint>(count * words);
+                buf.InternalGetData(new Il2CppSystem.Array(arr.Pointer), 0, start * words, count * words, 4);
+                for (int i = 0; i < count * words; i++)
+                {
+                    uint w = arr[i];
+                    bytes[i * 4] = (byte)w;
+                    bytes[i * 4 + 1] = (byte)(w >> 8);
+                    bytes[i * 4 + 2] = (byte)(w >> 16);
+                    bytes[i * 4 + 3] = (byte)(w >> 24);
+                }
+            }
+            finally
+            {
+                buf.Dispose();
+            }
+            var result = new Vector4[count];
+            for (int i = 0; i < count; i++)
+            {
+                int o = i * stride + offset;
+                var v = Vector4.zero;
+                for (int d = 0; d < dims && d < 4; d++)
+                {
+                    float f;
+                    switch (format)
+                    {
+                        case VertexAttributeFormat.Float32: f = BitConverter.ToSingle(bytes, o + d * 4); break;
+                        case VertexAttributeFormat.Float16: f = Mathf.HalfToFloat(BitConverter.ToUInt16(bytes, o + d * 2)); break;
+                        case VertexAttributeFormat.UNorm8: f = bytes[o + d] / 255f; break;
+                        case VertexAttributeFormat.SNorm8: f = Mathf.Max((sbyte)bytes[o + d] / 127f, -1f); break;
+                        case VertexAttributeFormat.UNorm16: f = BitConverter.ToUInt16(bytes, o + d * 2) / 65535f; break;
+                        case VertexAttributeFormat.SNorm16: f = Mathf.Max(BitConverter.ToInt16(bytes, o + d * 2) / 32767f, -1f); break;
+                        default:
+                            Core.Log.Warning($"carve: '{what}' {attr} is {format}; the patch goes without it");
+                            return null;
+                    }
+                    v[d] = f;
+                }
+                result[i] = v;
+            }
+            return result;
+        }
+
+        internal static bool Hits(Vector3 a, Vector3 b, Vector3 c, IReadOnlyList<OrientedBox> boxes)
         {
             for (int i = 0; i < boxes.Count; i++)
                 if (boxes[i].Intersects(a, b, c)) return true;
@@ -439,6 +596,18 @@ namespace MapExpansions.World
                 var arr = new Il2CppStructArray<int>(keep.Count);
                 for (int i = 0; i < keep.Count; i++) arr[i] = keep[i];
                 copy.SetTriangles(arr, 0, true);
+                // A convex collider is the hull of every vertex, and the cut triangles leave the vertices in place.
+                // A static collider can be a plain mesh, which keeps the cut; one on a moving body cannot.
+                if (mc.convex)
+                {
+                    if (mc.attachedRigidbody != null && !mc.attachedRigidbody.isKinematic)
+                    {
+                        Core.Log.Warning($"carve: collider '{Path(mc.transform)}' is convex on a moving body, it is switched off instead");
+                        return Outcome.Failed;
+                    }
+                    mc.convex = false;
+                    Core.Log.Msg($"carve: collider '{Path(mc.transform)}' was convex; it keeps the cut as a plain mesh");
+                }
                 mc.sharedMesh = copy;
                 return Outcome.Carved;
             }

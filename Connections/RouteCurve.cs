@@ -46,7 +46,10 @@ namespace MapExpansions.Connections
             Add(Controls[0], 0f, 0);
             for (int i = 0; i < n - 1; i++)
             {
-                Vector3 p0 = Controls[Mathf.Max(0, i - 1)], p1 = Controls[i], p2 = Controls[i + 1], p3 = Controls[Mathf.Min(n - 1, i + 2)];
+                Vector3 p1 = Controls[i], p2 = Controls[i + 1];
+                // Where a built stretch meets Main's own road the curve ends on both sides: a portal faces along its first leg.
+                Vector3 p0 = i == 0 ? p1 : Joined(i - 1, i) ? Controls[i - 1] : 2f * p1 - p2;
+                Vector3 p3 = i + 2 >= n ? p2 : Joined(i, i + 1) ? Controls[i + 2] : 2f * p2 - p1;
                 float chord = Vector3.Distance(p1, p2);
                 int steps = Mathf.Max(1, Mathf.CeilToInt(chord / (Step * 0.5f)));
                 float lo = Mathf.Min(p1.y, p2.y), hi = Mathf.Max(p1.y, p2.y);
@@ -64,6 +67,11 @@ namespace MapExpansions.Connections
                 }
             }
         }
+
+        private static bool Built(RouteStyle style) => style != RouteStyle.Existing;
+
+        /// <summary>Whether the legs starting at route points a and b are both built or both Main's own road.</summary>
+        private bool Joined(int a, int b) => Built(Styles[a]) == Built(Styles[b]);
 
         private void Add(Vector3 p, float d, int leg)
         {
@@ -91,6 +99,12 @@ namespace MapExpansions.Connections
         public Vector3 Forward(int i)
         {
             int a = Mathf.Max(0, i - 1), b = Mathf.Min(Count - 1, i + 1);
+            // At a joint with Main's own road the built side gives the direction, so a portal stands across its tunnel.
+            if (i > 0 && i < Count - 1 && Built(Style[i]) != Built(Style[i + 1]))
+            {
+                if (Built(Style[i + 1])) a = i;
+                else b = i;
+            }
             var d = Points[b] - Points[a];
             d.y = 0f;
             return d.sqrMagnitude > 1e-6f ? d.normalized : Vector3.forward;

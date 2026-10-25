@@ -10,6 +10,12 @@ namespace MapExpansions.Connections
     /// </summary>
     internal static class Clearing
     {
+        /// <summary>
+        /// How far terrain above or below a footprint still opens: on a low quality level the terrain is drawn metres off
+        /// its heightmap, and a solid cell over a thin roof or under the road reaches into the tube as a spike.
+        /// </summary>
+        private const float LodSlack = 3f;
+
         public static void Clear(BuiltExpansion b, BuiltConnection conn, SceneIndex index, IReadOnlyList<BuiltExpansion> all,
                                  TerrainOps.HoleMask holes, HashSet<IntPtr> offColliders)
         {
@@ -141,7 +147,7 @@ namespace MapExpansions.Connections
                     foreach (var box in conn.Footprint)
                         if (box.Contains(q)) return true;
                     return false;
-                }, $"{b.Id} {conn.Name}");
+                }, $"{b.Id} {conn.Name}", LodSlack);
                 trees += TerrainOps.RemoveTrees(t, w => conn.Interior.Any(box => box.Contains(w + Vector3.up * 0.5f, 1.5f)), b, $"{b.Id} {conn.Name}");
             }
 

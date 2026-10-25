@@ -23,6 +23,7 @@ namespace MapExpansions.Debug
     /// mxveh path ax ay az bx by bz [mask]    A* path between two points, default mask General plus the expansion graphs
     /// mxveh spawn x y z [heading] [code]      spawn an NPC vehicle
     /// mxveh drive x y z [noroads]             navigate the last spawned vehicle there and watch it
+    /// mxveh calc ax ay az bx by bz            the road route steps of vanilla navigation, each logged, with the last vehicle's seekers
     /// </summary>
     internal static class VehicleTest
     {
@@ -44,9 +45,10 @@ namespace MapExpansions.Debug
                 case "spawn" when parts.Length > 4:
                     Spawn(V(parts, 2), parts.Length > 5 ? F(parts[5]) : 0f, parts.Length > 6 ? parts[6] : "shitbox");
                     break;
+                case "calc" when parts.Length > 7: Calc(V(parts, 2), V(parts, 5)); break;
                 case "drive" when parts.Length > 4: Drive(V(parts, 2), parts.Length > 5 && parts[5] == "noroads"); break;
                 default:
-                    Core.Log.Warning("[dev] mxveh info|near|path|spawn|drive (see VehicleTest docs)");
+                    Core.Log.Warning("[dev] mxveh info|near|path|spawn|drive|calc (see VehicleTest docs)");
                     break;
             }
         }
@@ -87,8 +89,7 @@ namespace MapExpansions.Debug
             var t = System.Diagnostics.Stopwatch.StartNew();
             var path = ABPath.Construct(a, b, null);
             path.nnConstraint.graphMask = new GraphMask { value = mask };
-            // A partial path ends at the reachable node closest to the target, which shows where the graph breaks.
-            path.calculatePartial = true;
+            // No partial path: this A* version leaves the target node flagged after one, which ends the path threads.
             AstarPath.StartPath(path);
             path.BlockUntilCalculated();
             int count = path.vectorPath?.Count ?? 0;
@@ -107,6 +108,71 @@ namespace MapExpansions.Debug
             Core.Log.Msg($"[dev] mxveh path {a} -> {b} mask {mask}: state {path.CompleteState}, error {path.error} '{path.errorLog}', " +
                          $"{count} points, length {(count > 1 ? path.GetTotalLength() : 0f):0} m, end {end}, graphs {string.Join(">", graphs)}, " +
                          $"areas {string.Join(">", areas)}, {t.ElapsedMilliseconds} ms");
+        }
+
+        /// <summary>
+        /// The steps vanilla navigation takes with roads on: general graph to the road link nearest the start, road
+        /// nodes to the link nearest the destination, general graph on to the destination. Vanilla reports only
+        /// "Failed" for the whole route; this logs each step.
+        /// </summary>
+        private static void Calc(Vector3 start, Vector3 dest)
+        {
+            var agent = _vehicle != null ? _vehicle.GetComponentInChildren<VehicleAgent>() : null;
+            if (agent == null)
+            {
+                Core.Log.Warning("[dev] mxveh calc: spawn a vehicle first, its seekers are used");
+                return;
+            }
+            var gs = agent.generalSeeker;
+            var rs = agent.roadSeeker;
+            Core.Log.Msg($"[dev] mxveh calc: general seeker mask {gs.graphMask.value} tags {gs.traversableTags}, road seeker mask {rs.graphMask.value} " +
+                         $"tags {rs.traversableTags}, FromGraphName {GraphMask.FromGraphName(VehicleNavigation.GeneralGraphName).value}");
+            var startOnGraph = AstarUtility.GetClosestPointOnGraph(start, VehicleNavigation.GeneralGraphName);
+            var destOnGraph = AstarUtility.GetClosestPointOnGraph(dest, VehicleNavigation.GeneralGraphName);
+            Core.Log.Msg($"[dev] mxveh calc: start on graph {startOnGraph}, destination on graph {destOnGraph}");
+            var entries = NodeLink.GetClosestLinks(start, 3);
+            var exits = NodeLink.GetClosestLinks(dest, 3);
+            if (entries == null || entries.Count == 0 || exits == null || exits.Count == 0)
+            {
+                Core.Log.Error($"[dev] mxveh calc: road links near start {entries?.Count ?? 0}, near destination {exits?.Count ?? 0}");
+                return;
+            }
+            for (int i = 0; i < exits.Count; i++)
+                Core.Log.Msg($"[dev] mxveh calc: exit link {i} '{exits[i].name}' start {exits[i].Start.position}, closest point {exits[i].GetClosestPoint(dest)}");
+            Vector3 entryPoint = entries[0].GetClosestPoint(start);
+            var exitLink = exits[0];
+            Vector3 exitPoint = exitLink.GetClosestPoint(dest);
+            Step("start to entry", startOnGraph, entryPoint, gs);
+            Step("road", NodeLink.GetClosestLinks(entryPoint, 1)[0].Start.position, exitLink.Start.position, rs);
+            Step("exit to destination", exitPoint, destOnGraph, gs);
+            Step("direct", start, dest, gs);
+        }
+
+        private static void Step(string what, Vector3 a, Vector3 b, Seeker seeker)
+        {
+            var path = ABPath.Construct(a, b, null);
+            path.nnConstraint.graphMask = seeker.graphMask;
+            path.enabledTags = seeker.traversableTags;
+            AstarPath.StartPath(path);
+            path.BlockUntilCalculated();
+            int count = path.vectorPath?.Count ?? 0;
+            var graphs = new List<string>();
+            if (path.path != null)
+                for (int i = 0; i < path.path.Count; i++)
+                {
+                    string g = path.path[i].GraphIndex.ToString(Ci);
+                    if (graphs.Count == 0 || graphs[graphs.Count - 1] != g) graphs.Add(g);
+                }
+            string line = $"[dev] mxveh calc {what}: {a} -> {b}: {path.CompleteState}, {count} points, {(count > 1 ? path.GetTotalLength() : 0f):0} m, " +
+                          $"end {(count > 0 ? path.vectorPath[count - 1].ToString() : "-")}, graphs {string.Join(">", graphs)}" + (path.error ? $", '{path.errorLog}'" : "");
+            if (path.error) Core.Log.Error(line);
+            else Core.Log.Msg(line);
+            if (what == "road" && count > 1)
+            {
+                var points = new List<string>();
+                for (int i = 0; i < count; i++) points.Add($"({path.vectorPath[i].x:0},{path.vectorPath[i].z:0})");
+                Core.Log.Msg($"[dev] mxveh calc road points: {string.Join(" ", points)}");
+            }
         }
 
         private static void Spawn(Vector3 pos, float heading, string code)

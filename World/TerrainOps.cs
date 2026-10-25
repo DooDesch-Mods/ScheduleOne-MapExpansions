@@ -226,9 +226,11 @@ namespace MapExpansions.World
             /// <summary>
             /// Marks every hole cell of the terrain that passes the test. The test gets the cell centre's world x/z and
             /// a terrain height. A cell on a steep slope spans many metres between its corners and is drawn as a
-            /// sliver across that span, so the test runs over the whole span in steps of one metre.
+            /// sliver across that span, so the test runs over the whole span in steps of one metre. <paramref name="slack"/>
+            /// widens the span up and down: a coarse level of detail draws the surface metres off the heightmap, and the
+            /// holes texture clips it only where the cell is open.
             /// </summary>
-            public int Cut(Terrain t, Rect worldArea, Func<float, float, float, bool> isHole, string reason)
+            public int Cut(Terrain t, Rect worldArea, Func<float, float, float, bool> isHole, string reason, float slack = 0f)
             {
                 var td = t.terrainData;
                 if (td == null) return 0;
@@ -259,6 +261,8 @@ namespace MapExpansions.World
                             lo = Mathf.Min(lo, ch);
                             hi = Mathf.Max(hi, ch);
                         }
+                        lo -= slack;
+                        hi += slack;
                         bool hole = false;
                         for (float h = lo; !hole; h = Mathf.Min(h + 1f, hi))
                         {

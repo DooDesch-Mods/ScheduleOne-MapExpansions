@@ -25,6 +25,17 @@ namespace MapExpansions.World
                     DoubleSided(b, part, rule, area);
                     continue;
                 }
+                if (rule.Effect == ObjectEffect.Skirt)
+                {
+                    if (area.size == Vector3.zero)
+                    {
+                        Core.Log.Error($"rules: '{b.Id}' {rule}: a skirt needs an area; nothing is built");
+                        continue;
+                    }
+                    float bottom = rule.Side == WorldSide.Main ? rule.Bottom : b.Frame.ToWorld(Vector3.up * rule.Bottom).y;
+                    Skirts.Apply(b, part, rule, area, bottom);
+                    continue;
+                }
                 int renderers = 0, colliders = 0, terrains = 0;
                 bool hide = rule.Effect != ObjectEffect.NoCollision;
                 bool noCollision = rule.Effect != ObjectEffect.Hide;
@@ -185,7 +196,7 @@ namespace MapExpansions.World
             return back;
         }
 
-        private const string BackName = "TwoSidedBack ";
+        internal const string BackName = "TwoSidedBack ";
 
         private static readonly int CullId = Shader.PropertyToID("_Cull");
         private const string TwoSidedSuffix = " (two-sided)";
