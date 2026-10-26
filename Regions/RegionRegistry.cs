@@ -276,16 +276,30 @@ namespace MapExpansions.Regions
             }
         }
 
-        /// <summary>Cartel activities exist for the vanilla regions only; an expansion region uses its stand-in's.</summary>
+        /// <summary>
+        /// Cartel activities exist for the vanilla regions only; an expansion region uses its stand-in's. Answered
+        /// before the game looks, which logs an error for every region it does not know.
+        /// </summary>
         [HarmonyPatch(typeof(CartelActivities), nameof(CartelActivities.GetRegionalActivities))]
         private static class RegionalActivitiesPatch
         {
-            private static void Postfix(CartelActivities __instance, EMapRegion region, ref CartelRegionActivities __result)
+            private static bool _missingReported;
+
+            private static bool Prefix(CartelActivities __instance, EMapRegion region, ref CartelRegionActivities __result)
             {
-                if (__result != null || !IsOurs(region)) return;
-                var e = Get(region);
-                __result = __instance.GetRegionalActivities(e.StandIn);
-                if (__result == null) Core.Log.Warning($"regions: stand-in {e.StandIn} of region {(int)region} has no cartel activities either");
+                if (!IsOurs(region)) return true;
+                var standIn = Get(region).StandIn;
+                var all = __instance.RegionalActivities;
+                if (all != null)
+                    foreach (var a in all)
+                        if (a != null && a.Region == standIn)
+                        {
+                            __result = a;
+                            return false;
+                        }
+                if (!_missingReported) Core.Log.Warning($"regions: stand-in {standIn} of region {(int)region} has no cartel activities; the game answers");
+                _missingReported = true;
+                return true;
             }
         }
 
