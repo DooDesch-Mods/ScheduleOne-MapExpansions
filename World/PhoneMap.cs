@@ -41,9 +41,6 @@ namespace MapExpansions.World
         /// <summary>Milliseconds per frame spent sampling the ground between the sheets.</summary>
         private const double FillBudgetMs = 4.0;
 
-        /// <summary>Length of a tunnel's dash and of the gap after it, in metres.</summary>
-        private const float Dash = 7f, DashGap = 5f;
-
         /// <summary>The map as worked out before the ground between the sheets is sampled.</summary>
         private sealed class Plan
         {
@@ -54,6 +51,8 @@ namespace MapExpansions.World
             public Vector2 Centre;
             public int Pixels;
             public MapFill Fill;
+            /// <summary>The main map's sea, once read; the fill's picture is worked out after it.</summary>
+            public Color? Sea;
         }
 
         private static bool _applied;
@@ -78,6 +77,13 @@ namespace MapExpansions.World
                     return;
                 }
                 if (!_plan.Fill.Step(FillBudgetMs)) return;
+                if (_plan.Sea == null)
+                {
+                    _plan.Sea = SeaOf(_plan);
+                    _plan.Fill.BeginPicture(_plan.Sea.Value);
+                    return;
+                }
+                if (!_plan.Fill.PictureReady) return;
                 _applied = true;
                 Apply(app, Singleton<MapPositionUtility>.Instance, _plan);
             }
@@ -199,6 +205,11 @@ namespace MapExpansions.World
             var parent = app.BackgroundImage != null ? app.BackgroundImage.transform : app.ContentRect.transform;
             int index = 0;
             foreach (var s in sheets) Overlay(parent, s, centre, scale, index++);
+            int tunnelPieces = 0;
+            foreach (var b in built)
+                foreach (var conn in b.Connections)
+                    tunnelPieces += OverlayTunnels(parent, conn.Curve, centre, scale, ref index);
+            Core.Log.Msg($"map: {tunnelPieces} tunnel road pieces laid over the sheets");
 
             var labels = app.LabelGroup != null ? app.LabelGroup.GetComponent<RectTransform>() : null;
             if (labels != null) labels.anchoredPosition += shift;
@@ -280,7 +291,7 @@ namespace MapExpansions.World
 
         /// <summary>
         /// Draws the map into one picture: the main map's sea, the ground between the sheets, the connections' roads
-        /// (tunnels dashed) and every sheet over them.
+        /// and every sheet over them.
         /// </summary>
         private static bool Render(Plan plan)
         {
@@ -303,20 +314,11 @@ namespace MapExpansions.World
                 Vector2 low = plan.Centre - Vector2.one * side * 0.5f;
                 Vector2 ToPixel(Vector2 w) => (w - low) / side * pixels;
 
-                // The sea is the colour in the corner of the main map.
-                GL.Clear(true, true, Color.black);
-                Draw(mat, sheets[0], ToPixel);
-                var seaAt = ToPixel(Corners(sheets[0])[0]) + new Vector2(3f, 3f);
-                var probe = new Texture2D(1, 1, TextureFormat.RGB24, false);
-                probe.ReadPixels(new Rect(Mathf.Floor(seaAt.x), Mathf.Floor(seaAt.y), 1, 1), 0, 0);
-                probe.Apply();
-                var sea = probe.GetPixel(0, 0);
-                Object.Destroy(probe);
-
+                var sea = plan.Sea.Value;
                 // The picture is sRGB and the clear colour is taken as linear; the sea read back from it is sRGB.
                 GL.Clear(true, true, QualitySettings.activeColorSpace == ColorSpace.Linear ? sea.linear : sea);
 
-                ground = plan.Fill.Picture(sea);
+                ground = plan.Fill.Picture();
                 float covers = plan.Fill.Covers;
                 Quad(mat, ground, new[] { low, low + new Vector2(0f, covers), low + new Vector2(covers, covers), low + new Vector2(covers, 0f) }, new Rect(0f, 0f, 1f, 1f), ToPixel);
 
@@ -357,6 +359,40 @@ namespace MapExpansions.World
             }
         }
 
+        /// <summary>The sea: the colour in the corner of the main map, read back from a small picture of it.</summary>
+        private static Color SeaOf(Plan plan)
+        {
+            var shader = Shader.Find("UI/Default");
+            if (shader == null) throw new InvalidOperationException("the UI shader is missing");
+            var mat = new Material(shader);
+            var sheet = plan.Sheets[0];
+            const int size = 64;
+            var rt = RenderTexture.GetTemporary(size, size, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+            var previous = RenderTexture.active;
+            try
+            {
+                RenderTexture.active = rt;
+                GL.Clear(true, true, Color.black);
+                var low = sheet.Centre - Vector2.one * sheet.Half;
+                Vector2 ToPixel(Vector2 w) => (w - low) / (2f * sheet.Half) * size;
+                Draw(mat, sheet, ToPixel);
+                var seaAt = ToPixel(Corners(sheet)[0]) + new Vector2(1f, 1f);
+                var probe = new Texture2D(1, 1, TextureFormat.RGB24, false);
+                probe.ReadPixels(new Rect(Mathf.Floor(seaAt.x), Mathf.Floor(seaAt.y), 1, 1), 0, 0);
+                probe.Apply();
+                var sea = probe.GetPixel(0, 0);
+                Object.Destroy(probe);
+                Core.Log.Msg($"map: the main map's sea is {sea}");
+                return sea;
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                RenderTexture.ReleaseTemporary(rt);
+                Object.Destroy(mat);
+            }
+        }
+
         private static void Draw(Material mat, Sheet s, Func<Vector2, Vector2> toPixel)
         {
             var tex = s.Sprite.texture;
@@ -382,13 +418,12 @@ namespace MapExpansions.World
         }
 
         /// <summary>
-        /// A connection's road at its width in the highway's colour, dashed where it runs in a tunnel. Drawn under the
+        /// A connection's road at its width in the highway's colour, tunnels included. Drawn under the
         /// sheets, so only the stretch between them shows. Returns the pieces drawn.
         /// </summary>
         private static int DrawRoute(Material mat, Texture road, Connections.RouteCurve curve, Func<Vector2, Vector2> toPixel)
         {
             int pieces = 0;
-            float along = 0f;
             var unit = new Rect(0f, 0f, 1f, 1f);
             for (int i = 0; i + 1 < curve.Count; i++)
             {
@@ -399,31 +434,13 @@ namespace MapExpansions.World
                 var dir = (b - a) / length;
                 float width = i < curve.RoadWidth.Count ? curve.RoadWidth[i] : curve.MaxRoadWidth;
                 var across = new Vector2(-dir.y, dir.x) * width * 0.5f;
-                bool tunnel = i < curve.Style.Count && curve.Style[i] == RouteStyle.Tunnel;
 
-                // Solid pieces reach half a width past their ends so the bends close; dashes stop where they stop.
-                float from = 0f;
-                while (from < length)
-                {
-                    float to = length;
-                    bool on = true;
-                    if (tunnel)
-                    {
-                        float phase = (along + from) % (Dash + DashGap);
-                        on = phase < Dash;
-                        to = Mathf.Min(length, from + (on ? Dash - phase : Dash + DashGap - phase));
-                    }
-                    if (on)
-                    {
-                        float reach = tunnel ? 0f : width * 0.5f;
-                        var p = a + dir * (from - reach);
-                        var q = a + dir * (to + reach);
-                        Quad(mat, road, new[] { p - across, p + across, q + across, q - across }, unit, toPixel);
-                        pieces++;
-                    }
-                    from = to;
-                }
-                along += length;
+                // Pieces reach half a width past their ends so the bends close.
+                float reach = width * 0.5f;
+                var p = a - dir * reach;
+                var q = b + dir * reach;
+                Quad(mat, road, new[] { p - across, p + across, q + across, q - across }, unit, toPixel);
+                pieces++;
             }
             return pieces;
         }
@@ -448,6 +465,40 @@ namespace MapExpansions.World
             var image = go.AddComponent<Image>();
             image.sprite = s.Sprite;
             image.raycastTarget = false;
+        }
+
+        /// <summary>
+        /// A connection's tunnels as road over the sheets. A sheet is a picture from above, so it shows rock where the
+        /// road runs underground and would cut the road off at the tunnel mouth. Returns the pieces laid.
+        /// </summary>
+        private static int OverlayTunnels(Transform parent, Connections.RouteCurve curve, Vector2 centre, float scale, ref int index)
+        {
+            int pieces = 0;
+            for (int i = 0; i + 1 < curve.Count; i++)
+            {
+                if (i >= curve.Style.Count || curve.Style[i] != RouteStyle.Tunnel) continue;
+                var a = new Vector2(curve.Points[i].x, curve.Points[i].z);
+                var b = new Vector2(curve.Points[i + 1].x, curve.Points[i + 1].z);
+                float length = Vector2.Distance(a, b);
+                if (length < 0.01f) continue;
+                float width = i < curve.RoadWidth.Count ? curve.RoadWidth[i] : curve.MaxRoadWidth;
+                var dir = (b - a) / length;
+
+                var go = new GameObject("MapExpansions.Tunnel");
+                var rt = go.AddComponent<RectTransform>();
+                rt.SetParent(parent, false);
+                rt.SetSiblingIndex(index++);
+                rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
+                // Pieces reach half a width past their ends so the bends close.
+                rt.sizeDelta = new Vector2(length + width, width) * scale;
+                rt.anchoredPosition = ((a + b) * 0.5f - centre) * scale;
+                rt.localRotation = Quaternion.Euler(0f, 0f, Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg);
+                var image = go.AddComponent<Image>();
+                image.color = MapFill.Road;
+                image.raycastTarget = false;
+                pieces++;
+            }
+            return pieces;
         }
 
         /// <summary>

@@ -1,4 +1,6 @@
+using System;
 using System.Diagnostics;
+using System.Threading.Tasks;
 using MapExpansions.Lifecycle;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -66,6 +68,7 @@ namespace MapExpansions.World
         /// <summary>Casts cells until the budget is spent. True once every cell is known.</summary>
         public bool Step(double budgetMs)
         {
+            if (Done) return true;
             var clock = Stopwatch.StartNew();
             while (_next < _cells.Length)
             {
@@ -123,13 +126,134 @@ namespace MapExpansions.World
             return MainLand;
         }
 
-        /// <summary>The cells as a picture over the whole map, the sea where nothing was found.</summary>
-        public Texture2D Picture(Color32 sea)
+        /// <summary>Pixels per cell side in <see cref="Picture"/>.</summary>
+        private const int Smooth = 4;
+
+        /// <summary>
+        /// The cells as a picture over the whole map, the sea where nothing was found. Each pixel weighs the sixteen
+        /// nearest cells with a cubic B-spline and takes the colour that weighs most, so the borders between colours run
+        /// as rounded curves instead of the cells' steps. Near a border the two heaviest colours are blended over about
+        /// a pixel, which keeps the curve's edge soft at full zoom. Colours are RGBA packed little end first, so the
+        /// result is the texture's raw data; nothing here touches the engine, which lets it run off the main thread.
+        /// </summary>
+        private static int[] Pixels(int[] packed, int n)
         {
-            var pixels = new Color32[_cells.Length];
-            for (int i = 0; i < _cells.Length; i++) pixels[i] = _cells[i].a == 0 ? sea : _cells[i];
-            var tex = new Texture2D(_n, _n, TextureFormat.RGBA32, false) { name = "MapExpansions.MapFill", filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
-            tex.SetPixels32(pixels);
+            int m = n * Smooth;
+            var pixels = new int[m * m];
+            var keys = new int[16];
+            var sums = new float[16];
+            var wx = new float[4];
+            var wy = new float[4];
+            var cols = new int[4];
+            var rows = new int[4];
+            for (int y = 0; y < m; y++)
+            {
+                float cy = (y + 0.5f) / Smooth - 0.5f;
+                int by = (int)Math.Floor(cy);
+                Spline(cy - by, wy);
+                for (int k = 0; k < 4; k++) rows[k] = Math.Clamp(by - 1 + k, 0, n - 1) * n;
+                for (int x = 0; x < m; x++)
+                {
+                    float cx = (x + 0.5f) / Smooth - 0.5f;
+                    int bx = (int)Math.Floor(cx);
+                    for (int k = 0; k < 4; k++) cols[k] = Math.Clamp(bx - 1 + k, 0, n - 1);
+                    int first = packed[rows[1] + cols[1]];
+                    bool uniform = true;
+                    for (int j = 0; j < 4 && uniform; j++)
+                        for (int k = 0; k < 4; k++)
+                            if (packed[rows[j] + cols[k]] != first) { uniform = false; break; }
+                    if (uniform)
+                    {
+                        pixels[y * m + x] = first;
+                        continue;
+                    }
+
+                    Spline(cx - bx, wx);
+                    int distinct = 0;
+                    for (int j = 0; j < 4; j++)
+                        for (int k = 0; k < 4; k++)
+                        {
+                            int key = packed[rows[j] + cols[k]];
+                            int d = 0;
+                            while (d < distinct && keys[d] != key) d++;
+                            if (d == distinct) { keys[d] = key; sums[d] = 0f; distinct++; }
+                            sums[d] += wy[j] * wx[k];
+                        }
+                    int top = 0, second = -1;
+                    for (int d = 1; d < distinct; d++)
+                    {
+                        if (sums[d] > sums[top]) { second = top; top = d; }
+                        else if (second < 0 || sums[d] > sums[second]) second = d;
+                    }
+                    if (second < 0) { pixels[y * m + x] = keys[top]; continue; }
+                    float t = Math.Clamp(0.5f + (sums[top] - sums[second]) * Soft, 0f, 1f);
+                    pixels[y * m + x] = Blend(keys[second], keys[top], t);
+                }
+            }
+            return pixels;
+        }
+
+        /// <summary>
+        /// How fast a border pixel turns from the blend into the heavier colour as the weights part. Across a border the
+        /// weight gap grows by about a quarter per pixel, so the blend spans about a pixel and a half.
+        /// </summary>
+        private const float Soft = 1.4f;
+
+        /// <summary>Cubic B-spline weights of the four cells around a point at fraction <paramref name="t"/> past the second.</summary>
+        private static void Spline(float t, float[] w)
+        {
+            float t2 = t * t, t3 = t2 * t, u = 1f - t;
+            w[0] = u * u * u / 6f;
+            w[1] = (3f * t3 - 6f * t2 + 4f) / 6f;
+            w[2] = (-3f * t3 + 3f * t2 + 3f * t + 1f) / 6f;
+            w[3] = t3 / 6f;
+        }
+
+        /// <summary>Two packed colours mixed channel by channel, <paramref name="t"/> of the way from a to b.</summary>
+        private static int Blend(int a, int b, float t)
+        {
+            int result = 0;
+            for (int shift = 0; shift < 32; shift += 8)
+            {
+                int ca = (a >> shift) & 0xFF, cb = (b >> shift) & 0xFF;
+                result |= ((int)(ca + (cb - ca) * t + 0.5f) & 0xFF) << shift;
+            }
+            return result;
+        }
+
+        private static int Pack(Color32 c) => c.r | (c.g << 8) | (c.b << 16) | (c.a << 24);
+
+        private Task<int[]> _picture;
+
+        /// <summary>
+        /// Starts working out <see cref="Picture"/> on a worker thread; it takes seconds, which on the main thread would
+        /// freeze the game right after loading.
+        /// </summary>
+        public void BeginPicture(Color32 sea)
+        {
+            var packed = new int[_cells.Length];
+            int seaKey = Pack(sea);
+            for (int i = 0; i < _cells.Length; i++) packed[i] = _cells[i].a == 0 ? seaKey : Pack(_cells[i]);
+            int n = _n;
+            _picture = Task.Run(() => Pixels(packed, n));
+            _pictureClock = Stopwatch.StartNew();
+        }
+
+        private Stopwatch _pictureClock;
+
+        /// <summary>Whether <see cref="BeginPicture"/> has finished, with or without success.</summary>
+        public bool PictureReady => _picture != null && _picture.IsCompleted;
+
+        /// <summary>The picture <see cref="BeginPicture"/> worked out. Throws what the worker threw.</summary>
+        public Texture2D Picture()
+        {
+            var pixels = _picture.GetAwaiter().GetResult();
+            int m = _n * Smooth;
+            Core.Log.Msg($"map: the ground between the sheets was smoothed into {m}x{m} pixels off the main thread, ready after {_pictureClock.ElapsedMilliseconds} ms");
+            var bytes = new byte[pixels.Length * 4];
+            Buffer.BlockCopy(pixels, 0, bytes, 0, bytes.Length);
+            var tex = new Texture2D(m, m, TextureFormat.RGBA32, false) { name = "MapExpansions.MapFill", filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
+            tex.LoadRawTextureData(bytes);
             tex.Apply(false, false);
             return tex;
         }
