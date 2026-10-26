@@ -81,6 +81,21 @@ namespace MapExpansions
             Panels.Add((b, material));
             return this;
         }
+
+        /// <summary>
+        /// Invisible boxes that block the player, in the main world's coordinates like <see cref="Panels"/>. For a
+        /// collider of the original that would reach through the expansion's walls.
+        /// </summary>
+        public List<Bounds> Blocks { get; } = new();
+
+        /// <summary>Adds a box to <see cref="Blocks"/>.</summary>
+        public CopyDefinition Block(Vector3 min, Vector3 max)
+        {
+            var b = new Bounds();
+            b.SetMinMax(Vector3.Min(min, max), Vector3.Max(min, max));
+            Blocks.Add(b);
+            return this;
+        }
     }
 
     /// <summary>What a shop's counter opens.</summary>

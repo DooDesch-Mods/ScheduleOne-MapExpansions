@@ -206,7 +206,7 @@ namespace MapExpansions.World
             return built;
         }
 
-        /// <summary>The definition's panels as boxes below the copy, moved from the main world like it.</summary>
+        /// <summary>The definition's panels and blocks as boxes below the copy, moved from the main world like it.</summary>
         private static void AddPanels(BuiltExpansion b, CopyDefinition d, string owner, GameObject go, Matrix4x4 move)
         {
             foreach (var (box, material) in d.Panels)
@@ -227,6 +227,15 @@ namespace MapExpansions.World
                 panel.GetComponent<MeshRenderer>().sharedMaterial = mat;
                 panel.transform.SetParent(go.transform, true);
                 Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': panel of {box.size} in '{material}' stands at {panel.transform.position}");
+            }
+            foreach (var box in d.Blocks)
+            {
+                var block = new GameObject("MapExpansions.Block");
+                block.transform.SetPositionAndRotation(move.MultiplyPoint3x4(box.center), move.rotation);
+                block.transform.localScale = Vector3.Scale(box.size, move.lossyScale);
+                block.AddComponent<BoxCollider>();
+                block.transform.SetParent(go.transform, true);
+                Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': block of {box.size} stands at {block.transform.position}");
             }
         }
 
