@@ -26,6 +26,7 @@ namespace MapExpansions.Debug
     /// mxveh drive x y z [noroads]             navigate the last spawned vehicle there and watch it
     /// mxveh calc ax ay az bx by bz            the road route steps of vanilla navigation, each logged, with the last vehicle's seekers
     /// mxveh push vx vy vz                     give the last spawned vehicle this velocity and log where it goes for 2 s
+    /// mxveh gas throttle [seconds]            hold the last spawned vehicle's throttle and log speed and pitch each second
     /// mxveh wall box|blocker|mesh x y z yaw   a 0.5 x 2 x 6 m test wall made at runtime: box on Default, box on VehicleBlocker, mesh on Default
     /// mxveh clear                             destroy the vehicles and test walls these commands made
     /// </summary>
@@ -54,10 +55,11 @@ namespace MapExpansions.Debug
                 case "calc" when parts.Length > 7: Calc(V(parts, 2), V(parts, 5)); break;
                 case "drive" when parts.Length > 4: Drive(V(parts, 2), parts.Length > 5 && parts[5] == "noroads"); break;
                 case "push" when parts.Length > 4: Push(V(parts, 2)); break;
+                case "gas" when parts.Length > 2: MelonCoroutines.Start(Gas(F(parts[2]), parts.Length > 3 ? F(parts[3]) : 20f)); break;
                 case "wall" when parts.Length > 6: Wall(parts[2], V(parts, 3), F(parts[6])); break;
                 case "clear": Clear(); break;
                 default:
-                    Core.Log.Warning("[dev] mxveh info|near|path|spawn|drive|calc|push|wall|clear (see VehicleTest docs)");
+                    Core.Log.Warning("[dev] mxveh info|near|path|spawn|drive|calc|push|gas|wall|clear (see VehicleTest docs)");
                     break;
             }
         }
@@ -306,6 +308,46 @@ namespace MapExpansions.Debug
                          $"mass {_vehicle.GetComponent<Rigidbody>()?.mass:0} kg, top speed {_vehicle.TopSpeed:0} km/h");
             agent.Navigate(target, settings, cb);
             MelonCoroutines.Start(Watch(agent, target, () => result));
+        }
+
+        /// <summary>
+        /// Seats the player at the wheel and drives on the game's own throttle path, as a player holding the key would. A
+        /// car without a driver stops being simulated as soon as the camera loses sight of it.
+        /// </summary>
+        private static IEnumerator Gas(float throttle, float seconds)
+        {
+            var v = _vehicle;
+            if (v == null)
+            {
+                Core.Log.Warning("[dev] mxveh gas: spawn a vehicle first");
+                yield break;
+            }
+            var rb = v.GetComponent<Rigidbody>();
+            Core.Log.Msg($"[dev] mxveh gas {throttle} for {seconds:0} s: mass {rb?.mass:0} kg, motor {v.motorTorque.Evaluate(0f):0} Nm, gearing {v.diffGearing:0.00}, top speed {v.TopSpeed:0} km/h");
+            if (!v.LocalPlayerIsDriver) v.EnterVehicle();
+            yield return new WaitForSeconds(1f);
+            if (v == null) yield break;
+            Core.Log.Msg($"[dev] mxveh gas: player at the wheel {v.LocalPlayerIsDriver}");
+            v.overrideControls = true;
+            v.throttleOverride = throttle;
+            v.steerOverride = 0f;
+            for (int i = 1; i <= seconds && v != null; i++)
+            {
+                rb?.WakeUp();
+                yield return new WaitForSeconds(1f);
+                if (v == null) break;
+                var t = v.transform;
+                float pitch = Vector3.SignedAngle(Vector3.ProjectOnPlane(Vector3.up, t.right), t.up, t.right);
+                Core.Log.Msg($"[dev] mxveh gas t{i}: pos {t.position}, {v.Speed_Kmh:0.0} km/h, pitch {pitch:0.0}, kinematic {rb?.isKinematic}");
+            }
+            if (v == null)
+            {
+                Core.Log.Warning("[dev] mxveh gas: the vehicle is gone");
+                yield break;
+            }
+            v.throttleOverride = 0f;
+            v.overrideControls = false;
+            Core.Log.Msg("[dev] mxveh gas: done, controls released, the player stays at the wheel");
         }
 
         private static void Push(Vector3 velocity)
