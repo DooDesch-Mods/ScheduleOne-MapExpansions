@@ -103,6 +103,7 @@ namespace MapExpansions.Debug
                     case "mxhover": Hover(parts.Length > 1 && parts[1] == "use"); break;
                     case "mxlight" when parts.Length > 3: LightsNear(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 8f); break;
                     case "mxlight": Lights(); break;
+                    case "mxanchor" when parts.Length > 7: Anchor(V(parts, 1), F(parts[4]), V(parts, 5)); break;
                     case "mxviews" when parts.Length > 1:
                         World.SeparateViews.Enabled = parts[1] == "on";
                         Core.Log.Msg($"[dev] mxviews: views separated {World.SeparateViews.Enabled}");
@@ -110,13 +111,23 @@ namespace MapExpansions.Debug
                     case "mxviews": Core.Log.Msg(World.SeparateViews.Describe(Camera.main != null ? Camera.main.transform.position : Vector3.zero)); break;
                     case "mxmap" when parts.Length > 4: World.PhoneMap.Focus(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 1f); break;
                     case "mxmap": Core.Log.Msg(World.PhoneMap.Describe()); break;
+                    case "mxphone":
+                        if (Il2CppScheduleOne.UI.Phone.Phone.ActiveApp == null) Core.Log.Msg("[dev] mxphone: no app is open");
+                        else
+                        {
+                            Il2CppScheduleOne.UI.Phone.Phone.Instance.RequestCloseApp();
+                            Core.Log.Msg("[dev] mxphone: the open app was asked to close");
+                        }
+                        break;
                     case "mxcover": Core.Log.Msg(World.WeatherCover.Describe(Camera.main != null ? Camera.main.transform.position : Vector3.zero)); break;
                     case "mxhide" when parts.Length > 1:
                         bool on = parts.Length > 2 && parts[^1] == "on";
                         Hide(string.Join(" ", parts, 1, parts.Length - (on ? 2 : 1)), on);
                         break;
                     case "mxterrain" when parts.Length > 1: TerrainInfo(parts[1], parts.Length > 2 ? F(parts[2]) : -1f); break;
+                    case "mxwalk" when parts.Length > 2: MelonCoroutines.Start(Walk(F(parts[1]), F(parts[2]))); break;
                     case "mxray" when parts.Length > 6: Ray(V(parts, 1), V(parts, 4)); break;
+                    case "mxcollider" when parts.Length > 2: Colliders(string.Join(" ", parts, 1, parts.Length - 2), parts[^1] == "on"); break;
                     case "mxedges" when parts.Length > 7: Edges(V(parts, 1), V(parts, 4), string.Join(" ", parts, 7, parts.Length - 7)); break;
                     case "mxline" when parts.Length > 4: Line(F(parts[1]), F(parts[2]), F(parts[3]), F(parts[4]), parts.Length > 5 ? F(parts[5]) : 4f, parts.Length > 6 ? F(parts[6]) : 80f); break;
                     case "mxproperty" when parts.Length > 1: PropertyInfo(parts[1]); break;
@@ -307,6 +318,84 @@ namespace MapExpansions.Debug
             var at = V(parts, 4);
             cam.OverrideTransform(eye, Quaternion.LookRotation(at - eye), 0f, false);
             Core.Log.Msg($"[dev] mxcam: eye {eye} looking at {at}");
+        }
+
+        /// <summary>
+        /// Pushes the player's CharacterController along a compass yaw like walking forward, and names the
+        /// collider it stops at: the player-side view of an "invisible wall" that rays from the camera miss.
+        /// </summary>
+        private static IEnumerator Walk(float yaw, float metres)
+        {
+            var mv = PlayerSingleton<PlayerMovement>.Instance;
+            var cc = mv != null ? mv.Controller : null;
+            if (cc == null)
+            {
+                Core.Log.Warning("[dev] mxwalk: no PlayerMovement or CharacterController");
+                yield break;
+            }
+            var dir = Quaternion.Euler(0f, yaw, 0f) * Vector3.forward;
+            var start = cc.transform.position;
+            int stuck = 0, pushes = 0, traced = 0;
+            var after = start;
+            for (int frame = 0; frame < 600; frame++)
+            {
+                yield return null;
+                var before = cc.transform.position;
+                // Something between our Move and this frame moved the player: name what overlaps them at that moment.
+                var pushed = before - after;
+                if (frame > 0 && pushed.magnitude > 0.002f && pushes++ < 6)
+                {
+                    Core.Log.Warning($"[dev] mxwalk: frame {frame} the player was moved by {pushed} ({Vector3.Dot(pushed, dir):0.00} m along the walk) from {after} to {before}");
+                    float h = Math.Max(0f, cc.height * 0.5f - cc.radius);
+                    var seen = new HashSet<IntPtr>();
+                    foreach (var dy in new[] { -h, 0f, h })
+                    foreach (var c in Physics.OverlapSphere(after + cc.center + Vector3.up * dy, cc.radius + 0.1f, ~0, QueryTriggerInteraction.Collide))
+                    {
+                        if (c == null || c.transform.IsChildOf(cc.transform) || !seen.Add(c.Pointer)) continue;
+                        Core.Log.Msg($"[dev] mxwalk   overlapping '{PathOf(c.transform, 6)}' {c.GetIl2CppType().Name} layer {LayerMask.LayerToName(c.gameObject.layer)} " +
+                                     $"trigger {c.isTrigger}, enabled {c.enabled}, bounds {B(c.bounds)}");
+                    }
+                }
+                float step = 2.5f * Time.deltaTime;
+                cc.Move(dir * step + Vector3.down * step);
+                float moved = Vector3.Dot(cc.transform.position - before, dir);
+                after = cc.transform.position;
+                // Frame by frame once the walk slows down, to see how the player stops where nothing is in the way.
+                if (moved < step * 0.5f && traced++ < 25)
+                    Core.Log.Msg($"[dev] mxwalk   frame {frame}: {before.x:0.000},{before.y:0.000},{before.z:0.000} -> {after.x:0.000},{after.y:0.000},{after.z:0.000}, " +
+                                 $"moved {moved:0.0000} of {step:0.0000}, pushed before {(frame > 0 ? Vector3.Dot(pushed, dir) : 0f):0.0000}, flags {cc.collisionFlags}, grounded {cc.isGrounded}");
+                if (Vector3.Dot(cc.transform.position - start, dir) >= metres)
+                {
+                    Core.Log.Msg($"[dev] mxwalk: walked {metres:0.0} m from {start} to {cc.transform.position}, nothing in the way");
+                    yield break;
+                }
+                stuck = moved < step * 0.2f ? stuck + 1 : 0;
+                if (stuck < 15) continue;
+
+                var pos = cc.transform.position;
+                // Rays at knee, hip and head height; the IL2CPP build strips the capsule casts.
+                var centre = pos + cc.center;
+                float half = Math.Max(0f, cc.height * 0.5f - cc.radius);
+                var hits = new[] { -half, 0f, half }
+                    .SelectMany(dy => Physics.RaycastAll(centre + Vector3.up * dy, dir, cc.radius + 0.3f, ~0, QueryTriggerInteraction.Ignore).ToArray())
+                    .Where(h => h.collider != null && !h.collider.transform.IsChildOf(cc.transform)).OrderBy(h => h.distance).ToList();
+                Core.Log.Warning($"[dev] mxwalk: stuck at {pos} after {Vector3.Dot(pos - start, dir):0.00} m, flags {cc.collisionFlags}, radius {cc.radius:0.00}, " +
+                                 $"height {cc.height:0.00}, centre {cc.center}, skin {cc.skinWidth:0.00}, step {cc.stepOffset:0.00}, slope {cc.slopeLimit:0}, {hits.Count} collider(s) ahead");
+                foreach (var h in hits)
+                    Core.Log.Msg($"[dev] mxwalk   {h.distance:0.00} m at {h.point} '{PathOf(h.collider.transform, 6)}' {h.collider.GetIl2CppType().Name} layer {LayerMask.LayerToName(h.collider.gameObject.layer)} trigger {h.collider.isTrigger}");
+                // Solid colliders the capsule would touch one step further on, whichever way their faces point.
+                var near = new HashSet<IntPtr>();
+                foreach (var dy in new[] { -half, 0f, half })
+                    foreach (var c in Physics.OverlapSphere(centre + Vector3.up * dy + dir * 0.1f, cc.radius + cc.skinWidth + 0.05f, ~0, QueryTriggerInteraction.Ignore))
+                    {
+                        if (c == null || c.transform.IsChildOf(cc.transform) || !near.Add(c.Pointer)) continue;
+                        bool ignored = Physics.GetIgnoreCollision(cc, c) || Physics.GetIgnoreLayerCollision(cc.gameObject.layer, c.gameObject.layer);
+                        Core.Log.Msg($"[dev] mxwalk   touching '{PathOf(c.transform, 6)}' {c.GetIl2CppType().Name} layer {LayerMask.LayerToName(c.gameObject.layer)} " +
+                                     $"enabled {c.enabled}, ignored by the player {ignored}, bounds {B(c.bounds)}");
+                    }
+                yield break;
+            }
+            Core.Log.Warning($"[dev] mxwalk: gave up after 600 frames at {cc.transform.position}, {pushes} frames moved the player outside the walk");
         }
 
         private static IEnumerator Frame(float seconds)
@@ -562,6 +651,20 @@ namespace MapExpansions.Debug
             Core.Log.Msg($"[dev] mxhide '{filter}' {(show ? "on" : "off")}: {r} renderers, {t} terrains");
         }
 
+        /// <summary>Switches every collider whose path contains the filter on or off.</summary>
+        private static void Colliders(string filter, bool on)
+        {
+            int n = 0;
+            foreach (var c in Object.FindObjectsOfType<Collider>(true))
+            {
+                if (c == null || PathOf(c.transform, 8).IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                c.enabled = on;
+                n++;
+                Core.Log.Msg($"[dev] mxcollider '{PathOf(c.transform, 6)}' {c.GetIl2CppType().Name} {(on ? "on" : "off")}");
+            }
+            Core.Log.Msg($"[dev] mxcollider '{filter}' {(on ? "on" : "off")}: {n} colliders");
+        }
+
         /// <summary>Lists the render settings of terrains whose name contains the filter; a pixel error of 0 or more is set.</summary>
         private static void TerrainInfo(string filter, float pixelError)
         {
@@ -602,10 +705,16 @@ namespace MapExpansions.Debug
         private static void Ray(Vector3 a, Vector3 b)
         {
             var d = b - a;
-            var hits = Physics.RaycastAll(a, d.normalized, d.magnitude, ~0, QueryTriggerInteraction.Ignore).ToArray().OrderBy(h => h.distance).ToList();
+            // Back faces count too: a character controller stops at a mesh face from either side, a plain ray only at its front.
+            bool backfaces = Physics.queriesHitBackfaces;
+            Physics.queriesHitBackfaces = true;
+            List<RaycastHit> hits;
+            try { hits = Physics.RaycastAll(a, d.normalized, d.magnitude, ~0, QueryTriggerInteraction.Ignore).ToArray().OrderBy(h => h.distance).ToList(); }
+            finally { Physics.queriesHitBackfaces = backfaces; }
             foreach (var h in hits)
             {
-                Core.Log.Msg($"[dev] mxray {h.distance:0.00} m at {h.point} normal {h.normal} '{PathOf(h.collider.transform, 5)}' {h.collider.GetIl2CppType().Name} layer {LayerMask.LayerToName(h.collider.gameObject.layer)}");
+                string side = Vector3.Dot(h.normal, d) > 0f ? "back face" : "front face";
+                Core.Log.Msg($"[dev] mxray {h.distance:0.00} m at {h.point} normal {h.normal} ({side}) '{PathOf(h.collider.transform, 5)}' {h.collider.GetIl2CppType().Name} layer {LayerMask.LayerToName(h.collider.gameObject.layer)}");
                 var mc = h.collider.TryCast<MeshCollider>();
                 if (mc != null) RayTriangle(mc, h.triangleIndex);
             }
@@ -718,11 +827,30 @@ namespace MapExpansions.Debug
                 if (r == null || (r.bounds.center - c).magnitude > radius) continue;
                 var root = r.transform.root.name;
                 var side = root.StartsWith("MapExpansions.", StringComparison.Ordinal) ? (PathOf(r.transform, 99).Contains("/Copies/") ? "copy" : "expansion") : "main";
-                var key = $"{side} lightmap {(r.lightmapIndex is >= 0 and < 65534 ? "baked" : "none")} probes {r.lightProbeUsage}";
+                var anchor = r.probeAnchor == null ? "own place" : $"anchor '{PathOf(r.probeAnchor, 3)}' at {r.probeAnchor.position}";
+                var key = $"{side} lightmap {(r.lightmapIndex is >= 0 and < 65534 ? "baked" : "none")} probes {r.lightProbeUsage} reflections {r.reflectionProbeUsage} from {anchor}";
                 byKind[key] = byKind.TryGetValue(key, out var n) ? n + 1 : 1;
             }
             foreach (var kv in byKind) Core.Log.Msg($"[dev] mxlight near renderers {kv.Key}: {kv.Value}");
             Core.Log.Msg($"[dev] mxlight near: {lights} point/spot lights within {radius} m of {c}; ambient {RenderSettings.ambientMode} {RenderSettings.ambientLight}");
+        }
+
+        /// <summary>
+        /// Lights every renderer within <paramref name="radius"/> of <paramref name="c"/> by the light and reflection
+        /// probes at <paramref name="at"/>, to compare a building's look under another place's probes.
+        /// </summary>
+        private static void Anchor(Vector3 c, float radius, Vector3 at)
+        {
+            var anchor = new GameObject("MapExpansions.DevProbeAnchor").transform;
+            anchor.position = at;
+            int n = 0;
+            foreach (var r in Object.FindObjectsOfType<Renderer>(false))
+            {
+                if (r == null || (r.bounds.center - c).magnitude > radius) continue;
+                r.probeAnchor = anchor;
+                n++;
+            }
+            Core.Log.Msg($"[dev] mxanchor: {n} renderers within {radius} m of {c} now take their probes at {at}");
         }
 
         /// <summary>Switches the fog pass ("feature"), the volumetric fog ("volumetric") or both ("all").</summary>
