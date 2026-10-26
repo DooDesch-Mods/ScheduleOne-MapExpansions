@@ -2,6 +2,8 @@ using System.Collections;
 using Il2CppFishNet;
 using Il2CppFishNet.Object;
 using Il2CppFishNet.Observing;
+using Il2CppScheduleOne.Map;
+using Il2CppScheduleOne.Misc;
 using MapExpansions.Lifecycle;
 using MelonLoader;
 using UnityEngine;
@@ -34,6 +36,11 @@ namespace MapExpansions.World
             public CopyDefinition Def;
             public GameObject Local;
             public readonly List<Part> Parts = new();
+            /// <summary>
+            /// Lamps whose original the access zone of its main-world building switches with the opening hours. The
+            /// zone is not part of the copy, so the owner of the copy switches these.
+            /// </summary>
+            public readonly List<ToggleableLight> ZoneLights = new();
         }
 
         private static readonly List<Part> Parts = new();
@@ -52,6 +59,7 @@ namespace MapExpansions.World
                 if (!string.IsNullOrEmpty(d.Frame)) names.Add(FirstSegment(d.Frame));
             }
             var found = FindInMain(names);
+            var zoneLights = ZoneLightsOfMain();
 
             var templates = b.Root.transform.Find("Copy Templates")?.gameObject;
             if (templates == null)
@@ -71,7 +79,7 @@ namespace MapExpansions.World
             {
                 try
                 {
-                    var built = BuildOne(b, d, owner, found, templates.transform, holder.transform);
+                    var built = BuildOne(b, d, owner, found, zoneLights, templates.transform, holder.transform);
                     if (built != null) result.Add(built);
                 }
                 catch (Exception e)
@@ -85,7 +93,7 @@ namespace MapExpansions.World
         }
 
         private static Built BuildOne(BuiltExpansion b, CopyDefinition d, string owner, Dictionary<string, Transform> found,
-            Transform templates, Transform holder)
+            HashSet<int> zoneLights, Transform templates, Transform holder)
         {
             if (string.IsNullOrEmpty(d.Id) || string.IsNullOrEmpty(d.Template))
             {
@@ -129,16 +137,28 @@ namespace MapExpansions.World
             go.name = src.name;
             go.transform.SetPositionAndRotation(pose.GetColumn(3), pose.rotation);
             go.transform.localScale = pose.lossyScale;
-            Trim(b, d, owner, go);
-
             var built = new Built { Def = d };
+            // A fresh copy has the original's hierarchy, so its lamps pair up with the original's in order.
+            var srcLights = src.GetComponentsInChildren<ToggleableLight>(true);
+            var copyLights = go.GetComponentsInChildren<ToggleableLight>(true);
+            if (srcLights.Length == copyLights.Length)
+            {
+                for (int i = 0; i < srcLights.Length; i++)
+                    if (srcLights[i] != null && zoneLights.Contains(srcLights[i].GetInstanceID())) built.ZoneLights.Add(copyLights[i]);
+            }
+            else
+                Core.Log.Error($"copies: '{b.Id}' {owner} '{d.Id}': {copyLights.Length} lamps in the copy against {srcLights.Length} in '{d.Template}'; " +
+                               "no lamp of it follows opening hours");
+            Trim(b, d, owner, go);
+            built.ZoneLights.RemoveAll(l => l == null);
             var nobs = go.GetComponentsInChildren<NetworkObject>(true);
             // Outermost first; a networked object inside another one goes along with it.
             var roots = nobs.Where(n => n != null && !HasNetworkedAncestor(n, go.transform)).ToList();
             for (int i = 0; i < roots.Count; i++)
             {
                 var nob = roots[i];
-                var key = $"copy:{b.Id}/{d.Id}/{i}";
+                // Copies of different owners may share an id ("door"); the owner keeps their prefab slots apart.
+                var key = $"copy:{b.Id}/{KeyOf(owner)}/{d.Id}/{i}";
                 var t = nob.transform;
                 var part = new Part { Key = key, Template = nob.gameObject, Position = t.position, Rotation = t.rotation, Scale = t.lossyScale };
                 t.SetParent(templates, true);
@@ -166,8 +186,24 @@ namespace MapExpansions.World
             var (batched, batchRoots, _) = StaticBatches.Follow(go.transform, move, $"{owner} {d.Id}");
             built.Local = go;
             Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}' from '{d.Template}' stands at {go.transform.position}, " +
-                         $"{go.GetComponentsInChildren<Renderer>(true).Length} renderers, {batched} batched over {batchRoots} roots");
+                         $"{go.GetComponentsInChildren<Renderer>(true).Length} renderers, {batched} batched over {batchRoots} roots, {built.ZoneLights.Count} lamps follow opening hours");
             return built;
+        }
+
+        /// <summary>Instance ids of the main world's lamps that an access zone switches.</summary>
+        private static HashSet<int> ZoneLightsOfMain()
+        {
+            var ids = new HashSet<int>();
+            int zones = 0;
+            foreach (var z in Object.FindObjectsOfType<AccessZone>(true))
+            {
+                if (z == null || z.Lights == null) continue;
+                zones++;
+                foreach (var l in z.Lights)
+                    if (l != null) ids.Add(l.GetInstanceID());
+            }
+            if (zones == 0) Core.Log.Warning("copies: the main world has no access zone; no copied lamp follows opening hours");
+            return ids;
         }
 
         private static void Trim(BuiltExpansion b, CopyDefinition d, string owner, GameObject go)
@@ -191,6 +227,9 @@ namespace MapExpansions.World
             if (f != null) { Object.DestroyImmediate(f); removed++; }
             Core.Log.Msg($"copies: '{b.Id}' {owner} copy '{d.Id}' leaves the template's own mesh behind ({removed} components)");
         }
+
+        private static string KeyOf(string owner) =>
+            new string(owner.Select(c => char.IsLetterOrDigit(c) || c == '-' ? char.ToLowerInvariant(c) : '-').ToArray()).Trim('-');
 
         private static bool HasNetworkedAncestor(NetworkObject n, Transform top)
         {
@@ -300,9 +339,11 @@ namespace MapExpansions.World
                 Core.Log.Msg($"copies: client; {Parts.Count} networked parts arrive from the host");
                 yield break;
             }
-            int spawned = 0;
+            int spawned = 0, standing = 0;
             foreach (var p in Parts.ToList())
             {
+                // Every Build call starts this routine; parts of earlier calls already stand.
+                if (p.Instance != null) { standing++; continue; }
                 try
                 {
                     var go = Object.Instantiate(p.Template, p.Position, p.Rotation);
@@ -320,7 +361,7 @@ namespace MapExpansions.World
                     Core.Log.Error($"copies: spawning '{p.Key}' failed: {e}");
                 }
             }
-            Core.Log.Msg($"copies: host spawned {spawned}/{Parts.Count} networked parts");
+            Core.Log.Msg($"copies: host spawned {spawned}/{Parts.Count - standing} new networked parts, {standing} already stand");
         }
 
         /// <summary>On a client the parts arrive from the host; each is matched to its definition by prefab id and place.</summary>

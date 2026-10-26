@@ -31,6 +31,9 @@ namespace MapExpansions.Debug
     /// mxray ax ay az bx by bz         every collider a ray from a to b meets, nearest first
     /// mxedges x0 y0 z0 x1 y1 z1 filter open mesh edges inside a world box, as chains, of renderers whose path contains filter
     /// mxlight                         directional lights, shadow distance and the render pipeline's light layers
+    /// mxhover [use]                   what the player's interaction cast hits now, with layers, and what it hovers;
+    ///                                 use presses interact on the hovered object
+    /// mxlight x y z [radius]          point and spot lights near a point, and how the renderers there are lit (lightmap, probes)
     /// mxviews [on|off]                which world the camera's side draws, or separate the views on and off
     /// mxhide filter [on]              stop (or resume) drawing renderers and terrains whose path contains filter
     /// mxterrain filter [pixelError]   render settings of terrains whose name contains filter, optionally a new pixel error
@@ -39,6 +42,7 @@ namespace MapExpansions.Debug
     /// mxarrest                        arrest the local player where they stand, as the police would
     /// mxshop [id|close]               list the shops, pick a shop's seller choice, or close every shop screen
     /// mxbuy code                      buy a listing through Ray's dialogue handler, as his confirmation would
+    /// mxdoors x y z [radius] [open]   working doors, knock doors and door renderers near a point; open tries each working door as the player
     /// mxnav ...                       NPC navigation tests, see NavTest
     /// mxveh ...                       vehicle navigation tests, see VehicleTest
     /// </summary>
@@ -96,6 +100,8 @@ namespace MapExpansions.Debug
                     case "mxfog" when parts.Length > 2: Fog(parts[1], parts[2] == "on"); break;
                     case "mxfog" when parts.Length > 1: Fog("all", parts[1] == "on"); break;
                     case "mxbox" when parts.Length > 6: Box(V(parts, 1), V(parts, 4), parts.Length > 7 ? parts[7] : ""); break;
+                    case "mxhover": Hover(parts.Length > 1 && parts[1] == "use"); break;
+                    case "mxlight" when parts.Length > 3: LightsNear(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 8f); break;
                     case "mxlight": Lights(); break;
                     case "mxviews" when parts.Length > 1:
                         World.SeparateViews.Enabled = parts[1] == "on";
@@ -116,6 +122,7 @@ namespace MapExpansions.Debug
                     case "mxarrest": Arrest(); break;
                     case "mxshop": World.Shops.Choose(parts.Length > 1 ? parts[1] : ""); break;
                     case "mxbuy" when parts.Length > 1: World.RealtorListings.Buy(parts[1]); break;
+                    case "mxdoors" when parts.Length > 3: Doors(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 8f, parts.Length > 5 && parts[5] == "open"); break;
                     case "mxnav": NavTest.Handle(parts); break;
                     case "mxveh": VehicleTest.Handle(parts); break;
                     default:
@@ -336,6 +343,43 @@ namespace MapExpansions.Debug
                 if (++n >= 25) break;
             }
             Core.Log.Msg($"[dev] mxfind '{part}' {scope}: {n} renderers listed");
+        }
+
+        /// <summary>
+        /// Every working door, knock door and door renderer within a radius, so doubled, dead or unreachable doors show.
+        /// With open, each working door the player may use is opened from outside the way its handle does.
+        /// </summary>
+        private static void Doors(Vector3 c, float radius, bool open)
+        {
+            int n = 0;
+            foreach (var d in Object.FindObjectsOfType<Il2CppScheduleOne.Doors.DoorController>(true))
+            {
+                if (d == null || Vector3.Distance(d.transform.position, c) > radius) continue;
+                n++;
+                bool can = d.CanPlayerAccess(Il2CppScheduleOne.Doors.EDoorSide.Exterior, out var reason);
+                int ints = (d.ExteriorIntObjs?.Length ?? 0) + (d.InteriorIntObjs?.Length ?? 0);
+                Core.Log.Msg($"[dev] mxdoors working '{PathOf(d.transform, 6)}' {d.GetIl2CppType().Name} at {d.transform.position}: active {d.gameObject.activeInHierarchy}, " +
+                             $"enabled {d.enabled}, spawned {d.IsSpawned}, access {d.PlayerAccess}, player may open {can}{(can ? "" : $" ({reason})")}, open {d.IsOpen}, handles {ints}");
+                if (open && can && !d.IsOpen)
+                {
+                    d.ExteriorHandleInteracted();
+                    Core.Log.Msg($"[dev] mxdoors opened '{d.name}' from outside: open {d.IsOpen}");
+                }
+            }
+            foreach (var s in Object.FindObjectsOfType<Il2CppScheduleOne.Doors.StaticDoor>(true))
+            {
+                if (s == null || Vector3.Distance(s.transform.position, c) > radius) continue;
+                n++;
+                Core.Log.Msg($"[dev] mxdoors knock '{PathOf(s.transform, 6)}' at {s.transform.position}: active {s.gameObject.activeInHierarchy}, usable {s.Usable}, " +
+                             $"knock {s.CanKnock}, building '{(s.Building != null ? s.Building.BuildingName : "none")}', interactable {(s.IntObj != null && s.IntObj.enabled)}");
+            }
+            foreach (var r in Object.FindObjectsOfType<Renderer>(false))
+            {
+                if (r == null || !r.enabled || r.name.IndexOf("door", StringComparison.OrdinalIgnoreCase) < 0 && PathOf(r.transform, 3).IndexOf("door", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                if (Vector3.Distance(r.bounds.center, c) > radius) continue;
+                Core.Log.Msg($"[dev] mxdoors renderer '{PathOf(r.transform, 6)}': {B(r.bounds)}");
+            }
+            Core.Log.Msg($"[dev] mxdoors {n} doors within {radius} m of {c}");
         }
 
         private static string PathOf(Transform t, int depth = 5)
@@ -614,6 +658,68 @@ namespace MapExpansions.Debug
             string layers = urp == null ? $"pipeline {(rp != null ? rp.GetIl2CppType().Name : "none")}" :
                 $"URP shadowDistance {urp.shadowDistance:0} cascades {urp.shadowCascadeCount} lightLayers {urp.useRenderingLayers}";
             Core.Log.Msg($"[dev] mxlight: quality shadowDistance {QualitySettings.shadowDistance:0}; {layers}");
+        }
+
+        private static void Hover(bool use)
+        {
+            var im = Singleton<Il2CppScheduleOne.Interaction.InteractionManager>.Instance;
+            var cam = PlayerSingleton<PlayerCamera>.Instance;
+            if (im == null || cam == null)
+            {
+                Core.Log.Warning($"[dev] mxhover: no {(im == null ? "InteractionManager" : "PlayerCamera")}");
+                return;
+            }
+            int mask = im.Interaction_SearchMask.value;
+            var layers = new List<string>();
+            for (int l = 0; l < 32; l++)
+                if ((mask & (1 << l)) != 0) layers.Add(LayerMask.LayerToName(l));
+            var o = cam.transform.position;
+            var f = cam.transform.forward;
+            Core.Log.Msg($"[dev] mxhover camera {o} forward {f}; search mask {string.Join(", ", layers)}; " +
+                         $"hovered '{(im.HoveredInteractableObject != null ? PathOf(im.HoveredInteractableObject.transform, 5) : "none")}', " +
+                         $"blocked {im.IsAnythingBlockingInteraction()}");
+            var hits = Physics.RaycastAll(o, f, 4f, ~0, QueryTriggerInteraction.Collide).ToArray().OrderBy(h => h.distance).ToList();
+            foreach (var h in hits)
+            {
+                var io = h.collider.GetComponentInParent<Il2CppScheduleOne.Interaction.InteractableObject>();
+                int layer = h.collider.gameObject.layer;
+                Core.Log.Msg($"[dev] mxhover hit {h.distance:0.00} m '{PathOf(h.collider.transform, 5)}' {h.collider.GetIl2CppType().Name} trigger {h.collider.isTrigger}, " +
+                             $"layer {LayerMask.LayerToName(layer)} in mask {(mask & (1 << layer)) != 0}, interactable '{(io != null ? io.name : "none")}'");
+            }
+            Core.Log.Msg($"[dev] mxhover {hits.Count} hits within 4 m");
+            if (!use) return;
+            var hovered = im.HoveredInteractableObject;
+            if (hovered == null)
+            {
+                Core.Log.Warning("[dev] mxhover use: nothing is hovered");
+                return;
+            }
+            hovered.StartInteract();
+            hovered.EndInteract();
+            Core.Log.Msg($"[dev] mxhover use: interacted with '{PathOf(hovered.transform, 5)}', state {hovered._interactionState}");
+        }
+
+        private static void LightsNear(Vector3 c, float radius)
+        {
+            int lights = 0;
+            foreach (var l in Object.FindObjectsOfType<Light>(true))
+            {
+                if (l == null || l.type == LightType.Directional || (l.transform.position - c).magnitude > radius) continue;
+                lights++;
+                Core.Log.Msg($"[dev] mxlight near '{PathOf(l.transform, 6)}' {l.type} at {l.transform.position}: active {l.gameObject.activeInHierarchy}, " +
+                             $"enabled {l.enabled}, intensity {l.intensity:0.00}, range {l.range:0.0}, culling {l.cullingMask}");
+            }
+            var byKind = new Dictionary<string, int>();
+            foreach (var r in Object.FindObjectsOfType<MeshRenderer>(false))
+            {
+                if (r == null || (r.bounds.center - c).magnitude > radius) continue;
+                var root = r.transform.root.name;
+                var side = root.StartsWith("MapExpansions.", StringComparison.Ordinal) ? (PathOf(r.transform, 99).Contains("/Copies/") ? "copy" : "expansion") : "main";
+                var key = $"{side} lightmap {(r.lightmapIndex is >= 0 and < 65534 ? "baked" : "none")} probes {r.lightProbeUsage}";
+                byKind[key] = byKind.TryGetValue(key, out var n) ? n + 1 : 1;
+            }
+            foreach (var kv in byKind) Core.Log.Msg($"[dev] mxlight near renderers {kv.Key}: {kv.Value}");
+            Core.Log.Msg($"[dev] mxlight near: {lights} point/spot lights within {radius} m of {c}; ambient {RenderSettings.ambientMode} {RenderSettings.ambientLight}");
         }
 
         /// <summary>Switches the fog pass ("feature"), the volumetric fog ("volumetric") or both ("all").</summary>
