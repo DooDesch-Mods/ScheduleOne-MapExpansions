@@ -52,6 +52,12 @@ namespace MapExpansions
         /// <summary>Paths below the template that are left out of the copy, such as a door to a room the expansion lacks.</summary>
         public List<string> Exclude { get; } = new();
 
+        /// <summary>
+        /// Solid boxes added to the copy, in the main world's coordinates like the template, each with the name of a
+        /// loaded material. For a side the original leaves open because it stands against a wall the expansion lacks.
+        /// </summary>
+        public List<(Bounds Box, string Material)> Panels { get; } = new();
+
         public CopyDefinition() { }
 
         public CopyDefinition(string id, string template, string frame, LocalPoint at)
@@ -66,6 +72,15 @@ namespace MapExpansions
         public static CopyDefinition OnObject(string id, string template, string frame, string onto,
             Vector3 offset = default, Vector3 rotation = default) =>
             new() { Id = id, Template = template, Frame = frame, Onto = onto, OntoOffset = offset, OntoRotation = rotation };
+
+        /// <summary>Adds a box to <see cref="Panels"/>.</summary>
+        public CopyDefinition Panel(Vector3 min, Vector3 max, string material)
+        {
+            var b = new Bounds();
+            b.SetMinMax(Vector3.Min(min, max), Vector3.Max(min, max));
+            Panels.Add((b, material));
+            return this;
+        }
     }
 
     /// <summary>What a shop's counter opens.</summary>

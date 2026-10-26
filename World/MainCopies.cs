@@ -163,6 +163,7 @@ namespace MapExpansions.World
                 Core.Log.Error($"copies: '{b.Id}' {owner} '{d.Id}': {copyLights.Length} lamps in the copy against {srcLights.Length} in '{d.Template}'; " +
                                "no lamp of it follows opening hours");
             Trim(b, d, owner, go);
+            AddPanels(b, d, owner, go, move);
             built.ZoneLights.RemoveAll(l => l == null);
             var nobs = go.GetComponentsInChildren<NetworkObject>(true);
             // Outermost first; a networked object inside another one goes along with it.
@@ -203,6 +204,30 @@ namespace MapExpansions.World
                          $"{go.GetComponentsInChildren<Renderer>(true).Length} renderers, {batched} batched over {batchRoots} roots, " +
                          $"{anchored} take their light probes at {points} points of the main world, {built.ZoneLights.Count} lamps follow opening hours");
             return built;
+        }
+
+        /// <summary>The definition's panels as boxes below the copy, moved from the main world like it.</summary>
+        private static void AddPanels(BuiltExpansion b, CopyDefinition d, string owner, GameObject go, Matrix4x4 move)
+        {
+            foreach (var (box, material) in d.Panels)
+            {
+                var mat = ObjectRules.LoadedMaterial(material);
+                if (mat == null)
+                {
+                    Core.Log.Error($"copies: '{b.Id}' {owner} '{d.Id}': no loaded material '{material}'; the panel at {box.center} is left out");
+                    continue;
+                }
+                var panel = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                panel.name = "MapExpansions.Panel";
+                // The copy's own colliders already stand around the panel.
+                Object.Destroy(panel.GetComponent<Collider>());
+                panel.layer = go.layer;
+                panel.transform.SetPositionAndRotation(move.MultiplyPoint3x4(box.center), move.rotation);
+                panel.transform.localScale = Vector3.Scale(box.size, move.lossyScale);
+                panel.GetComponent<MeshRenderer>().sharedMaterial = mat;
+                panel.transform.SetParent(go.transform, true);
+                Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': panel of {box.size} in '{material}' stands at {panel.transform.position}");
+            }
         }
 
         /// <summary>Side of the cells in which renderers share one probe anchor, in metres.</summary>
