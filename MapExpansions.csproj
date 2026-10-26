@@ -38,6 +38,7 @@
     <Reference Include="UnityEngine.UIModule"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.UIModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.ImageConversionModule"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.ImageConversionModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.UI"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.TextRenderingModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Unity.TextMeshPro"><HintPath>$(WorkspaceLibPath)/game/Unity.TextMeshPro.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Il2CppLokoSolo.PinchableScrollRect"><HintPath>$(WorkspaceLibPath)/game/Il2CppLokoSolo.PinchableScrollRect.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Unity.AI.Navigation"><HintPath>$(WorkspaceLibPath)/game/Unity.AI.Navigation.dll</HintPath><Private>false</Private></Reference>
