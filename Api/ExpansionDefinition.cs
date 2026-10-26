@@ -31,6 +31,9 @@ namespace MapExpansions
 
         public List<RegionDefinition> Regions { get; } = new();
 
+        /// <summary>The expansion's part of the phone map; without it the expansion is not on the map.</summary>
+        public MapSheetDefinition Map { get; set; }
+
         public List<ConnectionDefinition> Connections { get; } = new();
 
         /// <summary>Objects switched off when the expansion is built, in the expansion or in the main world.</summary>
@@ -210,6 +213,12 @@ namespace MapExpansions
         /// without them, pair it with <see cref="DoubleSided"/> so the outer walls show from inside.
         /// </summary>
         Hollow,
+
+        /// <summary>
+        /// Closes the hole cells of each selected terrain inside the rule's area. For a cellar entrance cut into the
+        /// ground under a building the rules removed.
+        /// </summary>
+        CloseHoles,
     }
 
     /// <summary>Selects objects by name in one world, optionally limited to an area.</summary>

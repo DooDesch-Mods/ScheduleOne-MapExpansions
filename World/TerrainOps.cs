@@ -295,6 +295,38 @@ namespace MapExpansions.World
                 return added;
             }
 
+            /// <summary>Closes every hole cell whose centre lies in the area; returns the number closed.</summary>
+            public int Close(Terrain t, Rect worldArea, string reason)
+            {
+                var td = t.terrainData;
+                if (td == null) return 0;
+                Vector3 p = t.transform.position;
+                Vector3 s = td.size;
+                var e = Get(t);
+                int res = e.Res;
+                int closed = 0;
+                for (int y = 0; y < res; y++)
+                {
+                    float wz = p.z + (y + 0.5f) / res * s.z;
+                    if (wz < worldArea.yMin || wz > worldArea.yMax) continue;
+                    for (int x = 0; x < res; x++)
+                    {
+                        int i = y * res + x;
+                        if (e.Solid[i]) continue;
+                        float wx = p.x + (x + 0.5f) / res * s.x;
+                        if (wx < worldArea.xMin || wx > worldArea.xMax) continue;
+                        e.Solid[i] = true;
+                        closed++;
+                    }
+                }
+                if (closed > 0)
+                {
+                    e.Added += closed;
+                    e.Reasons.Add($"{reason} closed {closed}");
+                }
+                return closed;
+            }
+
             private static readonly (float, float)[] Corners = { (0f, 0f), (-1f, -1f), (1f, -1f), (-1f, 1f), (1f, 1f) };
 
             private Entry Get(Terrain t)
@@ -320,7 +352,7 @@ namespace MapExpansions.World
                         var td = EnsureClone(e.Terrain, _owner);
                         WriteHoles(td, e.Res, e.Solid);
                         written++;
-                        Core.Log.Msg($"terrain: '{e.Terrain.name}' {e.Added} hole cells added ({string.Join(", ", e.Reasons)}) in {sw.ElapsedMilliseconds} ms");
+                        Core.Log.Msg($"terrain: '{e.Terrain.name}' {e.Added} hole cells changed ({string.Join(", ", e.Reasons)}) in {sw.ElapsedMilliseconds} ms");
                     }
                     catch (Exception ex)
                     {

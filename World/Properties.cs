@@ -137,6 +137,17 @@ namespace MapExpansions.World
                 }
             foreach (var sp in go.GetComponentsInChildren<SavePoint>(true))
                 if (sp != null) Object.DestroyImmediate(sp.gameObject);
+            foreach (var path in d.Exclude)
+            {
+                var part = go.transform.Find(path);
+                if (part == null)
+                {
+                    Core.Log.Warning($"properties: '{d.Code}' excludes '{path}', which the template '{d.Template}' does not have; nothing is left out");
+                    continue;
+                }
+                Object.DestroyImmediate(part.gameObject);
+                Core.Log.Msg($"properties: '{d.Code}' leaves out '{path}'");
+            }
 
             var nob = go.GetComponent<NetworkObject>();
             if (nob == null)
@@ -374,6 +385,13 @@ namespace MapExpansions.World
                 grids++;
             }
 
+            var sign = p.ForSaleSign != null ? p.ForSaleSign.transform : null;
+            if (sign != null && sign.IsChildOf(p.transform) && Mirrored(sign))
+            {
+                UnmirrorSign(d, sign);
+                points++;
+            }
+
             var list = new List<Transform> { p.SpawnPoint, p.InteriorSpawnPoint, p.NPCSpawnPoint };
             if (p.EmployeeIdlePoints != null) list.AddRange(p.EmployeeIdlePoints);
             foreach (var lot in p.GetComponentsInChildren<ParkingLot>(true))
@@ -399,6 +417,29 @@ namespace MapExpansions.World
                 points++;
             }
             Core.Log.Msg($"properties: '{d.Code}' is mirrored; {grids} grids and {points} points keep a proper frame");
+        }
+
+        /// <summary>
+        /// The for-sale sign's text would read backwards. Its board is flipped along the line of the text, so the text
+        /// reads forwards and still faces the side of the house it faced in the template; flipping another axis would
+        /// turn its face towards the house.
+        /// </summary>
+        private static void UnmirrorSign(PropertyDefinition d, Transform sign)
+        {
+            int axis = 0;
+            var text = sign.GetComponentInChildren<Il2CppTMPro.TMP_Text>(true);
+            if (text == null)
+                Core.Log.Warning($"properties: '{d.Code}' for-sale sign has no text; it is flipped along its own x axis");
+            else
+            {
+                var along = sign.worldToLocalMatrix.MultiplyVector(text.transform.localToWorldMatrix.MultiplyVector(Vector3.right));
+                if (Mathf.Abs(along.y) > Mathf.Abs(along[axis])) axis = 1;
+                if (Mathf.Abs(along.z) > Mathf.Abs(along[axis])) axis = 2;
+            }
+            var s = sign.localScale;
+            s[axis] = -s[axis];
+            sign.localScale = s;
+            Core.Log.Msg($"properties: '{d.Code}' for-sale sign flipped along its {"xyz"[axis]} axis");
         }
 
         private static bool Mirrored(Transform t) => t.localToWorldMatrix.determinant < 0f;
@@ -545,6 +586,7 @@ namespace MapExpansions.World
         {
             var (batched, roots, own) = StaticBatches.Follow(p.transform, c.Move, c.Def.Name);
             Navigation.PropertyNavigation.Bake(c.Def.Code, p, c.Expansion.Root.transform);
+            GroundSign(c, p);
             if (c.Poster != null)
             {
                 c.Poster.SetParent(null, false);
@@ -553,6 +595,44 @@ namespace MapExpansions.World
             Core.Log.Msg($"properties: '{c.Def.Code}' in the world at {p.transform.position} ({(InstanceFinder.IsServer ? "host" : "client")}): " +
                          $"{batched} batched renderers moved over {roots} roots, {own} follow the property already" +
                          (c.Poster != null ? $", listing at {c.PosterPosition}" : ""));
+        }
+
+        /// <summary>
+        /// The for-sale sign stands where the template's ground was; the copy's ground lies higher or lower, so the sign
+        /// is moved onto it.
+        /// </summary>
+        private static void GroundSign(Copy c, Property p)
+        {
+            var sign = p.ForSaleSign != null ? p.ForSaleSign.transform : null;
+            if (sign == null)
+            {
+                Core.Log.Msg($"properties: '{c.Def.Code}' has no for-sale sign to ground");
+                return;
+            }
+            float bottom = float.MaxValue;
+            foreach (var r in sign.GetComponentsInChildren<Renderer>(true))
+                if (r != null && r.enabled && !r.isPartOfStaticBatch) bottom = Mathf.Min(bottom, r.bounds.min.y);
+            if (bottom == float.MaxValue)
+            {
+                Core.Log.Warning($"properties: '{c.Def.Code}' for-sale sign has no renderer of its own; it stays at {sign.position}");
+                return;
+            }
+            var from = new Vector3(sign.position.x, bottom + 3f, sign.position.z);
+            float ground = float.NaN, nearest = float.MaxValue;
+            foreach (var hit in Physics.RaycastAll(from, Vector3.down, 10f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (hit.collider == null || hit.collider.transform.IsChildOf(sign) || hit.distance >= nearest) continue;
+                nearest = hit.distance;
+                ground = hit.point.y;
+            }
+            if (float.IsNaN(ground))
+            {
+                Core.Log.Warning($"properties: '{c.Def.Code}' found no ground under its for-sale sign at {sign.position}; it stays");
+                return;
+            }
+            float lift = ground - bottom;
+            sign.position += Vector3.up * lift;
+            Core.Log.Msg($"properties: '{c.Def.Code}' for-sale sign moved by {lift:0.00} m onto the ground at y {ground:0.00}");
         }
 
         private static string Path(Transform root, Transform t)

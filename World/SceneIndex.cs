@@ -16,6 +16,7 @@ namespace MapExpansions.World
             public readonly List<Renderer> Renderers = new();
             public readonly List<Collider> Colliders = new();
             public readonly List<Terrain> Terrains = new();
+            public readonly List<Light> Lights = new();
         }
 
         public readonly Part Main = new();
@@ -64,6 +65,7 @@ namespace MapExpansions.World
             foreach (var r in root.GetComponentsInChildren<Renderer>(true)) part.Renderers.Add(r);
             foreach (var c in root.GetComponentsInChildren<Collider>(true)) part.Colliders.Add(c);
             foreach (var t in root.GetComponentsInChildren<Terrain>(true)) part.Terrains.Add(t);
+            foreach (var l in root.GetComponentsInChildren<Light>(true)) part.Lights.Add(l);
         }
 
         public static bool HasAncestor(Transform t, string prefix)
@@ -86,6 +88,8 @@ namespace MapExpansions.World
                 var r = t.GetComponent<Renderer>();
                 var c = t.GetComponent<Collider>();
                 if ((r != null && r.bounds.Intersects(worldArea)) || (c != null && c.bounds.Intersects(worldArea))) return true;
+                // A lamp has no bounds of its own; it belongs to the area it shines from.
+                if (r == null && c == null && t.GetComponent<Light>() != null && worldArea.Contains(t.position)) return true;
             }
             return false;
         }

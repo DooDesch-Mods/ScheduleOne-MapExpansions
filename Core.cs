@@ -40,6 +40,8 @@ namespace MapExpansions
         {
             Connections.TunnelShadows.Tick();
             World.WeatherCover.Tick();
+            World.SkyOutsideBounds.Tick();
+            World.PhoneMap.Tick();
             World.SeparateViews.Tick();
             World.Properties.Tick();
             World.MainCopies.Tick();

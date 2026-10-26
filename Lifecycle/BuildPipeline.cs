@@ -132,7 +132,7 @@ namespace MapExpansions.Lifecycle
                 else Core.Log.Error($"build: '{b.Id}' connection {c.Name} was not built");
             }
 
-            ObjectRules.Apply(b, index, def.Hide, offColliders);
+            ObjectRules.Apply(b, index, def.Hide, offColliders, holes);
             ObjectRules.GroundPlates(b, index, offColliders);
             ObjectRules.YieldToMainTerrains(b, index, holes);
             Physics.SyncTransforms();
@@ -236,6 +236,7 @@ namespace MapExpansions.Lifecycle
             TunnelShadows.Clear();
             WeatherCover.Clear();
             SeparateViews.Clear();
+            PhoneMap.Reset();
             SlopeAssist.Clear();
             PhysicsBounds.Restore("teardown");
             foreach (var x in Builds)

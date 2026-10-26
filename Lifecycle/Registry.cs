@@ -75,6 +75,11 @@ namespace MapExpansions.Lifecycle
             if (def.Source == null || string.IsNullOrEmpty(def.Source.SceneName)) problems.Add("no source scene");
             else if (string.IsNullOrEmpty(def.Source.RootName)) problems.Add("no source root name");
             if (def.QuarterTurns < 0 || def.QuarterTurns > 3) problems.Add($"QuarterTurns {def.QuarterTurns} is outside 0..3");
+            if (def.Map != null)
+            {
+                if (def.Map.HalfSize <= 0f) problems.Add("map sheet without a size");
+                if (def.Map.Picture == MapPictureSource.Png && (def.Map.Png == null || def.Map.Png.Length == 0)) problems.Add("map sheet without its PNG");
+            }
 
             var regionNames = new HashSet<string>(StringComparer.Ordinal);
             foreach (var r in def.Regions)
