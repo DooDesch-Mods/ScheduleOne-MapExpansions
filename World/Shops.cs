@@ -37,6 +37,8 @@ namespace MapExpansions.World
             public string Expansion;
             public ShopDefinition Def;
             public Vector3 Counter;
+            /// <summary>Where the seller looks while serving, flat in world space.</summary>
+            public Vector3 Facing;
             public readonly List<MainCopies.Part> Parts = new();
             public readonly List<DoorController> Doors = new();
             /// <summary>Lamps that are on while the shop is open, as its main-world original's access zone has them.</summary>
@@ -85,6 +87,9 @@ namespace MapExpansions.World
                         continue;
                     }
                     var s = new Shop { Expansion = b.Id, Def = d, Counter = b.Root.transform.TransformPoint(d.Counter.Position) };
+                    var facing = b.Root.transform.rotation * Quaternion.Euler(0f, d.Counter.Yaw, 0f) * Vector3.forward;
+                    facing.y = 0f;
+                    s.Facing = facing.normalized;
                     foreach (var c in MainCopies.Build(b, d.Copies, $"shop '{d.Id}'"))
                     {
                         s.Parts.AddRange(c.Parts);
@@ -184,7 +189,19 @@ namespace MapExpansions.World
             if (s.Choice != null) s.Choice.Enabled = open;
             var access = open ? EDoorAccess.Open : EDoorAccess.ExitOnly;
             foreach (var door in s.Doors)
-                if (door != null) door.PlayerAccess = access;
+            {
+                if (door == null) continue;
+                door.PlayerAccess = access;
+                // The game raises the blocker when an NPC passes a door the player may not use, and lowers it only when
+                // that NPC's opening times out. A door that already stood open keeps it raised after the shop opens.
+                var blocker = door.PlayerBlocker;
+                if (open && blocker != null && blocker.enabled)
+                {
+                    blocker.enabled = false;
+                    Core.Log.Msg($"shops: '{s.Expansion}' shop '{s.Def.Id}' door '{door.gameObject.name}' let the player through again; its blocker was still up");
+                }
+            }
+            if (open) FaceCounter(s, npc);
             if (s.Open != open)
             {
                 int lit = 0;
@@ -198,6 +215,26 @@ namespace MapExpansions.World
                              $"{flat.magnitude:0.0} m from the counter, {s.Doors.Count} doors, {lit} lamps {(open ? "on" : "off")}");
                 s.Open = open;
             }
+        }
+
+        private const float FaceTolerance = 30f;
+
+        /// <summary>
+        /// Turns a standing seller to the counter's facing. A walk the schedule skipped ends with a warp that keeps the
+        /// direction the seller came from, so a seller can stand at the counter with the back to the door.
+        /// </summary>
+        private static void FaceCounter(Shop s, NPC npc)
+        {
+            if (!Il2CppFishNet.InstanceFinder.IsServer) return;
+            var movement = npc.Movement;
+            if (movement == null || movement.IsMoving || movement.FaceDirectionInProgress) return;
+            if (npc.DialogueHandler != null && npc.DialogueHandler.IsDialogueInProgress) return;
+            var forward = npc.transform.forward;
+            forward.y = 0f;
+            float off = Vector3.Angle(forward, s.Facing);
+            if (off <= FaceTolerance) return;
+            movement.FaceDirection(s.Facing);
+            Core.Log.Msg($"shops: '{s.Expansion}' shop '{s.Def.Id}' turns '{s.Def.Seller}' {off:0} degrees to face the counter");
         }
 
         /// <summary>
