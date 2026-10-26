@@ -348,7 +348,7 @@ namespace MapExpansions.World
             var used = new HashSet<int>();
             var added = new List<Collider>();
             var liners = new List<Renderer>();
-            bool lined = rule.Bands.Count > 0 || rule.CeilingMaterial != null;
+            bool lined = rule.Bands.Count > 0 || rule.CeilingMaterial != null || rule.FloorMaterial != null;
             foreach (var c in part.Colliders)
             {
                 if (c == null || !c.enabled || c.isTrigger || !SceneIndex.MatchesSelfOrAncestor(c.transform, rule, area)) continue;
@@ -464,6 +464,10 @@ namespace MapExpansions.World
 
         // Metres a hole may stand off a face and still cut it, for a window box drawn around the glass.
         private const float HoleReach = 0.3f;
+
+        /// <summary>Metres between the model's floor and the lining's floor.</summary>
+        private const float FloorInset = 0.005f;
+
         private static readonly Dictionary<string, Material> LiningMaterials = new();
 
         /// <summary>
@@ -549,10 +553,10 @@ namespace MapExpansions.World
             }
 
             int frameSlot = Slot(rule.FrameMaterial);
-            void Face(int axis, float plane, float inward, int u, int v, List<float> extraV, Func<float, int> slotAt, bool framed)
+            void Face(int axis, float plane, float inward, int u, int v, List<float> extraV, Func<float, int> slotAt, bool framed, bool cut = true)
             {
                 float reach = HoleReach / scale[axis];
-                var cross = holes.Where(h => h.min[axis] <= plane + reach && h.max[axis] >= plane - reach).ToList();
+                var cross = cut ? holes.Where(h => h.min[axis] <= plane + reach && h.max[axis] >= plane - reach).ToList() : new List<Bounds>();
                 float u0 = c[u] - s[u] * 0.5f + ins[u], u1 = c[u] + s[u] * 0.5f - ins[u];
                 float v0 = c[v] - s[v] * 0.5f + ins[v], v1 = c[v] + s[v] * 0.5f - ins[v];
                 framed &= frameSlot >= 0;
@@ -633,6 +637,10 @@ namespace MapExpansions.World
             }
             int ceiling = Slot(rule.CeilingMaterial);
             Face(up, c[up] + upSign * (s[up] * 0.5f - ins[up]), -upSign, (up + 1) % 3, (up + 2) % 3, none, _ => ceiling, false);
+            // Doorways reach down to the floor, but the floor runs on through them up to the outer wall. It lies just
+            // over the model's floor whatever the walls' inset, so flat things on that floor, such as door mats, stay on top.
+            int floorSlot = Slot(rule.FloorMaterial);
+            Face(up, floor + upSign * FloorInset / scale[up], upSign, (up + 1) % 3, (up + 2) % 3, none, _ => floorSlot, false, cut: false);
 
             if (quads == 0)
             {
@@ -662,6 +670,14 @@ namespace MapExpansions.World
         /// <summary>A loaded material by name; the first found is kept for later builds while it lives.</summary>
         private static Material FindMaterial(string id, ObjectRule rule, string name)
         {
+            var m = LoadedMaterial(name);
+            if (m == null) Core.Log.Error($"rules: '{id}' {rule}: no loaded material '{name}'; the lining leaves its part out");
+            return m;
+        }
+
+        /// <summary>A loaded material by name, or null; the first found is kept for later calls while it lives.</summary>
+        internal static Material LoadedMaterial(string name)
+        {
             if (LiningMaterials.TryGetValue(name, out var known) && known != null) return known;
             foreach (var o in Resources.FindObjectsOfTypeAll(Il2CppType.Of<Material>()))
             {
@@ -670,7 +686,6 @@ namespace MapExpansions.World
                 LiningMaterials[name] = m;
                 return m;
             }
-            Core.Log.Error($"rules: '{id}' {rule}: no loaded material '{name}'; the lining leaves its part out");
             return null;
         }
 
