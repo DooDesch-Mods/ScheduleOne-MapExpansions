@@ -361,7 +361,8 @@ namespace MapExpansions.Debug
                 bool can = d.CanPlayerAccess(Il2CppScheduleOne.Doors.EDoorSide.Exterior, out var reason);
                 int ints = (d.ExteriorIntObjs?.Length ?? 0) + (d.InteriorIntObjs?.Length ?? 0);
                 Core.Log.Msg($"[dev] mxdoors working '{PathOf(d.transform, 6)}' {d.GetIl2CppType().Name} at {d.transform.position}: active {d.gameObject.activeInHierarchy}, " +
-                             $"enabled {d.enabled}, spawned {d.IsSpawned}, access {d.PlayerAccess}, player may open {can}{(can ? "" : $" ({reason})")}, open {d.IsOpen}, handles {ints}");
+                             $"enabled {d.enabled}, spawned {d.IsSpawned}, access {d.PlayerAccess}, player may open {can}{(can ? "" : $" ({reason})")}, open {d.IsOpen}, handles {ints}, " +
+                             $"player blocker {(d.PlayerBlocker == null ? "none" : d.PlayerBlocker.enabled ? "up" : "down")}");
                 if (open && can && !d.IsOpen)
                 {
                     d.ExteriorHandleInteracted();
