@@ -597,22 +597,30 @@ namespace MapExpansions.Navigation
                 Core.Log.Warning($"vehicle nav: '{b.Id}' no point graph '{RoadNodesGraphName}'; vehicles leave the road network at the main world's edge");
                 return;
             }
-            var points = new List<Vector3>();
-            var edges = new List<(int From, int To, bool OneWay)>();
-            foreach (var p in b.Source.RoadNodes) points.Add(b.Frame.ToWorld(p));
-            int sourceCount = points.Count;
-            edges.AddRange(b.Source.RoadLinks);
-            if (sourceCount > 1 && edges.Count == 0)
+            var sourceNodes = new List<Vector3>();
+            foreach (var p in b.Source.RoadNodes) sourceNodes.Add(b.Frame.ToWorld(p));
+            var sourceLinks = new List<(int From, int To, bool OneWay)>(b.Source.RoadLinks);
+            if (sourceNodes.Count > 1 && sourceLinks.Count == 0)
             {
                 Core.Log.Warning($"vehicle nav: '{b.Id}' the source has no road links; its road nodes are chained by distance");
-                for (int i = 0; i < sourceCount; i++)
+                for (int i = 0; i < sourceNodes.Count; i++)
                 {
-                    int n = Nearest(points, 0, sourceCount, points[i], i);
-                    if (n >= 0 && !edges.Contains((n, i, false))) edges.Add((i, n, false));
+                    int n = Nearest(sourceNodes, 0, sourceNodes.Count, sourceNodes[i], i);
+                    if (n >= 0 && !sourceLinks.Contains((n, i, false))) sourceLinks.Add((i, n, false));
                 }
             }
-            int oneWay = edges.Count(e => e.OneWay);
-            if (oneWay > 0) Core.Log.Msg($"vehicle nav: '{b.Id}' {oneWay} of {edges.Count} source road links are one-way");
+            int oneWay = sourceLinks.Count(e => e.OneWay);
+            if (oneWay > 0) Core.Log.Msg($"vehicle nav: '{b.Id}' {oneWay} of {sourceLinks.Count} source road links are one-way");
+
+            // A connection ends at the source road node nearest its last point; the expansion's lanes meet it there.
+            var joinAt = new List<int>();
+            foreach (var conn in b.Connections)
+                joinAt.Add(sourceNodes.Count > 0 ? Nearest(sourceNodes, 0, sourceNodes.Count, conn.Curve.Points[conn.Curve.Count - 1], -1) : -1);
+            var roads = SourceRoads.Build(b.Id, sourceNodes, sourceLinks, new HashSet<int>(joinAt.Where(j => j >= 0)), b.Content?.transform);
+            var points = new List<Vector3>(roads.Points);
+            var edges = new List<(int From, int To, bool OneWay)>();
+            foreach (var (from, to) in roads.Edges) edges.Add((from, to, true));
+            int sourceCount = points.Count;
 
             // Vanilla road nodes run per lane and their links one way, with traffic on the right. Each connection gets
             // a lane each way, and its main-world end joins every lane nearby, so a vehicle turns onto it from either
@@ -640,11 +648,11 @@ namespace MapExpansions.Navigation
                     if (i > 0) edges.Add((points.Count - 2, points.Count - 1, true));
                 }
                 int thereEnd = back - 1, backEnd = points.Count - 1;
-                int inSource = Nearest(points, 0, sourceCount, points[thereEnd], -1);
-                if (inSource >= 0)
+                int joint = joinAt[mainEnds.Count];
+                if (joint >= 0 && roads.Leave[joint].Count > 0)
                 {
-                    edges.Add((thereEnd, inSource, true));
-                    edges.Add((Nearest(points, 0, sourceCount, points[back], -1), back, true));
+                    foreach (var (lane, _) in roads.Leave[joint]) edges.Add((thereEnd, lane, true));
+                    foreach (var (lane, _) in roads.Arrive[joint]) edges.Add((lane, back, true));
                 }
                 else Core.Log.Warning($"vehicle nav: '{b.Id}' {conn.Name} ends with no source road node to join");
                 mainEnds.Add((there, backEnd, curve.Points[0]));
@@ -724,7 +732,9 @@ namespace MapExpansions.Navigation
                 NodeLink.validNodeLinks.Add(link);
                 _links.Add(link);
             }
-            foreach (var (from, to, _) in edges) Link(At(from), At(to));
+            // An edge under a metre joins lanes that already mark the road there; a link that short would read as a turn.
+            foreach (var (from, to, _) in edges)
+                if (Vector3.Distance(points[from], points[to]) >= 1f) Link(At(from), At(to));
             Transform Main(Vector3 at)
             {
                 var t = new GameObject("main road node").transform;
@@ -737,7 +747,7 @@ namespace MapExpansions.Navigation
                 Link(Main(from), At(mainEnds[m].Into));
                 Link(At(mainEnds[m].OutOf), Main(to));
             }
-            Core.Log.Msg($"vehicle nav: '{b.Id}' {added} road nodes added ({sourceCount} from the source, {points.Count - sourceCount} in two lanes along connections), " +
+            Core.Log.Msg($"vehicle nav: '{b.Id}' {added} road nodes added ({sourceCount} in lanes along the expansion's roads, {points.Count - sourceCount} in two lanes along connections), " +
                          $"{connected} of {edges.Count} edges connected, {joined} edges to {passing.Count} main-world road links within {MainJoinRadius:0} m, {_links.Count} road links");
             foreach (var (m, from, to, one, _) in passing)
                 Core.Log.Msg($"vehicle nav: '{b.Id}' connection {m} joins the main-world road link {from} -> {to}{(one ? " (one way)" : "")}");
