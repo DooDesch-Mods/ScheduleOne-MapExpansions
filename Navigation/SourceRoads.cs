@@ -31,6 +31,9 @@ namespace MapExpansions.Navigation
         /// <summary>The centre line is averaged over this many samples to each side (8 m), this many times.</summary>
         private const int SmoothReach = 2, SmoothPasses = 3;
 
+        /// <summary>A smoothed centre point is moved back onto the road's middle by at most this much.</summary>
+        private const float MaxRecentre = 3f;
+
         /// <summary>
         /// Lanes end this far from a junction's middle. The turns across it stay under the 8 m that road drawings read
         /// as a junction, also straight across a 10 m crossing.
@@ -291,7 +294,7 @@ namespace MapExpansions.Navigation
                 centre = Straight(path);
                 width = FallbackRoadWidth;
             }
-            if (traced) centre = Smooth(centre);
+            if (traced) centre = Recentre(Smooth(centre), width);
             // Lanes stop at a junction's mouth; the turns across it are links of their own.
             if (_degree[seq[0]] >= 3) centre = Trim(centre, JunctionSetback);
             if (_degree[seq[^1]] >= 3)
@@ -532,6 +535,37 @@ namespace MapExpansions.Navigation
             }
             for (int i = 1; i < cur.Count - 1; i++) cur[i] = Ground(cur[i]);
             return cur;
+        }
+
+        /// <summary>
+        /// The smoothing averages over about 24 m and cuts every bend on its inside, by metres in a tight one, which
+        /// puts the lanes on the middle line or across it. Each sample goes back onto the middle of the road surface
+        /// across its own heading, by at most <see cref="MaxRecentre"/>, and the line is averaged once more over its
+        /// next neighbours only, which takes out a kerb's step without cutting the bend.
+        /// </summary>
+        private List<Vector3> Recentre(List<Vector3> s, float width)
+        {
+            if (s.Count < 3) return s;
+            var moved = new List<Vector3>(s);
+            int shifted = 0;
+            float most = 0f;
+            for (int i = 1; i < s.Count - 1; i++)
+            {
+                Vector3 heading = Flat(s[i + 1] - s[i - 1]);
+                if (heading == Vector3.zero || !Across(s[i], heading, out Vector3 middle, out float w)) continue;
+                if (w > width * WideSection || w < width / WideSection) continue;
+                float d = FlatDistance(middle, s[i]);
+                if (d > MaxRecentre || d < 0.05f) continue;
+                moved[i] = middle;
+                shifted++;
+                most = Mathf.Max(most, d);
+            }
+            var line = new List<Vector3>(moved);
+            for (int i = 1; i < moved.Count - 1; i++)
+                line[i] = Ground(new Vector3((moved[i - 1].x + moved[i].x * 2f + moved[i + 1].x) * 0.25f, moved[i].y,
+                                             (moved[i - 1].z + moved[i].z * 2f + moved[i + 1].z) * 0.25f));
+            if (shifted > 0) Core.Log.Msg($"vehicle nav: '{_id}' {shifted} of {s.Count} centre points moved back onto the road's middle, at most {most:0.0} m");
+            return line;
         }
 
         /// <summary>Keeps a sample every <see cref="NodeSpacing"/> metres, and where the road has turned by more than <see cref="NodeBend"/> degrees.</summary>
