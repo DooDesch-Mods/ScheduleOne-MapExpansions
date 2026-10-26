@@ -34,6 +34,10 @@ namespace MapExpansions.Debug
     /// mxhover [use]                   what the player's interaction cast hits now, with layers, and what it hovers;
     ///                                 use presses interact on the hovered object
     /// mxlight x y z [radius]          point and spot lights near a point, and how the renderers there are lit (lightmap, probes)
+    /// mxlod x y z [radius]            LOD groups near a point: levels, their renderers, which draw this frame
+    /// mxmats x y z [radius]           renderers whose bounds reach within radius of a point: mesh, materials, mirroring
+    /// mxocc on|off                    occlusion culling of every camera
+    /// mxforcelod x y z radius level   forces the LOD groups near a point to one level, -1 to let them choose
     /// mxviews [on|off]                which world the camera's side draws, or separate the views on and off
     /// mxhide filter [on]              stop (or resume) drawing renderers and terrains whose path contains filter
     /// mxterrain filter [pixelError]   render settings of terrains whose name contains filter, optionally a new pixel error
@@ -103,6 +107,21 @@ namespace MapExpansions.Debug
                     case "mxhover": Hover(parts.Length > 1 && parts[1] == "use"); break;
                     case "mxlight" when parts.Length > 3: LightsNear(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 8f); break;
                     case "mxlight": Lights(); break;
+                    case "mxlod" when parts.Length > 3: Lods(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 3f); break;
+                    case "mxocc" when parts.Length > 1:
+                        foreach (var cam in Camera.allCameras) cam.useOcclusionCulling = parts[1] == "on";
+                        Core.Log.Msg($"[dev] mxocc: occlusion culling {(parts[1] == "on" ? "on" : "off")} for {Camera.allCamerasCount} cameras; scene has occlusion data: {Camera.main != null && Camera.main.useOcclusionCulling}");
+                        break;
+                    case "mxforcelod" when parts.Length > 5:
+                    {
+                        var at = V(parts, 1);
+                        int level = int.Parse(parts[5], CultureInfo.InvariantCulture), forced = 0;
+                        foreach (var g in Object.FindObjectsOfType<LODGroup>(false))
+                            if (g != null && (g.transform.position - at).magnitude <= F(parts[4])) { g.ForceLOD(level); forced++; }
+                        Core.Log.Msg($"[dev] mxforcelod: {forced} LOD groups within {parts[4]} m of {at} forced to level {level} (-1 lets them choose)");
+                        break;
+                    }
+                    case "mxmats" when parts.Length > 3: Mats(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 0.5f); break;
                     case "mxanchor" when parts.Length > 7: Anchor(V(parts, 1), F(parts[4]), V(parts, 5)); break;
                     case "mxviews" when parts.Length > 1:
                         World.SeparateViews.Enabled = parts[1] == "on";
@@ -809,6 +828,55 @@ namespace MapExpansions.Debug
             hovered.StartInteract();
             hovered.EndInteract();
             Core.Log.Msg($"[dev] mxhover use: interacted with '{PathOf(hovered.transform, 5)}', state {hovered._interactionState}");
+        }
+
+        private static void Lods(Vector3 c, float radius)
+        {
+            int groups = 0;
+            var cam = Camera.main;
+            foreach (var g in Object.FindObjectsOfType<LODGroup>(false))
+            {
+                if (g == null || (g.transform.position - c).magnitude > radius) continue;
+                groups++;
+                float dist = cam != null ? (cam.transform.position - g.transform.TransformPoint(g.localReferencePoint)).magnitude : -1f;
+                Core.Log.Msg($"[dev] mxlod '{PathOf(g.transform, 6)}' at {g.transform.position}: enabled {g.enabled}, size {g.size:0.00}, " +
+                             $"reference {g.localReferencePoint}, lossy scale {g.transform.lossyScale}, fade {g.fadeMode}, camera {dist:0.0} m away, bias {QualitySettings.lodBias:0.00}");
+                var lods = g.GetLODs();
+                for (int i = 0; i < lods.Length; i++)
+                {
+                    var rs = lods[i].renderers;
+                    var names = new List<string>();
+                    if (rs != null)
+                        foreach (var r in rs)
+                            names.Add(r == null ? "null" : $"'{PathOf(r.transform, 2)}' enabled {r.enabled} visible {r.isVisible} batched {r.isPartOfStaticBatch} " +
+                                                       $"bounds {r.bounds.center}/{r.bounds.size} root {(r.staticBatchRootTransform == null ? "none" : PathOf(r.staticBatchRootTransform, 3))}");
+                    Core.Log.Msg($"[dev] mxlod   level {i} below {lods[i].screenRelativeTransitionHeight:0.000}: {string.Join("; ", names)}");
+                }
+            }
+            foreach (var r in Object.FindObjectsOfType<Renderer>(false))
+            {
+                if (r == null || (r.bounds.center - c).magnitude > radius || r.GetComponentInParent<LODGroup>() != null) continue;
+                Core.Log.Msg($"[dev] mxlod no group: '{PathOf(r.transform, 4)}' enabled {r.enabled} visible {r.isVisible} batched {r.isPartOfStaticBatch}");
+            }
+            Core.Log.Msg($"[dev] mxlod: {groups} LOD groups within {radius} m of {c}");
+        }
+
+        private static void Mats(Vector3 c, float radius)
+        {
+            int n = 0;
+            foreach (var r in Object.FindObjectsOfType<Renderer>(false))
+            {
+                if (r == null || (r.bounds.ClosestPoint(c) - c).magnitude > radius) continue;
+                n++;
+                var mf = r.GetComponent<MeshFilter>();
+                var mesh = mf != null && mf.sharedMesh != null ? $"{mf.sharedMesh.name} ({mf.sharedMesh.subMeshCount} submeshes)" : "no mesh";
+                var mats = r.sharedMaterials.Select(m => m == null ? "null" : $"{m.name} [{(m.shader != null ? m.shader.name : "no shader")}" +
+                                                         $"{(m.HasProperty("_Cull") ? $", cull {m.GetFloat("_Cull"):0}" : "")}]");
+                var s = r.transform.lossyScale;
+                Core.Log.Msg($"[dev] mxmats '{PathOf(r.transform, 6)}': enabled {r.enabled}, forced off {r.forceRenderingOff}, visible {r.isVisible}, mesh {mesh}, " +
+                             $"scale {s}{(s.x * s.y * s.z < 0f ? " MIRRORED" : "")}, bounds {r.bounds.center}/{r.bounds.size}, materials {string.Join(", ", mats)}");
+            }
+            Core.Log.Msg($"[dev] mxmats: {n} renderers within {radius} m of {c}");
         }
 
         private static void LightsNear(Vector3 c, float radius)
