@@ -8,6 +8,13 @@ namespace MapExpansions.World
     /// </summary>
     internal static class StaticBatches
     {
+        /// <summary>
+        /// Which copy draws which part of a batch, by mesh and first submesh. Unity draws one part of a batch once a
+        /// frame, so two copies of the same original never both show while both are in view; the second one drawn is
+        /// missing, and which one that is changes with the view.
+        /// </summary>
+        private static readonly Dictionary<(IntPtr Mesh, int Start), (Transform Copy, string Name)> Drawn = new();
+
         /// <param name="copy">The copy's root; the new batch roots hang under it.</param>
         /// <param name="move">Takes a point of the original to the same point of the copy, in world space.</param>
         /// <returns>Batched renderers moved, batch roots made, and renderers whose batch root is part of the copy already.</returns>
@@ -39,8 +46,27 @@ namespace MapExpansions.World
                 }
                 mr.staticBatchRootTransform = root;
                 batched++;
+                Claim(copy, name, mr);
             }
             return (batched, roots.Count, own);
+        }
+
+        private static void Claim(Transform copy, string name, MeshRenderer mr)
+        {
+            var mesh = mr.GetComponent<MeshFilter>()?.sharedMesh;
+            if (mesh == null)
+            {
+                Core.Log.Warning($"copies: batched renderer '{mr.name}' of '{name}' has no mesh; whether another copy shares its part is not checked");
+                return;
+            }
+            var key = (mesh.Pointer, mr.subMeshStartIndex);
+            if (Drawn.TryGetValue(key, out var first) && first.Copy != null && first.Copy != copy)
+            {
+                Core.Log.Warning($"copies: '{name}' and '{first.Name}' draw the same part of '{mesh.name}' (renderer '{mr.name}', " +
+                                 $"submesh {mr.subMeshStartIndex}); while both are in view one of them is missing. Copy them from different originals.");
+                return;
+            }
+            Drawn[key] = (copy, name);
         }
     }
 }
