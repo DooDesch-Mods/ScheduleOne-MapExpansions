@@ -28,6 +28,8 @@ namespace MapExpansions.Debug
     /// mxveh push vx vy vz                     give the last spawned vehicle this velocity and log where it goes for 2 s
     /// mxveh gas throttle [seconds]            hold the last spawned vehicle's throttle and log speed and pitch each second
     /// mxveh wall box|blocker|mesh x y z yaw   a 0.5 x 2 x 6 m test wall made at runtime: box on Default, box on VehicleBlocker, mesh on Default
+    /// mxveh roads [x0 z0 x1 z1]               road links in a rectangle (default Serena Flats) with the ground gap at each end
+    /// mxveh traffic [x0 z0 x1 z1]             every vehicle agent in a rectangle: mode, ground gap, nearest road link and side
     /// mxveh clear                             destroy the vehicles and test walls these commands made
     /// </summary>
     internal static class VehicleTest
@@ -57,9 +59,11 @@ namespace MapExpansions.Debug
                 case "push" when parts.Length > 4: Push(V(parts, 2)); break;
                 case "gas" when parts.Length > 2: MelonCoroutines.Start(Gas(F(parts[2]), parts.Length > 3 ? F(parts[3]) : 20f)); break;
                 case "wall" when parts.Length > 6: Wall(parts[2], V(parts, 3), F(parts[6])); break;
+                case "roads": Roads(Area(parts)); break;
+                case "traffic": Traffic(Area(parts)); break;
                 case "clear": Clear(); break;
                 default:
-                    Core.Log.Warning("[dev] mxveh info|near|path|spawn|drive|calc|push|gas|wall|clear (see VehicleTest docs)");
+                    Core.Log.Warning("[dev] mxveh info|near|path|spawn|drive|calc|push|gas|wall|roads|traffic|clear (see VehicleTest docs)");
                     break;
             }
         }
@@ -259,6 +263,95 @@ namespace MapExpansions.Debug
             var cols = go.GetComponentsInChildren<Collider>();
             Core.Log.Msg($"[dev] mxveh wall copy: '{name}' (at {src.transform.position}, scale {src.transform.lossyScale}, scene {src.scene.name}) -> {go.name} at {pos}, " +
                          $"scene {go.scene.name}, colliders {string.Join(", ", cols.Select(c => $"{c.GetIl2CppType().Name}@{LayerMask.LayerToName(c.gameObject.layer)} {c.bounds.size}"))}");
+        }
+
+        /// <summary>Serena Flats in world space, unless the command names a rectangle.</summary>
+        private static Rect Area(string[] parts) =>
+            parts.Length > 5 ? Rect.MinMaxRect(F(parts[2]), F(parts[3]), F(parts[4]), F(parts[5])) : Rect.MinMaxRect(-135f, -935f, 495f, -335f);
+
+        private static int GroundMask => LayerMask.GetMask("Default") | LayerMask.GetMask("Terrain");
+
+        /// <summary>Height above the first ground under a point (Default or Terrain, from 3 m above it), NaN when none is within 40 m.</summary>
+        private static float Gap(Vector3 p, Transform skip = null)
+        {
+            var hits = Physics.RaycastAll(p + Vector3.up * 3f, Vector3.down, 43f, GroundMask, QueryTriggerInteraction.Ignore);
+            float nearest = float.MaxValue, gap = float.NaN;
+            foreach (var h in hits)
+            {
+                if (skip != null && h.collider.transform.IsChildOf(skip)) continue;
+                if (h.distance < nearest) { nearest = h.distance; gap = p.y - h.point.y; }
+            }
+            return gap;
+        }
+
+        private static string P(Vector3 p) => $"({p.x:0.0},{p.y:0.0},{p.z:0.0})";
+
+        private static bool In(Rect r, Vector3 p) => r.Contains(new Vector2(p.x, p.z));
+
+        private static void Roads(Rect r)
+        {
+            int n = 0;
+            foreach (var link in NodeLink.validNodeLinks)
+            {
+                if (link == null || link.end == null) continue;
+                Vector3 a = link.Start.position, b = link.end.position;
+                if (!In(r, a) && !In(r, b)) continue;
+                n++;
+                string owner = link.transform.parent != null ? link.transform.parent.name : "-";
+                Core.Log.Msg($"[dev] mxveh roads {n}: {P(a)} -> {P(b)} {Vector3.Distance(a, b):0.0} m{(link.oneWay ? " one-way" : "")}" +
+                             $"{(link.enabled ? "" : " disabled")} gap {Gap(a):0.00}/{Gap(b):0.00} under '{owner}'");
+            }
+            Core.Log.Msg($"[dev] mxveh roads: {n} road links in {r}");
+        }
+
+        private static void Traffic(Rect r)
+        {
+            int n = 0;
+            foreach (var agent in Object.FindObjectsOfType<VehicleAgent>())
+            {
+                var v = agent.GetComponentInParent<LandVehicle>();
+                if (v == null || !In(r, v.transform.position)) continue;
+                n++;
+                Vector3 pos = v.transform.position;
+                NodeLink best = null;
+                float bestD = float.MaxValue;
+                foreach (var link in NodeLink.validNodeLinks)
+                {
+                    if (link == null || link.end == null) continue;
+                    float d = Vector3.Distance(link.GetClosestPoint(pos), pos);
+                    if (d < bestD) { bestD = d; best = link; }
+                }
+                string road = "no road link";
+                if (best != null)
+                {
+                    Vector3 dir = best.end.position - best.Start.position;
+                    dir.y = 0f;
+                    dir.Normalize();
+                    Vector3 off = pos - best.GetClosestPoint(pos);
+                    float side = Vector3.Dot(off, Vector3.Cross(Vector3.up, dir));
+                    float heading = Vector3.Dot(v.transform.forward, dir);
+                    road = $"link {P(best.Start.position)}->{P(best.end.position)}{(best.oneWay ? " one-way" : "")} {bestD:0.0} m away, " +
+                           $"{(side >= 0 ? "right" : "left")} {Mathf.Abs(side):0.0} m, heading {(heading >= 0 ? "with" : "against")} it ({heading:0.00})";
+                }
+                string route = "no path";
+                var vp = agent.path?.vectorPath;
+                if (vp != null && vp.Count > 1)
+                {
+                    int near = 0;
+                    float nearD = float.MaxValue;
+                    for (int i = 0; i < vp.Count; i++)
+                    {
+                        float d = Vector3.Distance(vp[i], pos);
+                        if (d < nearD) { nearD = d; near = i; }
+                    }
+                    int next = Mathf.Min(near + 1, vp.Count - 1);
+                    route = $"path {vp.Count} points, nearest {near} {P(vp[near])} {nearD:0.0} m away gap {Gap(vp[near], v.transform):0.00}, " +
+                            $"next {P(vp[next])} {Vector3.Distance(vp[near], vp[next]):0.0} m on";
+                }
+                Core.Log.Msg($"[dev] mxveh traffic {n}: '{v.VehicleName}' {P(pos)} kinematic {v.Rb.isKinematic} auto {agent.AutoDriving} " +
+                             $"speed {v.Speed_Kmh:0} km/h gap {Gap(pos, v.transform):0.00}, {road}; {route}");
+            }
+            Core.Log.Msg($"[dev] mxveh traffic: {n} vehicle agents in {r}");
         }
 
         private static void Clear()
