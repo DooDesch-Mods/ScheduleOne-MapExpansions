@@ -208,8 +208,8 @@ namespace MapExpansions
         /// <summary>
         /// Solid box colliders become shells: thin boxes on the outside of their six faces, open wherever one of
         /// <see cref="ObjectRule.Openings"/> crosses a face. For a building that was a closed block and gets an interior.
-        /// With <see cref="ObjectRule.Bands"/> or <see cref="ObjectRule.CeilingMaterial"/> the inside also gets walls
-        /// and a ceiling of main-world materials, open at the openings and at <see cref="ObjectRule.Windows"/>;
+        /// With <see cref="ObjectRule.Bands"/>, <see cref="ObjectRule.CeilingMaterial"/> or <see cref="ObjectRule.FloorMaterial"/>
+        /// the inside also gets walls, a ceiling and a floor of main-world materials, open at the openings and at <see cref="ObjectRule.Windows"/>;
         /// without them, pair it with <see cref="DoubleSided"/> so the outer walls show from inside.
         /// </summary>
         Hollow,
@@ -263,6 +263,12 @@ namespace MapExpansions
 
         /// <summary>For <see cref="ObjectEffect.Hollow"/>: the name of a loaded material for the lining's ceiling.</summary>
         public string CeilingMaterial { get; set; }
+
+        /// <summary>
+        /// For <see cref="ObjectEffect.Hollow"/>: the name of a loaded material for the lining's floor, laid 5 mm above
+        /// the box's bottom face over whatever floor the model draws there.
+        /// </summary>
+        public string FloorMaterial { get; set; }
 
         /// <summary>For <see cref="ObjectEffect.Hollow"/>: boxes left open in the lining only, such as windows, in the same coordinates as <see cref="Area"/>.</summary>
         public List<Bounds> Windows { get; } = new();
@@ -328,6 +334,13 @@ namespace MapExpansions
         public ObjectRule Ceiling(string material)
         {
             CeilingMaterial = material;
+            return this;
+        }
+
+        /// <summary>Sets <see cref="FloorMaterial"/>.</summary>
+        public ObjectRule Floor(string material)
+        {
+            FloorMaterial = material;
             return this;
         }
 
