@@ -35,6 +35,19 @@ namespace MapExpansions
         /// <summary>Where NPCs stand to go in, outside the door and on walkable ground, facing the door.</summary>
         public List<LocalPoint> Doors { get; } = new();
 
+        /// <summary>
+        /// The player can knock at the doors, as at a home in the main world; whoever is inside comes out. Off for
+        /// buildings with working doors.
+        /// </summary>
+        public bool Knock { get; set; }
+
+        /// <summary>
+        /// Path of the expansion source's door model at each door, in the order of <see cref="Doors"/>, such as
+        /// "Cabin/Industrial Metal Door (Static)". The knock surface covers that model; a door without one gets it on
+        /// the first wall in front of its point.
+        /// </summary>
+        public List<string> DoorModels { get; } = new();
+
         public BuildingDefinition() { }
 
         public BuildingDefinition(string id, string name, params LocalPoint[] doors)

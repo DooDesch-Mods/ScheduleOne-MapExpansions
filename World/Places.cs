@@ -9,6 +9,7 @@ using Il2CppScheduleOne.Vehicles;
 using MapExpansions.Lifecycle;
 using MapExpansions.Regions;
 using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace MapExpansions.World
 {
@@ -111,14 +112,16 @@ namespace MapExpansions.World
                 doorGo.transform.rotation = b.Root.transform.rotation * Quaternion.Euler(0f, d.Doors[i].Yaw, 0f);
                 var access = new GameObject("AccessPoint").transform;
                 access.SetParent(doorGo.transform, false);
-                // The door exists for NPCs only; with no collider the player never points at it.
+                // Without a knock surface the door has no collider, and the player never points at it.
                 var intObj = doorGo.AddComponent<InteractableObject>();
+                if (d.Knock) AddKnockSurface(b, d, i, doorGo.transform, intObj);
                 var door = doorGo.AddComponent<StaticDoor>();
                 door.AccessPoint = access;
                 door.IntObj = intObj;
                 door.Building = building;
                 door.Usable = true;
-                door.CanKnock = false;
+                door.CanKnock = d.Knock;
+                if (d.Knock) door.KnockSound = KnockSound(doorGo.transform);
                 doors[i] = door;
             }
             building.Doors = doors;
@@ -130,8 +133,126 @@ namespace MapExpansions.World
                 Core.Log.Error($"places: '{b.Id}' building '{d.Name}' woke but its GUID {guid} is not registered");
                 return false;
             }
-            Core.Log.Msg($"places: '{b.Id}' building '{d.Name}' with {d.Doors.Count} doors at {go.transform.position}, GUID {guid}");
+            Core.Log.Msg($"places: '{b.Id}' building '{d.Name}' with {d.Doors.Count} {(d.Knock ? "knock doors" : "doors for NPCs")} at {go.transform.position}, GUID {guid}");
             return true;
+        }
+
+        private const float KnockWidth = 1.1f, KnockHeight = 2.1f, KnockDepth = 0.6f, KnockOut = 0.45f, KnockSearch = 4f, KnockBack = 0.5f;
+
+        /// <summary>
+        /// A trigger box the player points at to knock. It covers the door model where the definition names one, else it
+        /// stands on the first wall in front of the door point. The interaction cast stops at the first solid collider,
+        /// so the box reaches past the door's own collider on both sides. The game draws the knock prompt at the
+        /// interactable's display point, else at its origin, which here lies on the ground below the player's view;
+        /// the display point sits in the middle of the box.
+        /// </summary>
+        private static void AddKnockSurface(BuiltExpansion b, BuildingDefinition d, int index, Transform door, InteractableObject intObj)
+        {
+            var surface = new GameObject("Knock").transform;
+            surface.SetParent(door, false);
+            float height = KnockHeight;
+            string model = index < d.DoorModels.Count ? d.DoorModels[index] : null;
+            var bounds = string.IsNullOrEmpty(model) ? null : ModelBounds(b, d, index, model);
+            if (bounds is { } m)
+            {
+                height = Mathf.Max(m.size.y, 1.8f);
+                surface.position = new Vector3(m.center.x, m.min.y, m.center.z);
+            }
+            else
+            {
+                // The expansion was just placed; casts see its colliders only after a sync. The cast starts a little
+                // behind the point, which may sit on the wall's face.
+                Physics.SyncTransforms();
+                var from = door.position + Vector3.up * 1.2f - door.forward * KnockBack;
+                if (Physics.Raycast(from, door.forward, out var hit, KnockSearch + KnockBack, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+                    surface.position = new Vector3(hit.point.x, door.position.y, hit.point.z);
+                else
+                {
+                    surface.position = door.position + door.forward * 0.8f;
+                    Core.Log.Warning($"places: '{b.Id}' building '{d.Id}' door {index}: no wall within {KnockSearch} m in front of {door.position}; " +
+                                     "its knock surface stands 0.8 m ahead");
+                }
+            }
+            surface.gameObject.layer = KnockLayer();
+            var box = surface.gameObject.AddComponent<BoxCollider>();
+            box.isTrigger = true;
+            box.size = new Vector3(KnockWidth, height, KnockDepth);
+            // Reaches out in front of the door, past facade and frame colliders that stand a little proud of it.
+            box.center = new Vector3(0f, height * 0.5f, KnockDepth * 0.5f - KnockOut);
+            var prompt = new GameObject("Prompt").transform;
+            prompt.SetParent(surface, false);
+            prompt.localPosition = box.center;
+            intObj.displayLocationPoint = prompt;
+            Core.Log.Msg($"places: '{b.Id}' building '{d.Id}' door {index}: knock surface at {surface.position}{(bounds != null ? $" on '{model}'" : " on a wall")}");
+        }
+
+        /// <summary>World bounds of the renderers of a door model of the expansion's source.</summary>
+        private static Bounds? ModelBounds(BuiltExpansion b, BuildingDefinition d, int index, string path)
+        {
+            var t = MainCopies.FindInExpansion(b, path);
+            if (t == null)
+            {
+                Core.Log.Error($"places: '{b.Id}' building '{d.Id}' door {index}: door model '{path}' is not in the expansion; the knock surface looks for a wall instead");
+                return null;
+            }
+            Bounds? all = null;
+            foreach (var r in t.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null) continue;
+                if (all is { } a) { a.Encapsulate(r.bounds); all = a; }
+                else all = r.bounds;
+            }
+            if (all == null)
+                Core.Log.Error($"places: '{b.Id}' building '{d.Id}' door {index}: door model '{path}' has no renderer; the knock surface looks for a wall instead");
+            // The prologue's door script is gone, but its trigger stayed; the interaction cast ends on it.
+            int dead = 0;
+            foreach (var c in t.GetComponentsInChildren<Collider>(true))
+            {
+                if (c == null || !c.isTrigger || !c.enabled || c.GetComponentInParent<InteractableObject>() != null) continue;
+                c.enabled = false;
+                dead++;
+            }
+            if (dead > 0)
+                Core.Log.Msg($"places: '{b.Id}' building '{d.Id}' door {index}: {dead} trigger(s) without a script on '{path}' switched off");
+            return all;
+        }
+
+        private static int _knockLayer = -1;
+        private static StaticDoor _knockTemplate;
+
+        /// <summary>A main-world door the player can knock at; its collider layer and knock sound are reused.</summary>
+        private static StaticDoor KnockTemplate()
+        {
+            if (_knockTemplate != null) return _knockTemplate;
+            foreach (var s in Object.FindObjectsOfType<StaticDoor>(true))
+            {
+                if (s == null || !s.CanKnock || s.IntObj == null || s.KnockSound == null) continue;
+                if (s.transform.root.name.StartsWith("MapExpansions.", StringComparison.Ordinal)) continue;
+                if (s.IntObj.GetComponentInChildren<Collider>(true) == null) continue;
+                _knockTemplate = s;
+                Core.Log.Msg($"places: knock doors take layer and sound from '{s.name}' in '{s.Building?.BuildingName}'");
+                return s;
+            }
+            Core.Log.Warning("places: the main world has no knock door with a collider and a sound; knock doors use layer Default and stay silent");
+            return null;
+        }
+
+        private static int KnockLayer()
+        {
+            if (_knockLayer >= 0) return _knockLayer;
+            var c = KnockTemplate()?.IntObj.GetComponentInChildren<Collider>(true);
+            _knockLayer = c != null ? c.gameObject.layer : 0;
+            return _knockLayer;
+        }
+
+        private static Il2CppScheduleOne.Audio.AudioSourceController KnockSound(Transform door)
+        {
+            var src = KnockTemplate()?.KnockSound;
+            if (src == null) return null;
+            var copy = Object.Instantiate(src.gameObject, door, false);
+            copy.name = "KnockSound";
+            copy.transform.localPosition = Vector3.up * 1.2f;
+            return copy.GetComponent<Il2CppScheduleOne.Audio.AudioSourceController>();
         }
 
         /// <summary>

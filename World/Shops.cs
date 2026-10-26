@@ -1,4 +1,5 @@
 using Il2CppScheduleOne.Dialogue;
+using Il2CppScheduleOne.Misc;
 using Il2CppScheduleOne.Doors;
 using Il2CppScheduleOne.NPCs;
 using Il2CppScheduleOne.UI;
@@ -38,6 +39,8 @@ namespace MapExpansions.World
             public Vector3 Counter;
             public readonly List<MainCopies.Part> Parts = new();
             public readonly List<DoorController> Doors = new();
+            /// <summary>Lamps that are on while the shop is open, as its main-world original's access zone has them.</summary>
+            public readonly List<ToggleableLight> Lights = new();
             public readonly HashSet<int> CheckedDoors = new();
             public readonly Dictionary<int, int> DoorTries = new();
             public NPC Seller;
@@ -85,12 +88,13 @@ namespace MapExpansions.World
                     foreach (var c in MainCopies.Build(b, d.Copies, $"shop '{d.Id}'"))
                     {
                         s.Parts.AddRange(c.Parts);
+                        s.Lights.AddRange(c.ZoneLights);
                         if (c.Local != null) s.Doors.AddRange(c.Local.GetComponentsInChildren<DoorController>(true));
                     }
                     if (d.Kind == ShopKind.Barbershop) s.Stage = StageOf(b, d);
                     All.Add(s);
                     Core.Log.Msg($"shops: '{b.Id}' shop '{d.Id}' ({d.Kind}{(d.Kind == ShopKind.Store ? " " + d.ShopCode : "")}) " +
-                                 $"sold by '{d.Seller}' at {s.Counter}, {s.Parts.Count} networked parts");
+                                 $"sold by '{d.Seller}' at {s.Counter}, {s.Parts.Count} networked parts, {s.Lights.Count} lamps on while open");
                 }
                 catch (Exception e)
                 {
@@ -183,8 +187,15 @@ namespace MapExpansions.World
                 if (door != null) door.PlayerAccess = access;
             if (s.Open != open)
             {
+                int lit = 0;
+                foreach (var l in s.Lights)
+                {
+                    if (l == null) continue;
+                    l.isOn = open;
+                    lit++;
+                }
                 Core.Log.Msg($"shops: '{s.Expansion}' shop '{s.Def.Id}' {(open ? "opens" : "closes")}: '{s.Def.Seller}' at {pos}, " +
-                             $"{flat.magnitude:0.0} m from the counter, {s.Doors.Count} doors");
+                             $"{flat.magnitude:0.0} m from the counter, {s.Doors.Count} doors, {lit} lamps {(open ? "on" : "off")}");
                 s.Open = open;
             }
         }
