@@ -10,7 +10,8 @@ namespace MapExpansions.World
     internal static class ObjectRules
     {
         /// <summary>Switches off what each rule selects. Colliders that were switched off are added to <paramref name="offColliders"/>.</summary>
-        public static void Apply(BuiltExpansion b, SceneIndex index, IEnumerable<ObjectRule> rules, HashSet<IntPtr> offColliders)
+        public static void Apply(BuiltExpansion b, SceneIndex index, IEnumerable<ObjectRule> rules, HashSet<IntPtr> offColliders,
+            TerrainOps.HoleMask holes)
         {
             foreach (var rule in rules)
             {
@@ -64,7 +65,27 @@ namespace MapExpansions.World
                     Cut(b, index, part, rule, area, offColliders);
                     continue;
                 }
-                int renderers = 0, colliders = 0, terrains = 0;
+                if (rule.Effect == ObjectEffect.CloseHoles)
+                {
+                    if (area.size == Vector3.zero)
+                    {
+                        Core.Log.Error($"rules: '{b.Id}' {rule}: closing holes needs an area; nothing is closed");
+                        continue;
+                    }
+                    var rect = Rect.MinMaxRect(area.min.x, area.min.z, area.max.x, area.max.z);
+                    int matched = 0, closed = 0;
+                    foreach (var t in part.Terrains)
+                    {
+                        if (t == null || !SceneIndex.MatchesSelfOrAncestor(t.transform, rule, area)) continue;
+                        matched++;
+                        closed += holes.Close(t, rect, rule.ToString());
+                    }
+                    string holesLine = $"rules: '{b.Id}' {rule}: {closed} hole cells closed in {matched} terrains";
+                    if (closed == 0) Core.Log.Warning(holesLine + "; nothing was open there");
+                    else Core.Log.Msg(holesLine);
+                    continue;
+                }
+                int renderers = 0, colliders = 0, terrains = 0, lights = 0;
                 bool hide = rule.Effect != ObjectEffect.NoCollision;
                 bool noCollision = rule.Effect != ObjectEffect.Hide;
                 if (hide)
@@ -73,6 +94,14 @@ namespace MapExpansions.World
                         if (r == null || !r.enabled || !SceneIndex.MatchesSelfOrAncestor(r.transform, rule, area)) continue;
                         r.enabled = false;
                         renderers++;
+                    }
+                // A removed car's headlights would still light up the walls it stood in front of.
+                if (hide)
+                    foreach (var l in part.Lights)
+                    {
+                        if (l == null || !l.enabled || !SceneIndex.MatchesSelfOrAncestor(l.transform, rule, area)) continue;
+                        l.enabled = false;
+                        lights++;
                     }
                 if (noCollision)
                     foreach (var c in part.Colliders)
@@ -98,7 +127,7 @@ namespace MapExpansions.World
                     }
                     terrains++;
                 }
-                string line = $"rules: '{b.Id}' {rule}: {renderers} renderers, {colliders} colliders, {terrains} terrains";
+                string line = $"rules: '{b.Id}' {rule}: {renderers} renderers, {colliders} colliders, {terrains} terrains, {lights} lamps";
                 if (renderers + colliders + terrains == 0) Core.Log.Warning(line + "; the rule matched nothing");
                 else Core.Log.Msg(line);
             }

@@ -108,6 +108,8 @@ namespace MapExpansions.Debug
                         Core.Log.Msg($"[dev] mxviews: views separated {World.SeparateViews.Enabled}");
                         break;
                     case "mxviews": Core.Log.Msg(World.SeparateViews.Describe(Camera.main != null ? Camera.main.transform.position : Vector3.zero)); break;
+                    case "mxmap" when parts.Length > 4: World.PhoneMap.Focus(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 1f); break;
+                    case "mxmap": Core.Log.Msg(World.PhoneMap.Describe()); break;
                     case "mxcover": Core.Log.Msg(World.WeatherCover.Describe(Camera.main != null ? Camera.main.transform.position : Vector3.zero)); break;
                     case "mxhide" when parts.Length > 1:
                         bool on = parts.Length > 2 && parts[^1] == "on";

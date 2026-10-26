@@ -111,6 +111,12 @@ namespace MapExpansions
         /// </summary>
         public bool Mirrored { get; set; }
 
+        /// <summary>
+        /// Children of the template left out of the copy, as paths below its root (transform.Find), for props that
+        /// stand in the template's surroundings rather than on its lot.
+        /// </summary>
+        public List<string> Exclude { get; } = new();
+
         /// <summary>Ray the realtor offers the property among his others when this is set.</summary>
         public bool SoldByRealtor { get; set; } = true;
 
