@@ -28,6 +28,10 @@ namespace MapExpansions.World
             public Quaternion Rotation;
             public Vector3 Scale;
             public NetworkObject Instance;
+            /// <summary>From where the part stands to where its original stands in the main world.</summary>
+            public Matrix4x4 ToMain;
+            /// <summary>Holder of the expansion's probe anchors, see <see cref="AnchorProbes"/>.</summary>
+            public Transform Anchors;
         }
 
         /// <summary>What one definition became on this peer.</summary>
@@ -131,6 +135,15 @@ namespace MapExpansions.World
             var frameM = Matrix4x4.TRS(frame.position, frame.rotation, Vector3.one);
             var move = at * frameM.inverse;
             var pose = move * src.localToWorldMatrix;
+            var toMain = move.inverse;
+            var anchors = AnchorHolder(b);
+            if (!string.IsNullOrEmpty(d.Onto))
+            {
+                // The building the copy goes into is the counterpart of the original's, so its walls light like those.
+                var onto = FindInExpansion(b, d.Onto);
+                var (shell, shellAnchors) = AnchorProbes(anchors, onto.gameObject, toMain);
+                if (shell > 0) Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {shell} renderers of '{d.Onto}' take their light probes in the main world at {shellAnchors} points");
+            }
 
             // Built inactive, so nothing of the copy wakes before its networked parts are out and it stands in place.
             var go = Object.Instantiate(src.gameObject, templates);
@@ -160,7 +173,7 @@ namespace MapExpansions.World
                 // Copies of different owners may share an id ("door"); the owner keeps their prefab slots apart.
                 var key = $"copy:{b.Id}/{KeyOf(owner)}/{d.Id}/{i}";
                 var t = nob.transform;
-                var part = new Part { Key = key, Template = nob.gameObject, Position = t.position, Rotation = t.rotation, Scale = t.lossyScale };
+                var part = new Part { Key = key, Template = nob.gameObject, Position = t.position, Rotation = t.rotation, Scale = t.lossyScale, ToMain = toMain, Anchors = anchors };
                 t.SetParent(templates, true);
                 int nested = SpawnablePrefabs.Detach(nob);
                 SpawnablePrefabs.OpenObserver(nob.GetComponent<NetworkObserver>());
@@ -184,10 +197,61 @@ namespace MapExpansions.World
             go.transform.SetParent(holder, true);
             go.SetActive(true);
             var (batched, batchRoots, _) = StaticBatches.Follow(go.transform, move, $"{owner} {d.Id}");
+            var (anchored, points) = AnchorProbes(anchors, go, toMain);
             built.Local = go;
             Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}' from '{d.Template}' stands at {go.transform.position}, " +
-                         $"{go.GetComponentsInChildren<Renderer>(true).Length} renderers, {batched} batched over {batchRoots} roots, {built.ZoneLights.Count} lamps follow opening hours");
+                         $"{go.GetComponentsInChildren<Renderer>(true).Length} renderers, {batched} batched over {batchRoots} roots, " +
+                         $"{anchored} take their light probes at {points} points of the main world, {built.ZoneLights.Count} lamps follow opening hours");
             return built;
+        }
+
+        /// <summary>Side of the cells in which renderers share one probe anchor, in metres.</summary>
+        private const float AnchorCell = 0.5f;
+
+        private static readonly Dictionary<IntPtr, Dictionary<Vector3Int, Transform>> AnchorCells = new();
+
+        private static Transform AnchorHolder(BuiltExpansion b)
+        {
+            var holder = b.Root.transform.Find("Probe Anchors");
+            if (holder != null) return holder;
+            holder = new GameObject("Probe Anchors").transform;
+            holder.SetParent(b.Root.transform, false);
+            return holder;
+        }
+
+        /// <summary>
+        /// The expansion has no baked light probes, so its renderers light like the open air, inside a building too.
+        /// Each renderer below <paramref name="go"/> takes its probes where its counterpart stands in the main world
+        /// instead; renderers in one cell share an anchor. Renderers that already have an anchor keep it. Returns the
+        /// renderers anchored and the anchors they use.
+        /// </summary>
+        private static (int renderers, int anchors) AnchorProbes(Transform holder, GameObject go, Matrix4x4 toMain)
+        {
+            if (!AnchorCells.TryGetValue(holder.Pointer, out var cells)) AnchorCells[holder.Pointer] = cells = new Dictionary<Vector3Int, Transform>();
+            int anchored = 0, inactive = 0;
+            var used = new HashSet<Vector3Int>();
+            foreach (var r in go.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null || r.lightProbeUsage == UnityEngine.Rendering.LightProbeUsage.Off || r.probeAnchor != null) continue;
+                Vector3 here;
+                if (r.gameObject.activeInHierarchy) here = r.bounds.center;
+                else { here = r.transform.position; inactive++; }
+                var at = toMain.MultiplyPoint3x4(here);
+                var cell = Vector3Int.FloorToInt(at / AnchorCell);
+                if (!cells.TryGetValue(cell, out var anchor) || anchor == null)
+                {
+                    anchor = new GameObject("Probe Anchor").transform;
+                    anchor.SetParent(holder, false);
+                    anchor.position = ((Vector3)cell + Vector3.one * 0.5f) * AnchorCell;
+                    cells[cell] = anchor;
+                }
+                r.probeAnchor = anchor;
+                used.Add(cell);
+                anchored++;
+            }
+            if (inactive > 0)
+                Core.Log.Msg($"copies: {inactive} inactive renderers below '{go.name}' take their light probes from their pivot, not their bounds");
+            return (anchored, used.Count);
         }
 
         /// <summary>Instance ids of the main world's lamps that an access zone switches.</summary>
@@ -354,6 +418,7 @@ namespace MapExpansions.World
                     InstanceFinder.ServerManager.Spawn(nob, null, default(Scene));
                     SpawnablePrefabs.RebuildObservers(nob);
                     p.Instance = nob;
+                    SettlePart(p);
                     spawned++;
                 }
                 catch (Exception e)
@@ -387,13 +452,33 @@ namespace MapExpansions.World
                     if ((nob.transform.position - p.Position).sqrMagnitude > 0.25f) continue;
                     p.Instance = nob;
                     Core.Log.Msg($"copies: networked part '{p.Key}' arrived at {nob.transform.position}");
+                    SettlePart(p);
                 }
             }
+        }
+
+        /// <summary>
+        /// A spawned part is an instance of its template, so its batched meshes still draw at the original and its
+        /// renderers still sample the expansion's empty light probes. Both are pointed at the main world here.
+        /// </summary>
+        private static void SettlePart(Part p)
+        {
+            var (batched, roots, own) = StaticBatches.Follow(p.Instance.transform, p.ToMain.inverse, p.Key);
+            if (batched + own > 0)
+                Core.Log.Msg($"copies: networked part '{p.Key}': {batched} batched renderers draw where the part stands, over {roots} roots; {own} had their root in the part");
+            if (p.Anchors == null)
+            {
+                Core.Log.Warning($"copies: networked part '{p.Key}' has no probe anchors; it lights like the open air");
+                return;
+            }
+            var (anchored, points) = AnchorProbes(p.Anchors, p.Instance.gameObject, p.ToMain);
+            Core.Log.Msg($"copies: networked part '{p.Key}': {anchored} renderers take their light probes at {points} points of the main world");
         }
 
         public static void Clear()
         {
             Parts.Clear();
+            AnchorCells.Clear();
             _nextFind = 0f;
         }
     }
