@@ -29,21 +29,47 @@ namespace MapExpansions
         /// <summary>Metres from the middle of the picture to each of its edges.</summary>
         public float HalfSize { get; set; }
 
-        /// <summary>Names written on the map like the main map's district names.</summary>
+        /// <summary>Names written on the map like the main map's building and district names.</summary>
         public List<MapLabel> Labels { get; } = new();
+
+        /// <summary>
+        /// Colour of the expansion's terrain where the map shows it outside the sheet, between the sheets. The default is
+        /// the sand of the prologue map.
+        /// </summary>
+        public Color32 Land { get; set; } = new Color32(214, 163, 117, 255);
+
+        /// <summary>Colour of the expansion's other ground (rocks, cliffs) outside the sheet. The default is the prologue map's rock.</summary>
+        public Color32 Rock { get; set; } = new Color32(84, 77, 68, 255);
     }
 
-    /// <summary>A name on the phone map at a local x/z point.</summary>
+    /// <summary>How a name on the phone map looks; both show once the player zooms in, like the main map's names.</summary>
+    public enum MapLabelStyle
+    {
+        /// <summary>Grey and centred on the point, like "Gas-Mart" or "Town Hall".</summary>
+        Building,
+
+        /// <summary>Coloured and hanging below the point, like "Canal" or "Suburbia Park".</summary>
+        District,
+    }
+
+    /// <summary>A name on the phone map at a local x/z point. A line break splits it in two lines, as the main map does.</summary>
     public sealed class MapLabel
     {
         public string Text { get; set; }
 
         public Vector2 Position { get; set; }
 
-        public MapLabel(string text, Vector2 position)
+        public MapLabelStyle Style { get; set; }
+
+        /// <summary>Colour of the text; null keeps the colour of the main map's names of that style.</summary>
+        public Color? Color { get; set; }
+
+        public MapLabel(string text, Vector2 position, MapLabelStyle style = MapLabelStyle.Building, Color? color = null)
         {
             Text = text;
             Position = position;
+            Style = style;
+            Color = color;
         }
     }
 }

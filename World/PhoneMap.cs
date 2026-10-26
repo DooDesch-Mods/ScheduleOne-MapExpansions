@@ -35,10 +35,29 @@ namespace MapExpansions.World
             public Vector2 Up;
         }
 
-        /// <summary>Font size of an expansion's name on the map, in map units.</summary>
+        /// <summary>Font size of an expansion's name on the map, in map units, when the main map has no name to copy.</summary>
         private const float LabelSize = 60f;
 
+        /// <summary>Milliseconds per frame spent sampling the ground between the sheets.</summary>
+        private const double FillBudgetMs = 4.0;
+
+        /// <summary>Length of a tunnel's dash and of the gap after it, in metres.</summary>
+        private const float Dash = 7f, DashGap = 5f;
+
+        /// <summary>The map as worked out before the ground between the sheets is sampled.</summary>
+        private sealed class Plan
+        {
+            public List<BuiltExpansion> Built;
+            public List<Sheet> Sheets;
+            public Vector3 Origin;
+            public float Scale, Side;
+            public Vector2 Centre;
+            public int Pixels;
+            public MapFill Fill;
+        }
+
         private static bool _applied;
+        private static Plan _plan;
         private static Texture2D _picture;
         private static Sprite _pictureSprite;
         private static readonly List<Object> Owned = new();
@@ -49,13 +68,22 @@ namespace MapExpansions.World
             var built = BuildPipeline.All.Where(b => b.Root != null && b.Definition.Map != null).ToList();
             if (built.Count == 0) return;
             if (!PlayerSingleton<MapApp>.InstanceExists || !Singleton<MapPositionUtility>.InstanceExists) return;
-            _applied = true;
             try
             {
-                Apply(PlayerSingleton<MapApp>.Instance, Singleton<MapPositionUtility>.Instance, built);
+                var app = PlayerSingleton<MapApp>.Instance;
+                _plan ??= Prepare(app, Singleton<MapPositionUtility>.Instance, built);
+                if (_plan == null)
+                {
+                    _applied = true;
+                    return;
+                }
+                if (!_plan.Fill.Step(FillBudgetMs)) return;
+                _applied = true;
+                Apply(app, Singleton<MapPositionUtility>.Instance, _plan);
             }
             catch (Exception e)
             {
+                _applied = true;
                 Core.Log.Error($"map: putting the expansions on the phone map failed; the map may show the main world only: {e}");
             }
         }
@@ -63,6 +91,7 @@ namespace MapExpansions.World
         public static void Reset()
         {
             _applied = false;
+            _plan = null;
             foreach (var o in Owned)
                 if (o != null) Object.Destroy(o);
             Owned.Clear();
@@ -70,17 +99,18 @@ namespace MapExpansions.World
             _pictureSprite = null;
         }
 
-        private static void Apply(MapApp app, MapPositionUtility util, List<BuiltExpansion> built)
+        /// <summary>The sheets and the square around them; null when there is nothing to put on the map.</summary>
+        private static Plan Prepare(MapApp app, MapPositionUtility util, List<BuiltExpansion> built)
         {
             if (util.OriginPoint == null || util.EdgePoint == null)
             {
                 Core.Log.Error("map: the map has no origin or edge point; the expansions are not on the map");
-                return;
+                return null;
             }
             if (app.MainMapSprite == null)
             {
                 Core.Log.Error("map: the map app has no main map picture; the expansions are not on the map");
-                return;
+                return null;
             }
 
             var origin = util.OriginPoint.position;
@@ -95,7 +125,11 @@ namespace MapExpansions.World
                 var s = SheetOf(app, b);
                 if (s != null) sheets.Add(s);
             }
-            if (sheets.Count == 1) return;
+            if (sheets.Count == 1)
+            {
+                Core.Log.Warning("map: no expansion sheet could be made; the phone map stays the main map");
+                return null;
+            }
 
             // The square around every sheet, centred on their middle.
             float minX = float.MaxValue, minZ = float.MaxValue, maxX = float.MinValue, maxZ = float.MinValue;
@@ -112,7 +146,41 @@ namespace MapExpansions.World
             float density = sheets.Max(s => s.Sprite.rect.width / (2f * s.Half));
             int pixels = Mathf.Clamp(Mathf.CeilToInt(side * density), 1024, MaxPicture);
 
-            if (!Render(sheets, centre, side, pixels)) return;
+            // Cells a sheet covers by more than a cell are not sampled; the ones at its edge are, so the picture does
+            // not fade into the sea under the sheet's border.
+            bool Covered(Vector2 p)
+            {
+                foreach (var s in sheets)
+                {
+                    var d = p - s.Centre;
+                    float inner = s.Half - 1.5f * MapFill.Cell;
+                    if (Mathf.Abs(Vector2.Dot(d, Right(s))) < inner && Mathf.Abs(Vector2.Dot(d, s.Up)) < inner) return true;
+                }
+                return false;
+            }
+            var low = centre - Vector2.one * side * 0.5f;
+            return new Plan
+            {
+                Built = built,
+                Sheets = sheets,
+                Origin = origin,
+                Scale = scale,
+                Side = side,
+                Centre = centre,
+                Pixels = pixels,
+                Fill = new MapFill(low, side, Covered, built),
+            };
+        }
+
+        private static void Apply(MapApp app, MapPositionUtility util, Plan plan)
+        {
+            var built = plan.Built;
+            var sheets = plan.Sheets;
+            var origin = plan.Origin;
+            var centre = plan.Centre;
+            float scale = plan.Scale, side = plan.Side;
+            int pixels = plan.Pixels;
+            if (!Render(plan)) return;
 
             // The frame: the same scale, centred on the square.
             float dimensions = side * scale;
@@ -210,9 +278,15 @@ namespace MapExpansions.World
             return new[] { s.Centre - r - u, s.Centre - r + u, s.Centre + r + u, s.Centre + r - u };
         }
 
-        /// <summary>Draws every sheet into one picture on the main map's sea.</summary>
-        private static bool Render(List<Sheet> sheets, Vector2 centre, float side, int pixels)
+        /// <summary>
+        /// Draws the map into one picture: the main map's sea, the ground between the sheets, the connections' roads
+        /// (tunnels dashed) and every sheet over them.
+        /// </summary>
+        private static bool Render(Plan plan)
         {
+            var sheets = plan.Sheets;
+            float side = plan.Side;
+            int pixels = plan.Pixels;
             var shader = Shader.Find("UI/Default");
             if (shader == null)
             {
@@ -222,10 +296,11 @@ namespace MapExpansions.World
             var mat = new Material(shader);
             var rt = RenderTexture.GetTemporary(pixels, pixels, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
             var previous = RenderTexture.active;
+            Texture2D ground = null, road = null;
             try
             {
                 RenderTexture.active = rt;
-                Vector2 low = centre - Vector2.one * side * 0.5f;
+                Vector2 low = plan.Centre - Vector2.one * side * 0.5f;
                 Vector2 ToPixel(Vector2 w) => (w - low) / side * pixels;
 
                 // The sea is the colour in the corner of the main map.
@@ -240,7 +315,21 @@ namespace MapExpansions.World
 
                 // The picture is sRGB and the clear colour is taken as linear; the sea read back from it is sRGB.
                 GL.Clear(true, true, QualitySettings.activeColorSpace == ColorSpace.Linear ? sea.linear : sea);
+
+                ground = plan.Fill.Picture(sea);
+                float covers = plan.Fill.Covers;
+                Quad(mat, ground, new[] { low, low + new Vector2(0f, covers), low + new Vector2(covers, covers), low + new Vector2(covers, 0f) }, new Rect(0f, 0f, 1f, 1f), ToPixel);
+
+                road = new Texture2D(1, 1, TextureFormat.RGBA32, false) { name = "MapExpansions.MapRoad" };
+                road.SetPixel(0, 0, MapFill.Road);
+                road.Apply(false, false);
+                int pieces = 0;
+                foreach (var b in plan.Built)
+                    foreach (var conn in b.Connections)
+                        pieces += DrawRoute(mat, road, conn.Curve, ToPixel);
+
                 foreach (var s in sheets) Draw(mat, s, ToPixel);
+                Core.Log.Msg($"map: ground between the sheets drawn from {ground.width}x{ground.height} cells, {pieces} road pieces of the connections");
 
                 var picture = new Texture2D(pixels, pixels, TextureFormat.RGB24, false) { name = "MapExpansions.PhoneMap", wrapMode = TextureWrapMode.Clamp };
                 picture.ReadPixels(new Rect(0, 0, pixels, pixels), 0, 0);
@@ -263,6 +352,8 @@ namespace MapExpansions.World
                 RenderTexture.active = previous;
                 RenderTexture.ReleaseTemporary(rt);
                 Object.Destroy(mat);
+                if (ground != null) Object.Destroy(ground);
+                if (road != null) Object.Destroy(road);
             }
         }
 
@@ -270,20 +361,71 @@ namespace MapExpansions.World
         {
             var tex = s.Sprite.texture;
             var r = s.Sprite.textureRect;
-            float u0 = r.xMin / tex.width, u1 = r.xMax / tex.width, v0 = r.yMin / tex.height, v1 = r.yMax / tex.height;
-            var c = Corners(s);
+            Quad(mat, tex, Corners(s), new Rect(r.xMin / tex.width, r.yMin / tex.height, r.width / tex.width, r.height / tex.height), toPixel);
+        }
+
+        /// <summary>A texture's uv rectangle on world x/z corners in the order bottom-left, top-left, top-right, bottom-right.</summary>
+        private static void Quad(Material mat, Texture tex, Vector2[] c, Rect uv, Func<Vector2, Vector2> toPixel)
+        {
             mat.mainTexture = tex;
             GL.PushMatrix();
             GL.LoadPixelMatrix(0f, RenderTexture.active.width, 0f, RenderTexture.active.height);
             mat.SetPass(0);
             GL.Begin(GL.QUADS);
             GL.Color(Color.white);
-            Vertex(toPixel(c[0]), u0, v0);
-            Vertex(toPixel(c[1]), u0, v1);
-            Vertex(toPixel(c[2]), u1, v1);
-            Vertex(toPixel(c[3]), u1, v0);
+            Vertex(toPixel(c[0]), uv.xMin, uv.yMin);
+            Vertex(toPixel(c[1]), uv.xMin, uv.yMax);
+            Vertex(toPixel(c[2]), uv.xMax, uv.yMax);
+            Vertex(toPixel(c[3]), uv.xMax, uv.yMin);
             GL.End();
             GL.PopMatrix();
+        }
+
+        /// <summary>
+        /// A connection's road at its width in the highway's colour, dashed where it runs in a tunnel. Drawn under the
+        /// sheets, so only the stretch between them shows. Returns the pieces drawn.
+        /// </summary>
+        private static int DrawRoute(Material mat, Texture road, Connections.RouteCurve curve, Func<Vector2, Vector2> toPixel)
+        {
+            int pieces = 0;
+            float along = 0f;
+            var unit = new Rect(0f, 0f, 1f, 1f);
+            for (int i = 0; i + 1 < curve.Count; i++)
+            {
+                var a = new Vector2(curve.Points[i].x, curve.Points[i].z);
+                var b = new Vector2(curve.Points[i + 1].x, curve.Points[i + 1].z);
+                float length = Vector2.Distance(a, b);
+                if (length < 0.01f) continue;
+                var dir = (b - a) / length;
+                float width = i < curve.RoadWidth.Count ? curve.RoadWidth[i] : curve.MaxRoadWidth;
+                var across = new Vector2(-dir.y, dir.x) * width * 0.5f;
+                bool tunnel = i < curve.Style.Count && curve.Style[i] == RouteStyle.Tunnel;
+
+                // Solid pieces reach half a width past their ends so the bends close; dashes stop where they stop.
+                float from = 0f;
+                while (from < length)
+                {
+                    float to = length;
+                    bool on = true;
+                    if (tunnel)
+                    {
+                        float phase = (along + from) % (Dash + DashGap);
+                        on = phase < Dash;
+                        to = Mathf.Min(length, from + (on ? Dash - phase : Dash + DashGap - phase));
+                    }
+                    if (on)
+                    {
+                        float reach = tunnel ? 0f : width * 0.5f;
+                        var p = a + dir * (from - reach);
+                        var q = a + dir * (to + reach);
+                        Quad(mat, road, new[] { p - across, p + across, q + across, q - across }, unit, toPixel);
+                        pieces++;
+                    }
+                    from = to;
+                }
+                along += length;
+            }
+            return pieces;
         }
 
         private static void Vertex(Vector2 p, float u, float v)
@@ -390,8 +532,53 @@ namespace MapExpansions.World
             Core.Log.Msg($"map: centred on {world} at zoom {zoom}");
         }
 
-        /// <summary>Writes the expansions' names in the style of the main map's district names.</summary>
+        /// <summary>
+        /// Writes the expansions' names as copies of the main map's own names: a building name like "Gas-Mart", a district
+        /// name like "Canal". They sit in the map's label group, so they fade in with the main map's names as the player
+        /// zooms in.
+        /// </summary>
         private static int WriteLabels(RectTransform labels, List<BuiltExpansion> built, Vector3 oldOrigin, float scale)
+        {
+            Text building = null, district = null;
+            foreach (var t in labels.GetComponentsInChildren<Text>(true))
+            {
+                if (building == null && t.alignment == TextAnchor.MiddleCenter) building = t;
+                if (district == null && t.alignment == TextAnchor.UpperCenter) district = t;
+            }
+            district ??= building;
+            if (building == null)
+            {
+                Core.Log.Warning("map: the main map has no names to copy; expansion names are written in the map's pin font");
+                return WriteOwnLabels(labels, built, oldOrigin, scale);
+            }
+            Core.Log.Msg($"map: expansion names copy '{building.text.Replace("\n", " ")}' for buildings and '{district.text.Replace("\n", " ")}' for districts");
+
+            int written = 0;
+            foreach (var b in built)
+                foreach (var l in b.Definition.Map.Labels)
+                {
+                    var template = l.Style == MapLabelStyle.District ? district : building;
+                    var parent = template.rectTransform.parent != null ? template.rectTransform.parent.TryCast<RectTransform>() ?? labels : labels;
+                    var copy = Object.Instantiate(template.gameObject, parent, false);
+                    copy.name = "MapExpansions.Label." + l.Text.Replace("\n", " ");
+                    copy.SetActive(true);
+                    var text = copy.GetComponent<Text>();
+                    text.text = l.Text;
+                    if (l.Color.HasValue) text.color = l.Color.Value;
+                    var w = b.Frame.ToWorldXZ(l.Position);
+                    // The names are placed in the label group's units from the main map's old origin; the copy's parent
+                    // may sit off the group's centre.
+                    var inGroup = (w - new Vector2(oldOrigin.x, oldOrigin.z)) * scale;
+                    var offset = parent == labels ? Vector2.zero : (Vector2)labels.InverseTransformPoint(parent.position);
+                    copy.GetComponent<RectTransform>().anchoredPosition = inGroup - offset;
+                    written++;
+                    Core.Log.Msg($"map: '{b.Id}' {l.Style} name '{l.Text.Replace("\n", " ")}' written at world ({w.x:0}, {w.y:0})");
+                }
+            return written;
+        }
+
+        /// <summary>Names in the map's pin font, for a main map without names of its own to copy.</summary>
+        private static int WriteOwnLabels(RectTransform labels, List<BuiltExpansion> built, Vector3 oldOrigin, float scale)
         {
             var template = labels.GetComponentInChildren<TMP_Text>(true);
             var font = template != null ? template.font : null;
