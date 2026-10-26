@@ -29,6 +29,7 @@ namespace MapExpansions.Debug
     /// mxveh gas throttle [seconds]            hold the last spawned vehicle's throttle and log speed and pitch each second
     /// mxveh wall box|blocker|mesh x y z yaw   a 0.5 x 2 x 6 m test wall made at runtime: box on Default, box on VehicleBlocker, mesh on Default
     /// mxveh roads [x0 z0 x1 z1]               road links in a rectangle (default Serena Flats) with the ground gap at each end
+    /// mxveh lanes [x0 z0 x1 z1]               road links in a rectangle against the road surface: off the road, wrong side, near the edge, sharp bends
     /// mxveh traffic [x0 z0 x1 z1]             every vehicle agent in a rectangle: mode, ground gap, nearest road link and side
     /// mxveh clear                             destroy the vehicles and test walls these commands made
     /// </summary>
@@ -61,9 +62,10 @@ namespace MapExpansions.Debug
                 case "wall" when parts.Length > 6: Wall(parts[2], V(parts, 3), F(parts[6])); break;
                 case "roads": Roads(Area(parts)); break;
                 case "traffic": Traffic(Area(parts)); break;
+                case "lanes": Lanes(Area(parts)); break;
                 case "clear": Clear(); break;
                 default:
-                    Core.Log.Warning("[dev] mxveh info|near|path|spawn|drive|calc|push|gas|wall|roads|traffic|clear (see VehicleTest docs)");
+                    Core.Log.Warning("[dev] mxveh info|near|path|spawn|drive|calc|push|gas|wall|roads|lanes|traffic|clear (see VehicleTest docs)");
                     break;
             }
         }
@@ -302,6 +304,116 @@ namespace MapExpansions.Debug
                              $"{(link.enabled ? "" : " disabled")} gap {Gap(a):0.00}/{Gap(b):0.00} under '{owner}'");
             }
             Core.Log.Msg($"[dev] mxveh roads: {n} road links in {r}");
+        }
+
+        /// <summary>
+        /// Checks the road links in a rectangle against the road surface under them. Each link is measured across at
+        /// three points: where the road's middle lies, how wide the road is, and on which side of the middle the link runs.
+        /// A link on the left of the middle, near the edge or off the road is listed, and so is every bend sharper than
+        /// <c>25</c> degrees from one link into the only link that leaves its end.
+        /// </summary>
+        private static void Lanes(Rect r)
+        {
+            int mask = LayerMask.GetMask("Default", "Terrain"), terrain = LayerMask.NameToLayer("Terrain");
+            var isRoad = new Dictionary<int, bool>();
+            bool Road(Collider c)
+            {
+                int id = c.GetInstanceID();
+                if (isRoad.TryGetValue(id, out bool known)) return known;
+                bool road = false;
+                if (c.gameObject.layer != terrain)
+                    for (Transform t = c.transform; t != null; t = t.parent)
+                    {
+                        string n = t.name.ToLowerInvariant();
+                        if (n.Contains("sidewalk") || n.Contains("barrier") || n.Contains("sign")) break;
+                        if (n.Contains("road")) { road = true; break; }
+                    }
+                isRoad[id] = road;
+                return road;
+            }
+
+            var links = new List<NodeLink>();
+            foreach (var link in NodeLink.validNodeLinks)
+                if (link != null && link.end != null && In(r, link.Start.position) && In(r, link.end.position)) links.Add(link);
+
+            var bad = new List<(float Score, string Text)>();
+            int measured = 0, offRoad = 0, wrongSide = 0, nearEdge = 0, offLane = 0, lanes = 0;
+            float offSum = 0f;
+            foreach (var link in links)
+            {
+                Vector3 a = link.Start.position, b = link.end.position;
+                Vector3 dir = b - a; dir.y = 0f;
+                if (dir.magnitude < 2f) continue;
+                dir.Normalize();
+                Vector3 right = Vector3.Cross(Vector3.up, dir);
+                foreach (float t in new[] { 0.25f, 0.5f, 0.75f })
+                {
+                    Vector3 p = Vector3.Lerp(a, b, t);
+                    const float half = 12f, step = 0.25f;
+                    int n = Mathf.RoundToInt(half / step);
+                    var road = new bool[2 * n + 1];
+                    for (int i = -n; i <= n; i++)
+                        if (Physics.Raycast(p + right * (i * step) + Vector3.up * 3f, Vector3.down, out var hit, 9f, mask, QueryTriggerInteraction.Ignore))
+                            road[i + n] = Road(hit.collider);
+                    measured++;
+                    int best = -1;
+                    for (int d = 0; d <= n && best < 0; d++)
+                    {
+                        if (road[n + d]) best = n + d;
+                        else if (road[n - d]) best = n - d;
+                    }
+                    if (best < 0)
+                    {
+                        offRoad++;
+                        bad.Add((99f, $"off road at {P(p)} on link {P(a)}->{P(b)}"));
+                        continue;
+                    }
+                    int lo = best, hi = best;
+                    while (lo > 0 && road[lo - 1]) lo--;
+                    while (hi < 2 * n && road[hi + 1]) hi++;
+                    float width = (hi - lo + 1) * step;
+                    float side = -((lo + hi) * 0.5f - n) * step;   // the link's distance right of the road's middle
+                    float edge = width * 0.5f - Mathf.Abs(side);
+                    string text = $"{side:+0.0;-0.0} m from the middle of a {width:0.0} m road at {P(p)} on link {P(a)}->{P(b)}{(link.oneWay ? " one-way" : "")}";
+                    if (best == n && !link.oneWay && width < 10f && link.Start != null && dir.sqrMagnitude > 0f && Vector3.Distance(a, b) >= 8f)
+                    {
+                        // A lane along a two-lane road belongs 1.5 m right of its middle; turns inside junctions are shorter than 8 m.
+                        lanes++;
+                        float off = Mathf.Abs(side - 1.5f);
+                        offSum += off;
+                        if (off > 0.75f) offLane++;
+                    }
+                    if (best != n) { offRoad++; bad.Add((50f + Mathf.Abs(best - n) * step, "beside the road, " + text)); }
+                    else if (!link.oneWay && side < 0.3f && width < 16f) { wrongSide++; bad.Add((20f - side, "left of the middle, " + text)); }
+                    else if (edge < 1.2f) { nearEdge++; bad.Add((10f - edge, "near the edge, " + text)); }
+                }
+            }
+
+            var leaving = new Dictionary<IntPtr, List<NodeLink>>();
+            foreach (var link in links)
+            {
+                var key = link.Start.Pointer;
+                if (!leaving.TryGetValue(key, out var list)) leaving[key] = list = new List<NodeLink>();
+                list.Add(link);
+            }
+            int bends = 0;
+            foreach (var link in links)
+            {
+                if (!leaving.TryGetValue(link.end.Pointer, out var next)) continue;
+                var on = next.Where(x => x.end.Pointer != link.Start.Pointer).ToList();
+                if (on.Count != 1) continue;
+                Vector3 d0 = link.end.position - link.Start.position, d1 = on[0].end.position - on[0].Start.position;
+                d0.y = 0f; d1.y = 0f;
+                float angle = Vector3.Angle(d0, d1);
+                if (angle <= 25f) continue;
+                bends++;
+                bad.Add((30f + angle * 0.1f, $"bend of {angle:0} degrees at {P(link.end.position)} ({P(link.Start.position)} -> {P(on[0].end.position)})"));
+            }
+
+            foreach (var (_, text) in bad.OrderByDescending(x => x.Score).Take(40)) Core.Log.Msg($"[dev] mxveh lanes: {text}");
+            Core.Log.Msg($"[dev] mxveh lanes: {links.Count} road links in {r}, {measured} cross-sections: {offRoad} off the road, " +
+                         $"{wrongSide} left of the middle, {nearEdge} near the edge; {bends} bends over 25 degrees; on two-lane roads {offLane} of {lanes} " +
+                         $"cross-sections more than 0.75 m from the lane's place, {(lanes > 0 ? offSum / lanes : 0f):0.00} m off on average");
         }
 
         private static void Traffic(Rect r)
