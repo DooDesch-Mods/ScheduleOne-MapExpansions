@@ -219,6 +219,12 @@ namespace MapExpansions
         /// ground under a building the rules removed.
         /// </summary>
         CloseHoles,
+
+        /// <summary>
+        /// Like <see cref="Cut"/>, but only for mesh colliders; renderers stay whole. For a doorway whose drawn lintel
+        /// stays, while its collider stops the player, who tests every step a little above their head height.
+        /// </summary>
+        CutCollision,
     }
 
     /// <summary>Selects objects by name in one world, optionally limited to an area.</summary>
@@ -260,6 +266,22 @@ namespace MapExpansions
 
         /// <summary>For <see cref="ObjectEffect.Hollow"/>: boxes left open in the lining only, such as windows, in the same coordinates as <see cref="Area"/>.</summary>
         public List<Bounds> Windows { get; } = new();
+
+        /// <summary>
+        /// For <see cref="ObjectEffect.Hollow"/>: the name of a loaded material for a frame around every hole in the lining's
+        /// walls, <see cref="FrameWidth"/> wide on the wall and as deep as the gap between lining and outer wall.
+        /// Edges on the floor, the ceiling or a corner, and edges inside another hole, get none.
+        /// </summary>
+        public string FrameMaterial { get; set; }
+
+        /// <summary>For <see cref="ObjectEffect.Hollow"/>: width of <see cref="FrameMaterial"/> on the wall in metres.</summary>
+        public float FrameWidth { get; set; } = 0.06f;
+
+        /// <summary>
+        /// For <see cref="ObjectEffect.Hollow"/>: metres between the outer walls and the lining's walls. More than the
+        /// default keeps sills and frames the outer model draws inward behind the lining.
+        /// </summary>
+        public float LiningInset { get; set; } = 0.01f;
 
         public static ObjectRule In(WorldSide side, string name, ObjectEffect effect, string parent = null) =>
             new() { Side = side, Name = name, Parent = parent, Effect = effect };
@@ -306,6 +328,21 @@ namespace MapExpansions
         public ObjectRule Ceiling(string material)
         {
             CeilingMaterial = material;
+            return this;
+        }
+
+        /// <summary>Sets <see cref="FrameMaterial"/> and <see cref="FrameWidth"/>.</summary>
+        public ObjectRule Frame(string material, float width = 0.06f)
+        {
+            FrameMaterial = material;
+            FrameWidth = width;
+            return this;
+        }
+
+        /// <summary>Sets <see cref="LiningInset"/>.</summary>
+        public ObjectRule Inset(float metres)
+        {
+            LiningInset = metres;
             return this;
         }
 

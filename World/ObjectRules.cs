@@ -55,14 +55,14 @@ namespace MapExpansions.World
                     Hollow(b, part, rule, area, openings, windows, offColliders);
                     continue;
                 }
-                if (rule.Effect == ObjectEffect.Cut)
+                if (rule.Effect == ObjectEffect.Cut || rule.Effect == ObjectEffect.CutCollision)
                 {
                     if (area.size == Vector3.zero)
                     {
                         Core.Log.Error($"rules: '{b.Id}' {rule}: a cut needs an area; nothing is cut");
                         continue;
                     }
-                    Cut(b, index, part, rule, area, offColliders);
+                    Cut(b, index, part, rule, area, offColliders, rule.Effect == ObjectEffect.Cut);
                     continue;
                 }
                 if (rule.Effect == ObjectEffect.CloseHoles)
@@ -462,8 +462,6 @@ namespace MapExpansions.World
             return 1;
         }
 
-        // Metres between a box face and its lining, so the two never draw at the same depth.
-        private const float LiningInset = 0.01f;
         // Metres a hole may stand off a face and still cut it, for a window box drawn around the glass.
         private const float HoleReach = 0.3f;
         private static readonly Dictionary<string, Material> LiningMaterials = new();
@@ -495,7 +493,9 @@ namespace MapExpansions.World
 
             var c = box.center;
             var s = box.size;
-            var ins = new Vector3(LiningInset / scale.x, LiningInset / scale.y, LiningInset / scale.z);
+            // The inset keeps the lining off the box faces, so the two never draw at the same depth.
+            float inset = Mathf.Max(0.001f, rule.LiningInset);
+            var ins = new Vector3(inset / scale.x, inset / scale.y, inset / scale.z);
             float floor = c[up] - upSign * s[up] * 0.5f;
             var bands = rule.Bands.OrderBy(x => x.From).ToList();
 
@@ -526,12 +526,37 @@ namespace MapExpansions.World
             }
 
             int quads = 0;
-            void Face(int axis, float plane, float inward, int u, int v, List<float> extraV, Func<float, int> slotAt)
+            // One quad from four box-local corners, wound so it faces along the box-local direction 'facing'.
+            void Quad(int slot, Vector3[] corners, Vector2[] uv, Vector3 facing)
+            {
+                int first = verts.Count;
+                verts.AddRange(corners);
+                uvs.AddRange(uv);
+                var w0 = t.TransformPoint(corners[0]);
+                bool front = Vector3.Dot(Vector3.Cross(t.TransformPoint(corners[1]) - w0, t.TransformPoint(corners[2]) - w0), t.TransformDirection(facing)) > 0f;
+                tris[slot].AddRange(front
+                    ? new[] { first, first + 1, first + 2, first, first + 2, first + 3 }
+                    : new[] { first, first + 2, first + 1, first, first + 3, first + 2 });
+                quads++;
+            }
+            Vector3 At(int axis, float pa, int u, float pu, int v, float pv)
+            {
+                var p = Vector3.zero;
+                p[axis] = pa;
+                p[u] = pu;
+                p[v] = pv;
+                return p;
+            }
+
+            int frameSlot = Slot(rule.FrameMaterial);
+            void Face(int axis, float plane, float inward, int u, int v, List<float> extraV, Func<float, int> slotAt, bool framed)
             {
                 float reach = HoleReach / scale[axis];
                 var cross = holes.Where(h => h.min[axis] <= plane + reach && h.max[axis] >= plane - reach).ToList();
                 float u0 = c[u] - s[u] * 0.5f + ins[u], u1 = c[u] + s[u] * 0.5f - ins[u];
                 float v0 = c[v] - s[v] * 0.5f + ins[v], v1 = c[v] + s[v] * 0.5f - ins[v];
+                framed &= frameSlot >= 0;
+                float fu = framed ? rule.FrameWidth / scale[u] : 0f, fv = framed ? rule.FrameWidth / scale[v] : 0f;
                 var us = new List<float> { u0, u1 };
                 var vs = new List<float> { v0, v1 };
                 foreach (var h in cross)
@@ -540,38 +565,60 @@ namespace MapExpansions.World
                     us.Add(Mathf.Clamp(h.max[u], u0, u1));
                     vs.Add(Mathf.Clamp(h.min[v], v0, v1));
                     vs.Add(Mathf.Clamp(h.max[v], v0, v1));
+                    if (!framed) continue;
+                    us.Add(Mathf.Clamp(h.min[u] - fu, u0, u1));
+                    us.Add(Mathf.Clamp(h.max[u] + fu, u0, u1));
+                    vs.Add(Mathf.Clamp(h.min[v] - fv, v0, v1));
+                    vs.Add(Mathf.Clamp(h.max[v] + fv, v0, v1));
                 }
                 vs.AddRange(extraV.Select(x => Mathf.Clamp(x, v0, v1)));
                 us = us.Distinct().OrderBy(x => x).ToList();
                 vs = vs.Distinct().OrderBy(x => x).ToList();
+                bool InHole(float pu, float pv) => cross.Any(h => pu > h.min[u] && pu < h.max[u] && pv > h.min[v] && pv < h.max[v]);
                 var normal = Vector3.zero;
                 normal[axis] = inward;
-                var inwardWorld = t.TransformDirection(normal);
                 for (int i = 0; i + 1 < us.Count; i++)
                 for (int j = 0; j + 1 < vs.Count; j++)
                 {
                     float a0 = us[i], a1 = us[i + 1], b0 = vs[j], b1 = vs[j + 1];
                     if (a1 - a0 < 1e-4f || b1 - b0 < 1e-4f) continue;
                     float um = (a0 + a1) * 0.5f, vm = (b0 + b1) * 0.5f;
-                    if (cross.Any(h => um > h.min[u] && um < h.max[u] && vm > h.min[v] && vm < h.max[v])) continue;
-                    int slot = slotAt(vm);
+                    if (InHole(um, vm)) continue;
+                    // A cell in the band around a hole is its frame, cut out of the wall rather than laid over it.
+                    bool frame = framed && cross.Any(h => um > h.min[u] - fu && um < h.max[u] + fu && vm > h.min[v] - fv && vm < h.max[v] + fv);
+                    int slot = frame ? frameSlot : slotAt(vm);
                     if (slot < 0) continue;
-                    int first = verts.Count;
-                    foreach (var (pu, pv) in new[] { (a0, b0), (a1, b0), (a1, b1), (a0, b1) })
+                    Quad(slot,
+                        new[] { At(axis, plane, u, a0, v, b0), At(axis, plane, u, a1, v, b0), At(axis, plane, u, a1, v, b1), At(axis, plane, u, a0, v, b1) },
+                        new[] { new Vector2(a0 * scale[u], b0 * scale[v]), new Vector2(a1 * scale[u], b0 * scale[v]), new Vector2(a1 * scale[u], b1 * scale[v]), new Vector2(a0 * scale[u], b1 * scale[v]) },
+                        normal);
+                }
+                if (!framed) return;
+
+                // The reveal closes the gap between the lining and the box face along each hole edge that lies on the wall,
+                // so the edge of the outer model behind it does not show through.
+                float face = plane - inward * ins[axis];
+                foreach (var h in cross)
+                {
+                    float hu0 = Mathf.Clamp(h.min[u], u0, u1), hu1 = Mathf.Clamp(h.max[u], u0, u1);
+                    float hv0 = Mathf.Clamp(h.min[v], v0, v1), hv1 = Mathf.Clamp(h.max[v], v0, v1);
+                    if (hu1 - hu0 < 1e-4f || hv1 - hv0 < 1e-4f) continue;
+                    foreach (var (onU, at, toward) in new[] { (true, hu0, 1f), (true, hu1, -1f), (false, hv0, 1f), (false, hv1, -1f) })
                     {
-                        var p = Vector3.zero;
-                        p[axis] = plane;
-                        p[u] = pu;
-                        p[v] = pv;
-                        verts.Add(p);
-                        uvs.Add(new Vector2(pu * scale[u], pv * scale[v]));
+                        if (onU ? at <= u0 + 1e-4f || at >= u1 - 1e-4f : at <= v0 + 1e-4f || at >= v1 - 1e-4f) continue;
+                        float e0 = onU ? hv0 : hu0, e1 = onU ? hv1 : hu1;
+                        // An edge that runs inside another hole is open on both sides.
+                        float outside = at - toward * 1e-3f;
+                        if (onU ? InHole(outside, (e0 + e1) * 0.5f) : InHole((e0 + e1) * 0.5f, outside)) continue;
+                        var facing = Vector3.zero;
+                        facing[onU ? u : v] = toward;
+                        Vector3 P(float depth, float along) => onU ? At(axis, depth, u, at, v, along) : At(axis, depth, u, along, v, at);
+                        float sa = scale[axis], se = scale[onU ? v : u];
+                        Quad(frameSlot,
+                            new[] { P(plane, e0), P(face, e0), P(face, e1), P(plane, e1) },
+                            new[] { new Vector2(plane * sa, e0 * se), new Vector2(face * sa, e0 * se), new Vector2(face * sa, e1 * se), new Vector2(plane * sa, e1 * se) },
+                            facing);
                     }
-                    var w0 = t.TransformPoint(verts[first]);
-                    bool front = Vector3.Dot(Vector3.Cross(t.TransformPoint(verts[first + 1]) - w0, t.TransformPoint(verts[first + 2]) - w0), inwardWorld) > 0f;
-                    tris[slot].AddRange(front
-                        ? new[] { first, first + 1, first + 2, first, first + 2, first + 3 }
-                        : new[] { first, first + 2, first + 1, first, first + 3, first + 2 });
-                    quads++;
                 }
             }
 
@@ -582,10 +629,10 @@ namespace MapExpansions.World
                 if (axis == up) continue;
                 int along = 3 - up - axis;
                 for (int side = -1; side <= 1; side += 2)
-                    Face(axis, c[axis] + side * (s[axis] * 0.5f - ins[axis]), -side, along, up, bandStops, BandAt);
+                    Face(axis, c[axis] + side * (s[axis] * 0.5f - ins[axis]), -side, along, up, bandStops, BandAt, true);
             }
             int ceiling = Slot(rule.CeilingMaterial);
-            Face(up, c[up] + upSign * (s[up] * 0.5f - ins[up]), -upSign, (up + 1) % 3, (up + 2) % 3, none, _ => ceiling);
+            Face(up, c[up] + upSign * (s[up] * 0.5f - ins[up]), -upSign, (up + 1) % 3, (up + 2) % 3, none, _ => ceiling, false);
 
             if (quads == 0)
             {
@@ -647,13 +694,13 @@ namespace MapExpansions.World
         /// <summary>
         /// Cuts the triangles of the selected renderers and mesh colliders out of <paramref name="area"/>. Large cut
         /// triangles are drawn again outside it. A renderer whose cut fails is switched off, a collider whose cut fails
-        /// stays whole.
+        /// stays whole. Without <paramref name="renderers"/> only the colliders are cut.
         /// </summary>
-        private static void Cut(BuiltExpansion b, SceneIndex index, SceneIndex.Part part, ObjectRule rule, Bounds area, HashSet<IntPtr> offColliders)
+        private static void Cut(BuiltExpansion b, SceneIndex index, SceneIndex.Part part, ObjectRule rule, Bounds area, HashSet<IntPtr> offColliders, bool renderers)
         {
             var boxes = new List<Connections.OrientedBox> { new(area.center, Quaternion.identity, area.extents) };
             int carved = 0, triangles = 0, untouched = 0, failed = 0, inactive = 0, colCut = 0, colTris = 0, colFailed = 0;
-            foreach (var r in part.Renderers)
+            foreach (var r in renderers ? part.Renderers : Enumerable.Empty<Renderer>())
             {
                 if (r == null || !r.enabled || !SceneIndex.MatchesSelfOrAncestor(r.transform, rule, area)) continue;
                 // The patch of a switched-off object would be visible on its own.
@@ -690,6 +737,8 @@ namespace MapExpansions.World
                     colCut++;
                     colTris += cut;
                 }
+                else if (outcome == MeshCarver.Outcome.Untouched && !renderers)
+                    Core.Log.Msg($"rules: '{b.Id}' {rule}: collider '{MeshCarver.Path(c.transform)}' has no triangle in the area");
                 else if (outcome == MeshCarver.Outcome.Failed)
                 {
                     colFailed++;
