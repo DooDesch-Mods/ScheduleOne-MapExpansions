@@ -200,8 +200,19 @@ namespace MapExpansions.Editor
                 foreach (var k in gone) Keys.Remove(k);
                 Core.Log.Warning($"selected copies are gone: {string.Join(", ", gone)}; they leave the selection");
             }
-            Refresh();
-            for (int i = 0; i < all.Count; i++) DrawOutline(i, Copies.Bounds(all[i]));
+            // One walk over each copy's renderers per frame serves both the outline and the selection's box.
+            for (int i = 0; i < all.Count; i++)
+            {
+                var b = Copies.Bounds(all[i]);
+                DrawOutline(i, b);
+                if (i == 0) CurrentBounds = b;
+                else
+                {
+                    var c = CurrentBounds;
+                    c.Encapsulate(b);
+                    CurrentBounds = c;
+                }
+            }
             for (int i = all.Count; i < Lines.Count; i++) Lines[i].gameObject.SetActive(false);
         }
 

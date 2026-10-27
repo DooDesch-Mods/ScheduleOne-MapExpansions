@@ -375,6 +375,10 @@ namespace MapExpansions.Editor
             if (_surface == null) return;
             _sincePush += Time.unscaledDeltaTime;
             if (_sincePush < 0.1f) return;
+            // A drag changes the selection's position every frame, and each push rebuilds the whole page, which costs
+            // a visible hitch ten times a second. The cursor readout shows the value meanwhile; the release pushes
+            // the final state.
+            if (Gizmo.Dragging || Areas.Dragging || Points.Dragging) return;
             _sincePush = 0f;
             var s = State();
             if (s == _pushed) return;
