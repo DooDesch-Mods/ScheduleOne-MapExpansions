@@ -9,7 +9,7 @@ namespace MapExpansions.Editor
     /// <summary>
     /// Console commands that drive the editor without a mouse, for automated checks. Debug builds only.
     /// <c>mapedit open|close|state|select &lt;id&gt;|pick x y|move dx dy dz|save|target &lt;expansion&gt; &lt;file&gt;|cam x y z yaw pitch|look &lt;id&gt; [m]|
-    /// fly dx dy dz seconds|hit x y|batch &lt;name&gt;|viewmodel|hold &lt;slot&gt;</c>.
+    /// fly dx dy dz seconds|hit x y|uiclick x y [frames]|batch &lt;name&gt;|viewmodel|hold &lt;slot&gt;</c>.
     /// </summary>
     internal static class DevConsole
     {
@@ -141,6 +141,7 @@ namespace MapExpansions.Editor
                     case "look" when p.Length > 2: Look(p[2], p.Length > 3 ? F(p[3]) : 0f); break;
                     case "fly" when p.Length > 5: MelonLoader.MelonCoroutines.Start(Fly(new Vector3(F(p[2]), F(p[3]), F(p[4])), F(p[5]))); break;
                     case "hit" when p.Length > 3: Hit(Screen(p[2], p[3])); break;
+                    case "uiclick" when p.Length > 3: MelonLoader.MelonCoroutines.Start(UiClick(Screen(p[2], p[3]), p.Length > 4 ? int.Parse(p[4], Ci) : 30)); break;
                     case "batch" when p.Length > 2: Batch(string.Join(" ", p.Skip(2))); break;
                     case "viewmodel": Viewmodel(); break;
                     case "hold" when p.Length > 2: Hold(int.Parse(p[2], Ci)); break;
@@ -196,7 +197,7 @@ namespace MapExpansions.Editor
                         Core.Log.Msg($"[dev] areas: selected {Areas.Current?.ToString() ?? "none"}; {AreaEdits.PendingCount} rules wait, {AreaEdits.StaleCount} stale");
                         break;
                     default:
-                        Core.Log.Warning($"[dev] unknown or incomplete: '{sig}'. Use mapedit open|close|state|select <id>...|pick x y [add]|frame x0 y0 x1 y1|move dx dy dz|turn deg|scale s|undo|redo|dup|del|drop|focus|play|resume|draft|mode m|snap grid|turn|edges on|off|sel|save|target <expansion> <file>|cam x y z yaw pitch|look <id> [m]|fly dx dy dz s|hit x y|batch <name>|viewmodel|hold <slot>|count|rules [text]|rule apply|revert <key>|copy apply|revert <expansion/owner/id>|area <key>|areahandles|areaset x0 y0 z0 x1 y1 z1|newrule [effect]|newbox panel|block|newopening|effect <effect>|material <name>|materials [text]|apply|walk dx dz metres|areas");
+                        Core.Log.Warning($"[dev] unknown or incomplete: '{sig}'. Use mapedit open|close|state|select <id>...|pick x y [add]|frame x0 y0 x1 y1|move dx dy dz|turn deg|scale s|undo|redo|dup|del|drop|focus|play|resume|draft|mode m|snap grid|turn|edges on|off|sel|save|target <expansion> <file>|cam x y z yaw pitch|look <id> [m]|fly dx dy dz s|hit x y|uiclick x y [frames]|batch <name>|viewmodel|hold <slot>|count|rules [text]|rule apply|revert <key>|copy apply|revert <expansion/owner/id>|area <key>|areahandles|areaset x0 y0 z0 x1 y1 z1|newrule [effect]|newbox panel|block|newopening|effect <effect>|material <name>|materials [text]|apply|walk dx dz metres|areas");
                         break;
                 }
             }
@@ -324,6 +325,75 @@ namespace MapExpansions.Editor
             var hits = Panel.HitsAt(screen);
             Core.Log.Msg($"[dev] hit {screen}: over the docks {Panel.IsPointerOver(screen)}, {hits.Count} UI hits: " +
                          string.Join(", ", hits.Take(8).Select(Path)));
+        }
+
+        /// <summary>
+        /// A mouse click on the panel the way uGUI's input module raises it: the pointer rests on the point for
+        /// <paramref name="hoverFrames"/> frames, and each frame a target that differs from the last entered one gets
+        /// PointerEnter. Then press, two frames, release; the click goes out only when press and release found the
+        /// same live target. A page that rebuilds under a resting pointer shows up as many enters and no click.
+        /// </summary>
+        private static System.Collections.IEnumerator UiClick(Vector2 screen, int hoverFrames)
+        {
+            var es = UnityEngine.EventSystems.EventSystem.current;
+            if (es == null)
+            {
+                Core.Log.Warning("[dev] uiclick: there is no event system");
+                yield break;
+            }
+            UnityEngine.EventSystems.EventTrigger TriggerAt()
+            {
+                var hits = Panel.HitsAt(screen);
+                if (hits.Count == 0) return null;
+                for (var t = hits[0].transform; t != null; t = t.parent)
+                {
+                    var tr = t.GetComponent<UnityEngine.EventSystems.EventTrigger>();
+                    if (tr != null) return tr;
+                }
+                return null;
+            }
+            UnityEngine.EventSystems.PointerEventData Data() => new(es)
+            {
+                position = screen,
+                button = UnityEngine.EventSystems.PointerEventData.InputButton.Left,
+                clickCount = 1,
+            };
+            UnityEngine.EventSystems.EventTrigger entered = null;
+            int enters = 0;
+            void Move()
+            {
+                var now = TriggerAt();
+                if (now == null || (entered != null && now.GetInstanceID() == entered.GetInstanceID())) return;
+                entered = now;
+                enters++;
+                now.OnPointerEnter(Data());
+            }
+            for (int i = 0; i < hoverFrames; i++)
+            {
+                Move();
+                yield return null;
+            }
+            int hoverEnters = enters;
+            var pressed = TriggerAt();
+            if (pressed == null)
+            {
+                Core.Log.Warning($"[dev] uiclick {screen}: nothing that takes clicks under the point");
+                yield break;
+            }
+            string pressedName = Path(pressed.gameObject);
+            pressed.OnPointerDown(Data());
+            for (int i = 0; i < 2; i++)
+            {
+                yield return null;
+                Move();
+            }
+            var released = TriggerAt();
+            bool same = released != null && pressed.GetInstanceID() == released.GetInstanceID();
+            pressed.OnPointerUp(Data());
+            if (same) released.OnPointerClick(Data());
+            Core.Log.Msg($"[dev] uiclick {screen}: {hoverEnters} enters while resting {hoverFrames} frames, {enters - hoverEnters} more while pressed; " +
+                         $"pressed '{pressedName}', released on {(released == null ? "nothing" : "'" + Path(released.gameObject) + "'")}, " +
+                         (same ? "click sent" : "no click (press and release on different targets)"));
         }
 
         private static string Path(GameObject go)

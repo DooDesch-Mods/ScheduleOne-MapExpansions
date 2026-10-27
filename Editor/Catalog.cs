@@ -4,6 +4,8 @@ using MapExpansions.Lifecycle;
 using MapExpansions.World;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
+using Object = UnityEngine.Object;
 
 namespace MapExpansions.Editor
 {
@@ -213,6 +215,7 @@ namespace MapExpansions.Editor
             _placingTab = Current;
             PlaceYaw = 0f;
             _ghostKey = null;
+            _toldNoExpansion = false;
             Core.Log.Msg($"catalog place ({why}): placing {Current} '{_placing.Address}' with the mouse");
             Panel.Note($"{_placing.Label}: Klick setzt, Mausrad dreht.");
         }
@@ -228,6 +231,7 @@ namespace MapExpansions.Editor
         private static void HideGhost()
         {
             if (_ghost != null && _ghost.gameObject.activeSelf) _ghost.gameObject.SetActive(false);
+            if (_ghostModel != null && _ghostModel.activeSelf) _ghostModel.SetActive(false);
         }
 
         /// <summary>Moves the ghost under the cursor and places on a click; true when placing owns the mouse.</summary>
@@ -274,32 +278,148 @@ namespace MapExpansions.Editor
         private static void DrawGhost(Vector3 point)
         {
             var b = _placingTab == Tab.Source || _placingTab == Tab.Models ? BuildPipeline.Get(_placing.Expansion) : Target(point);
+            bool fits = b?.Root != null;
             string key = $"{b?.Id}|{PlaceYaw}";
             if (key != _ghostKey)
             {
                 _ghostKey = key;
                 _ghostOk = false;
-                if (b?.Root != null && Resolve(_placing, _placingTab, b, "ghost", out _, out var src, out var frame))
+                ClearGhostModel();
+                // Without an expansion nothing can be placed, but the ghost still shows what was picked, in red and
+                // turned about its own position.
+                if ((fits || _placingTab != Tab.Models) && Resolve(_placing, _placingTab, b, "ghost", out _, out var src, out var frame))
                 {
-                    var move = Turn(b, frame, PlaceYaw, out _);
+                    var move = fits
+                        ? Turn(b, frame, PlaceYaw, out _)
+                        : Matrix4x4.TRS(frame.position, Quaternion.Euler(0f, PlaceYaw, 0f), Vector3.one) * Matrix4x4.Translate(-frame.position);
                     if (MovedBounds(src, move, out var mb))
                     {
-                        mb.center -= new Vector3(mb.center.x, mb.min.y, mb.center.z);
+                        var bottom = new Vector3(mb.center.x, mb.min.y, mb.center.z);
+                        mb.center -= bottom;
                         _ghostBox = mb;
                         _ghostOk = true;
+                        BuildGhostModel(src, Matrix4x4.Translate(-bottom) * move, fits);
                     }
                 }
-                if (!_ghostOk) Core.Log.Msg($"catalog place: '{_placing.Address}' shows no outline here ({(b == null ? "no expansion" : "no mesh")})");
+                if (!_ghostOk) Core.Log.Msg($"catalog place: '{_placing.Address}' shows no ghost ({(b == null ? "no expansion and a model" : "no mesh")})");
+                else if (!fits && !_toldNoExpansion)
+                {
+                    _toldNoExpansion = true;
+                    Panel.Note("Keine Erweiterung gebaut, hier lässt sich nichts setzen.");
+                }
             }
             if (!_ghostOk)
             {
                 HideGhost();
                 return;
             }
-            if (_ghost == null) _ghost = Selection.NewLine("MapExpansionsEditor_Ghost", new Color(0.4f, 0.95f, 0.6f));
+            var color = fits ? new Color(0.4f, 0.95f, 0.6f) : new Color(1f, 0.35f, 0.3f);
+            if (_ghost == null) _ghost = Selection.NewLine("MapExpansionsEditor_Ghost", color);
+            if (_ghost.startColor != color)
+            {
+                _ghost.material = Gizmo.Material(color);
+                _ghost.startColor = _ghost.endColor = color;
+            }
             var box = _ghostBox;
             box.center += point;
             Selection.DrawBox(_ghost, box, 0.002f);
+            if (_ghostModel != null)
+            {
+                if (!_ghostModel.activeSelf) _ghostModel.SetActive(true);
+                _ghostModel.transform.position = point;
+            }
+        }
+
+        /// <summary>The panel said once per placing that no expansion is built.</summary>
+        private static bool _toldNoExpansion;
+
+        /// <summary>The meshes of the item being placed, drawn in the game's own build-ghost material.</summary>
+        private static GameObject _ghostModel;
+
+        /// <summary>
+        /// Whether a part is switched on up to the template's root. A prefab asset is in no scene, so Unity calls all of
+        /// it inactive in the hierarchy; its own switches still say what an instance would show.
+        /// </summary>
+        private static bool On(Transform t, Transform root)
+        {
+            for (; t != null; t = t.parent)
+            {
+                // The root's own switch is left out: some templates are kept switched off and turned on when placed.
+                if (t == root) break;
+                if (!t.gameObject.activeSelf) return false;
+            }
+            return true;
+        }
+
+        private static void ClearGhostModel()
+        {
+            if (_ghostModel == null) return;
+            Object.Destroy(_ghostModel);
+            _ghostModel = null;
+        }
+
+        /// <summary>
+        /// Copies the template's meshes, without any of its components, under one root at the cursor. The vanilla
+        /// build ghost materials come from the BuildManager; without them only the box is drawn. Statically batched
+        /// renderers hold the mesh of the whole batch and are left out.
+        /// </summary>
+        private static void BuildGhostModel(Transform src, Matrix4x4 toCursor, bool fits)
+        {
+            var bm = Il2CppScheduleOne.DevUtilities.NetworkSingleton<Il2CppScheduleOne.Building.BuildManager>.InstanceExists
+                ? Il2CppScheduleOne.DevUtilities.NetworkSingleton<Il2CppScheduleOne.Building.BuildManager>.Instance : null;
+            var mat = bm == null ? null : fits ? bm.ghostMaterial_White : bm.ghostMaterial_Red;
+            if (mat == null)
+            {
+                Core.Log.Warning($"catalog place: no build ghost material ({(bm == null ? "no BuildManager" : "field empty")}); '{src.name}' shows its box only");
+                return;
+            }
+            _ghostModel = new GameObject("MapExpansionsEditor_GhostModel");
+            Object.DontDestroyOnLoad(_ghostModel);
+            int meshes = 0, batched = 0;
+            foreach (var f in src.GetComponentsInChildren<MeshFilter>(true))
+            {
+                var r = f.GetComponent<MeshRenderer>();
+                if (f.sharedMesh == null || r == null || !r.enabled || !On(f.transform, src)) continue;
+                if (r.isPartOfStaticBatch)
+                {
+                    batched++;
+                    continue;
+                }
+                var m = toCursor * f.transform.localToWorldMatrix;
+                var go = new GameObject(f.name);
+                go.transform.SetParent(_ghostModel.transform, false);
+                go.transform.localPosition = m.GetColumn(3);
+                go.transform.localRotation = m.rotation;
+                go.transform.localScale = m.lossyScale;
+                go.AddComponent<MeshFilter>().sharedMesh = f.sharedMesh;
+                var gr = go.AddComponent<MeshRenderer>();
+                var mats = new Il2CppReferenceArray<Material>(Math.Max(1, f.sharedMesh.subMeshCount));
+                for (int i = 0; i < mats.Length; i++) mats[i] = mat;
+                gr.sharedMaterials = mats;
+                gr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                gr.receiveShadows = false;
+                meshes++;
+            }
+            foreach (var s in src.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (s.sharedMesh == null || !s.enabled || !On(s.transform, src)) continue;
+                var m = toCursor * s.transform.localToWorldMatrix;
+                var go = new GameObject(s.name);
+                go.transform.SetParent(_ghostModel.transform, false);
+                go.transform.localPosition = m.GetColumn(3);
+                go.transform.localRotation = m.rotation;
+                go.transform.localScale = m.lossyScale;
+                go.AddComponent<MeshFilter>().sharedMesh = s.sharedMesh;
+                var gr = go.AddComponent<MeshRenderer>();
+                var mats = new Il2CppReferenceArray<Material>(Math.Max(1, s.sharedMesh.subMeshCount));
+                for (int i = 0; i < mats.Length; i++) mats[i] = mat;
+                gr.sharedMaterials = mats;
+                gr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                meshes++;
+            }
+            _ghostModel.SetActive(false);
+            Core.Log.Msg($"catalog place: ghost of '{src.name}' from {meshes} meshes in '{mat.name}'" + (batched > 0 ? $", {batched} statically batched left out" : ""));
+            if (meshes == 0) ClearGhostModel();
         }
 
         /// <summary>Places result <paramref name="index"/> on the surface in the middle of the view.</summary>

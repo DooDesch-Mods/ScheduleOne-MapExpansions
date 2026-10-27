@@ -42,10 +42,15 @@ const size = (v) => v ? v.map((n) => num(n, 2)).join(' × ') + ' m' : '';
 /* Tooltips: one floating box, placed under or over the hovered control. */
 
 let tipNode = null;
-function hideTip() { if (tipNode) { tipNode.remove(); tipNode = null; } }
+let tipAnchor = null;
+function hideTip() { if (tipNode) { tipNode.remove(); tipNode = null; tipAnchor = null; } }
 
 function tip(anchor, text, key) {
   anchor.addEventListener('mouseenter', () => {
+    // Adding the tooltip rebuilds the page, and the rebuilt hit target raises mouseenter again on the same
+    // element. Building a second tooltip there would rebuild again on every frame, and a press and its release
+    // would land on two different targets, so the button would never be clicked.
+    if (tipNode && tipAnchor === anchor) return;
     hideTip();
     const r = anchor.rect ? anchor.rect() : anchor.getBoundingClientRect();
     if (!r || !r.height) return;
@@ -64,6 +69,7 @@ function tip(anchor, text, key) {
     node.style.width = Math.round(w) + 'px';
     document.body.appendChild(node);
     tipNode = node;
+    tipAnchor = anchor;
   });
   anchor.addEventListener('mouseleave', hideTip);
   anchor.addEventListener('click', hideTip);
