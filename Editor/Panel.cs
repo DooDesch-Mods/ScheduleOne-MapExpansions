@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using MapExpansions.Lifecycle;
 using MapExpansions.World;
 using Sideload.Api;
+using Il2CppTMPro;
 using UnityEngine;
 using Object = UnityEngine.Object;
 using UnityEngine.EventSystems;
@@ -22,6 +23,18 @@ namespace MapExpansions.Editor
 
         private static GameObject _root;
         private static RectTransform _frame;
+        private static RectTransform _readout;
+        private static TextMeshProUGUI _readoutText;
+        private static string _readoutShown;
+
+        /// <summary>True while the key overlay is open; F1, its button and Escape close it.</summary>
+        internal static bool Help { get; private set; }
+
+        internal static void ToggleHelp(string why)
+        {
+            Help = !Help;
+            Core.Log.Msg($"panel ({why}): key overlay {(Help ? "open" : "closed")}");
+        }
         private static SurfaceHandle _surface;
         private static string _pushed = "";
         private static float _sincePush;
@@ -166,7 +179,7 @@ namespace MapExpansions.Editor
                 .OnCall("editor.catalog.search", q => { Catalog.Search(q, "catalog search"); return State(); })
                 .OnCall("editor.catalog.place", i =>
                 {
-                    if (int.TryParse(i, out int index)) Catalog.Place(index, "catalog");
+                    if (int.TryParse(i, out int index)) Catalog.BeginPlace(index, "catalog");
                     else Core.Log.Warning($"panel: catalog place '{i}' is no index");
                     return State();
                 })
@@ -189,6 +202,17 @@ namespace MapExpansions.Editor
                     else Points.SetField(fv.Substring(0, eq), fv.Substring(eq + 1), "inspector");
                     return State();
                 })
+                .OnCall("editor.place.cancel", _ => { Catalog.CancelPlace("hint"); return State(); })
+                .OnCall("editor.help", _ => { ToggleHelp("button"); return State(); })
+                .OnCall("editor.top", _ => { FlyCamera.SetTop(!FlyCamera.Top, EditorMode.Camera?.Camera, "toolbar"); return State(); })
+                .OnCall("editor.bookmark", n =>
+                {
+                    if (int.TryParse(n, out int slot)) Bookmarks.Jump(slot, "status bar");
+                    else Core.Log.Warning($"panel: bookmark '{n}' is no number");
+                    return State();
+                })
+                .OnCall("editor.point.play", _ => { Points.PlayHere("inspector"); return ""; })
+                .OnCall("editor.point.frame", _ => { EditorMode.FrameSelection("inspector"); return State(); })
                 .OnCall("editor.materials", q =>
                 {
                     _materialQuery = q ?? "";
@@ -209,6 +233,7 @@ namespace MapExpansions.Editor
             edge.effectColor = new Color(1f, 0.75f, 0.1f, 0.9f);
             edge.effectDistance = new Vector2(1.5f, 1.5f);
             frame.SetActive(false);
+            BuildReadout();
             _pushed = "";
             Core.Log.Msg($"panel: surface '{SurfaceId}' mounted: {Surfaces.IsMounted(SurfaceId)}");
         }
@@ -220,6 +245,10 @@ namespace MapExpansions.Editor
             Object.Destroy(_root);
             _root = null;
             _frame = null;
+            _readout = null;
+            _readoutText = null;
+            _readoutShown = null;
+            Help = false;
             _surface = null;
             Core.Log.Msg("panel: surface unmounted");
         }
@@ -249,6 +278,71 @@ namespace MapExpansions.Editor
             foreach (var go in HitsAt(screen))
                 if (go.transform.IsChildOf(_root.transform)) return true;
             return false;
+        }
+
+        /// <summary>The small label beside the cursor that shows the value of a drag.</summary>
+        private static void BuildReadout()
+        {
+            var font = TMP_Settings.defaultFontAsset;
+            if (font == null) font = Resources.FindObjectsOfTypeAll<TMP_FontAsset>().FirstOrDefault();
+            if (font == null)
+            {
+                Core.Log.Warning("panel: no TextMeshPro font is loaded; drags show no value at the cursor");
+                return;
+            }
+            var go = new GameObject("readout");
+            _readout = go.AddComponent<RectTransform>();
+            _readout.SetParent(_root.transform, false);
+            _readout.anchorMin = _readout.anchorMax = Vector2.zero;
+            _readout.pivot = new Vector2(0f, 1f);
+            var bg = go.AddComponent<Image>();
+            bg.color = new Color(0.07f, 0.08f, 0.1f, 0.92f);
+            bg.raycastTarget = false;
+            var label = new GameObject("text");
+            var lr = label.AddComponent<RectTransform>();
+            lr.SetParent(_readout, false);
+            lr.anchorMin = Vector2.zero;
+            lr.anchorMax = Vector2.one;
+            lr.offsetMin = new Vector2(8f, 2f);
+            lr.offsetMax = new Vector2(-8f, -2f);
+            _readoutText = label.AddComponent<TextMeshProUGUI>();
+            _readoutText.font = font;
+            _readoutText.fontSize = 17f;
+            _readoutText.color = new Color(0.9f, 0.91f, 0.93f);
+            _readoutText.alignment = TextAlignmentOptions.MidlineLeft;
+            _readoutText.enableWordWrapping = false;
+            _readoutText.raycastTarget = false;
+            go.SetActive(false);
+            Core.Log.Msg($"panel: cursor readout built with font '{font.name}'");
+        }
+
+        /// <summary>Shows a value beside the cursor, or hides it when the text is null.</summary>
+        internal static void ShowReadout(string text, Vector2 screen)
+        {
+            if (_readout == null) return;
+            if (string.IsNullOrEmpty(text))
+            {
+                if (_readout.gameObject.activeSelf) _readout.gameObject.SetActive(false);
+                return;
+            }
+            if (text != _readoutShown)
+            {
+                _readoutShown = text;
+                _readoutText.text = text;
+                _readout.sizeDelta = new Vector2(_readoutText.GetPreferredValues(text).x + 18f, 28f);
+            }
+            float k = _root.GetComponent<Canvas>().scaleFactor;
+            if (k <= 0f) k = 1f;
+            _readout.anchoredPosition = new Vector2(screen.x / k + 20f, screen.y / k - 16f);
+            _readout.SetAsLastSibling();
+            if (!_readout.gameObject.activeSelf) _readout.gameObject.SetActive(true);
+        }
+
+        /// <summary>A value for the cursor readout: invariant digits with a decimal comma, a sign when asked.</summary>
+        internal static string Num(float v, int digits, bool sign = false)
+        {
+            var text = Math.Round(v, digits).ToString("F" + digits, CultureInfo.InvariantCulture).Replace('.', ',');
+            return sign && v >= 0f ? "+" + text : text;
         }
 
         /// <summary>Shows the selection frame over a screen rectangle in pixels, or hides it.</summary>
@@ -370,7 +464,13 @@ namespace MapExpansions.Editor
                     o["max"] = Vec(local.max);
                 }
                 var r = cur.RuleDef;
-                if (cur.Kind != AreaKind.Box && r != null)
+                if (cur.Kind is AreaKind.Opening or AreaKind.Window && r != null)
+                {
+                    // An opening is edited on its own; its rule's effect and name stay with the rule.
+                    o["rule"] = AreaRef.OfRule(cur.Expansion, r.Key).Key;
+                    o["ruleName"] = string.IsNullOrEmpty(r.Name) ? r.Key : r.Name;
+                }
+                else if (cur.Kind == AreaKind.Rule && r != null)
                 {
                     o["effect"] = r.Effect.ToString();
                     o["name"] = r.Name;
@@ -446,12 +546,22 @@ namespace MapExpansions.Editor
                 ["keys"] = keys,
                 ["mode"] = Gizmo.Mode.ToString(),
                 ["grid"] = Snap.Grid,
+                // Boxes and points snap finer than copies; the button shows the step of what is selected.
+                ["gridStep"] = Areas.Current != null || Points.Current != null ? Areas.Step : Snap.GridStep,
+                ["turnStep"] = Snap.TurnStep,
                 ["turn"] = Snap.Turn,
                 ["edges"] = Snap.Edges,
                 ["undo"] = Edits.UndoCount,
                 ["redo"] = Edits.RedoCount,
+                ["nextUndo"] = Edits.NextUndo,
+                ["nextRedo"] = Edits.NextRedo,
                 ["dirty"] = Saving.DirtyCount,
                 ["speed"] = Math.Round(FlyCamera.Speed, 1),
+                ["top"] = FlyCamera.Top,
+                ["help"] = Help,
+                ["placing"] = Catalog.PlacingLabel,
+                ["placeYaw"] = Catalog.PlaceYaw,
+                ["bookmarks"] = Bookmarks.State(),
                 ["log"] = new JsonArray(Lines.Select(l => (JsonNode)l).ToArray()),
                 ["catalog"] = Catalog.State(),
             };

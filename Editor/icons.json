@@ -54,6 +54,10 @@
     "i-expand": "panel-left-open",
     "i-keys": "keyboard",
     "i-ok": "circle-check",
-    "i-warn": "triangle-alert"
+    "i-warn": "triangle-alert",
+    "i-help": "circle-help",
+    "i-top": "scan",
+    "i-bookmark": "bookmark",
+    "i-walk": "footprints"
   }
 }

@@ -9,8 +9,9 @@ namespace MapExpansions.Editor
 {
     /// <summary>
     /// What can be placed: main-world objects, objects of the expansion's source scene, buildable game items and the
-    /// expansion's glTF models. A search fills a short result list; placing one puts it on the surface in the middle
-    /// of the view, in the expansion that surface belongs to, as one undoable step.
+    /// expansion's glTF models. A search fills a short result list. Choosing a result shows its outline under the
+    /// cursor; the wheel turns it, a click puts it there as one undoable step, Shift and a click keeps placing, Escape
+    /// stops. The console places in the middle of the view instead.
     /// </summary>
     internal static class Catalog
     {
@@ -183,6 +184,124 @@ namespace MapExpansions.Editor
             return built.OrderBy(x => (x.Root.transform.position - from).sqrMagnitude).First();
         }
 
+        /// <summary>The result being placed with the mouse, or null.</summary>
+        private static Item _placing;
+        private static Tab _placingTab;
+        private static LineRenderer _ghost;
+
+        // The ghost's box at the placing turn, relative to the bottom middle; computed again only when the turn or
+        // the target expansion changes.
+        private static string _ghostKey;
+        private static Bounds _ghostBox;
+        private static bool _ghostOk;
+
+        internal static bool Placing => _placing != null;
+        internal static string PlacingLabel => _placing?.Label;
+
+        /// <summary>Extra turn of the placed object about the vertical axis, in degrees; the wheel changes it.</summary>
+        internal static float PlaceYaw { get; private set; }
+
+        /// <summary>Starts placing result <paramref name="index"/> with the mouse.</summary>
+        internal static void BeginPlace(int index, string why)
+        {
+            if (index < 0 || index >= Results.Count)
+            {
+                Core.Log.Warning($"catalog place ({why}): no result {index} (there are {Results.Count})");
+                return;
+            }
+            _placing = Results[index];
+            _placingTab = Current;
+            PlaceYaw = 0f;
+            _ghostKey = null;
+            Core.Log.Msg($"catalog place ({why}): placing {Current} '{_placing.Address}' with the mouse");
+            Panel.Note($"{_placing.Label}: Klick setzt, Mausrad dreht.");
+        }
+
+        internal static void CancelPlace(string why)
+        {
+            if (_placing == null) return;
+            Core.Log.Msg($"catalog place ({why}): placing '{_placing.Address}' stopped");
+            _placing = null;
+            HideGhost();
+        }
+
+        private static void HideGhost()
+        {
+            if (_ghost != null && _ghost.gameObject.activeSelf) _ghost.gameObject.SetActive(false);
+        }
+
+        /// <summary>Moves the ghost under the cursor and places on a click; true when placing owns the mouse.</summary>
+        internal static bool TickPlace(Camera cam, bool overPanel)
+        {
+            if (_placing == null)
+            {
+                HideGhost();
+                return false;
+            }
+            if (cam == null)
+            {
+                CancelPlace("the camera is gone");
+                return false;
+            }
+            if (overPanel)
+            {
+                HideGhost();
+                return false;
+            }
+            float wheel = EditorInput.Wheel;
+            if (wheel != 0f)
+            {
+                PlaceYaw = Mathf.Repeat(PlaceYaw + Mathf.Sign(wheel) * Snap.TurnStep, 360f);
+                Core.Log.Msg($"catalog place: turn {PlaceYaw:0}°");
+            }
+            var ray = cam.ScreenPointToRay(EditorInput.MousePosition);
+            if (!Physics.Raycast(ray, out var hit, 2000f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                HideGhost();
+                return true;
+            }
+            DrawGhost(hit.point);
+            if (EditorInput.LeftDown(0))
+            {
+                var item = _placing;
+                bool more = EditorInput.Key(KeyCode.LeftShift) || EditorInput.Key(KeyCode.RightShift);
+                PlaceAt(item, _placingTab, hit, PlaceYaw, more ? "click, shift" : "click");
+                if (!more) CancelPlace("placed");
+            }
+            return true;
+        }
+
+        private static void DrawGhost(Vector3 point)
+        {
+            var b = _placingTab == Tab.Source || _placingTab == Tab.Models ? BuildPipeline.Get(_placing.Expansion) : Target(point);
+            string key = $"{b?.Id}|{PlaceYaw}";
+            if (key != _ghostKey)
+            {
+                _ghostKey = key;
+                _ghostOk = false;
+                if (b?.Root != null && Resolve(_placing, _placingTab, b, "ghost", out _, out var src, out var frame))
+                {
+                    var move = Turn(b, frame, PlaceYaw, out _);
+                    if (MovedBounds(src, move, out var mb))
+                    {
+                        mb.center -= new Vector3(mb.center.x, mb.min.y, mb.center.z);
+                        _ghostBox = mb;
+                        _ghostOk = true;
+                    }
+                }
+                if (!_ghostOk) Core.Log.Msg($"catalog place: '{_placing.Address}' shows no outline here ({(b == null ? "no expansion" : "no mesh")})");
+            }
+            if (!_ghostOk)
+            {
+                HideGhost();
+                return;
+            }
+            if (_ghost == null) _ghost = Selection.NewLine("MapExpansionsEditor_Ghost", new Color(0.4f, 0.95f, 0.6f));
+            var box = _ghostBox;
+            box.center += point;
+            Selection.DrawBox(_ghost, box, 0.002f);
+        }
+
         /// <summary>Places result <paramref name="index"/> on the surface in the middle of the view.</summary>
         internal static bool Place(int index, string why)
         {
@@ -191,7 +310,6 @@ namespace MapExpansions.Editor
                 Core.Log.Warning($"catalog place ({why}): no result {index} (there are {Results.Count})");
                 return false;
             }
-            var item = Results[index];
             var cam = EditorMode.Camera?.Camera;
             if (cam == null)
             {
@@ -205,19 +323,58 @@ namespace MapExpansions.Editor
                 Panel.Note("In der Bildmitte liegt nichts.");
                 return false;
             }
-            var b = Current == Tab.Source || Current == Tab.Models ? BuildPipeline.Get(item.Expansion) : Target(hit.point);
+            return PlaceAt(Results[index], Current, hit, 0f, why);
+        }
+
+        /// <summary>Places an item with its bottom middle on a hit point, turned by an extra yaw.</summary>
+        private static bool PlaceAt(Item item, Tab tab, RaycastHit hit, float extraYaw, string why)
+        {
+            var b = tab == Tab.Source || tab == Tab.Models ? BuildPipeline.Get(item.Expansion) : Target(hit.point);
             if (b?.Root == null)
             {
                 Core.Log.Warning($"catalog place ({why}): {hit.point} lies in no expansion");
-                Panel.Note("Die Bildmitte liegt in keiner Erweiterung.");
+                Panel.Note("Der Punkt liegt in keiner Erweiterung.");
                 return false;
             }
-            if ((Current == Tab.Source || Current == Tab.Models) && MapExpansionsApi.ExpansionAt(hit.point) != b.Id)
+            if ((tab == Tab.Source || tab == Tab.Models) && MapExpansionsApi.ExpansionAt(hit.point) != b.Id)
                 Core.Log.Warning($"catalog place ({why}): '{item.Label}' belongs to '{b.Id}', the aimed point {hit.point} does not; it is placed there all the same");
+            if (!Resolve(item, tab, b, why, out var d, out var src, out var frame)) return false;
 
-            var d = new CopyDefinition { Added = true };
-            Transform src, frame;
-            switch (Current)
+            var root = b.Root.transform;
+            var move = Turn(b, frame, extraYaw, out float yaw);
+            var bottom = BottomCentre(src, move) ?? frame.position;
+            var atPos = frame.position + (hit.point - bottom);
+            d.At = new LocalPoint(root.InverseTransformPoint(atPos), yaw);
+
+            var list = Layers.CopyList(b.Definition, Layers.ExpansionOwner);
+            if (list == null)
+            {
+                Core.Log.Error($"catalog place ({why}): '{b.Id}' has no list of its own copies");
+                return false;
+            }
+            d.Id = FreeId(list, Slug(item.Label));
+            Core.Log.Msg($"catalog place ({why}): {tab} '{item.Address}' as '{b.Id}/{d.Id}' at {atPos} (aimed at {hit.point} on '{hit.collider.name}'), yaw {yaw:0.#}");
+            return Edits.PlaceNew(b, d, $"{item.Label} gesetzt", why);
+        }
+
+        /// <summary>
+        /// The move from the source object's pose to the placed pose: turned about the vertical axis to the expansion
+        /// root's frame plus the extra yaw, about the frame's own position.
+        /// </summary>
+        private static Matrix4x4 Turn(BuiltExpansion b, Transform frame, float extraYaw, out float yaw)
+        {
+            var root = b.Root.transform;
+            yaw = Mathf.Repeat((Quaternion.Inverse(root.rotation) * frame.rotation).eulerAngles.y + extraYaw, 360f);
+            var atRot = root.rotation * Quaternion.Euler(0f, yaw, 0f);
+            return Matrix4x4.TRS(frame.position, atRot, Vector3.one) * Matrix4x4.TRS(frame.position, frame.rotation, Vector3.one).inverse;
+        }
+
+        /// <summary>The copy definition of an item and the objects its shape and turn come from.</summary>
+        private static bool Resolve(Item item, Tab tab, BuiltExpansion b, string why, out CopyDefinition d, out Transform src, out Transform frame)
+        {
+            d = new CopyDefinition { Added = true };
+            src = frame = null;
+            switch (tab)
             {
                 case Tab.Prefabs:
                     d.Prefab = item.Address;
@@ -229,6 +386,7 @@ namespace MapExpansions.Editor
                     src = frame = Models.Template(b, item.Address, d.Collider, MainCopies.TemplateHolder(b));
                     if (src == null)
                     {
+                        Core.Log.Warning($"catalog place ({why}): model '{item.Address}' gives no template");
                         Panel.Note($"Modell {item.Address} ist nicht lesbar, siehe Log.");
                         return false;
                     }
@@ -240,7 +398,7 @@ namespace MapExpansions.Editor
                         return false;
                     }
                     d.Template = item.Address;
-                    d.TemplateSide = Current == Tab.Main ? WorldSide.Main : WorldSide.Expansion;
+                    d.TemplateSide = tab == Tab.Main ? WorldSide.Main : WorldSide.Expansion;
                     src = frame = item.Object;
                     // A tilted object keeps its tilt only against a frame; At holds a turn about the vertical axis alone.
                     if (Vector3.Angle(src.up, Vector3.up) > 1f && src.parent != null)
@@ -255,42 +413,29 @@ namespace MapExpansions.Editor
                     }
                     break;
             }
-
-            var root = b.Root.transform;
-            float yaw = Mathf.Repeat((Quaternion.Inverse(root.rotation) * frame.rotation).eulerAngles.y, 360f);
-            var atRot = root.rotation * Quaternion.Euler(0f, yaw, 0f);
-            var move = Matrix4x4.TRS(frame.position, atRot, Vector3.one) * Matrix4x4.TRS(frame.position, frame.rotation, Vector3.one).inverse;
-            var bottom = BottomCentre(src, move) ?? frame.position;
-            var atPos = frame.position + (hit.point - bottom);
-            d.At = new LocalPoint(root.InverseTransformPoint(atPos), yaw);
-
-            var list = Layers.CopyList(b.Definition, Layers.ExpansionOwner);
-            if (list == null)
-            {
-                Core.Log.Error($"catalog place ({why}): '{b.Id}' has no list of its own copies");
-                return false;
-            }
-            d.Id = FreeId(list, Slug(item.Label));
-            Core.Log.Msg($"catalog place ({why}): {Current} '{item.Address}' as '{b.Id}/{d.Id}' at {atPos} (aimed at {hit.point} on '{hit.collider.name}'), yaw {yaw:0.#}");
-            return Edits.PlaceNew(b, d, $"{item.Label} gesetzt", why);
+            return true;
         }
 
         /// <summary>
         /// The bottom middle of the template's meshes once moved, or null when it has none. A statically batched
         /// renderer's mesh filter holds the whole combined batch, so its world bounds stand in for the mesh.
         /// </summary>
-        private static Vector3? BottomCentre(Transform src, Matrix4x4 move)
+        private static Vector3? BottomCentre(Transform src, Matrix4x4 move) =>
+            MovedBounds(src, move, out var b) ? new Vector3(b.center.x, b.min.y, b.center.z) : null;
+
+        /// <summary>World bounds of the template's meshes once moved; false when it has none.</summary>
+        private static bool MovedBounds(Transform src, Matrix4x4 move, out Bounds b)
         {
             bool any = false;
-            var b = new Bounds();
+            var box = new Bounds();
             void Add(Matrix4x4 m, Bounds mb)
             {
                 for (int i = 0; i < 8; i++)
                 {
                     var c = mb.center + Vector3.Scale(mb.extents, new Vector3((i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, (i & 4) == 0 ? -1 : 1));
                     var p = m.MultiplyPoint3x4(c);
-                    if (!any) { b = new Bounds(p, Vector3.zero); any = true; }
-                    else b.Encapsulate(p);
+                    if (!any) { box = new Bounds(p, Vector3.zero); any = true; }
+                    else box.Encapsulate(p);
                 }
             }
             int batched = 0;
@@ -306,7 +451,8 @@ namespace MapExpansions.Editor
                 else Add(move * f.transform.localToWorldMatrix, f.sharedMesh.bounds);
             }
             if (batched > 0) Core.Log.Msg($"catalog: '{src.name}' has {batched} statically batched renderers; their world bounds were used");
-            return any ? new Vector3(b.center.x, b.min.y, b.center.z) : null;
+            b = box;
+            return any;
         }
 
         private static string Slug(string name)

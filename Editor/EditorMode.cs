@@ -26,6 +26,9 @@ namespace MapExpansions.Editor
         /// <summary>Whether the camera drew the held item before the editor hid it.</summary>
         private static bool _viewmodelWasOn;
 
+        /// <summary>Whether the hotbar could equip before the editor took the digit keys for camera bookmarks.</summary>
+        private static bool _equipWasOn;
+
         /// <summary>Held in a field: deregistering compares delegates, and a second conversion is another object.</summary>
         private static GameInput.ExitDelegate _exit;
 
@@ -52,8 +55,11 @@ namespace MapExpansions.Editor
             else Open(why);
         }
 
-        /// <summary>Leaves the editor and puts the player on the ground below the camera, to walk the change.</summary>
-        internal static void Play(string why)
+        /// <summary>
+        /// Leaves the editor and puts the player on the ground below the camera, or on <paramref name="at"/>, to walk
+        /// the change.
+        /// </summary>
+        internal static void Play(string why, Vector3? at = null)
         {
             if (!IsOpen)
             {
@@ -61,12 +67,18 @@ namespace MapExpansions.Editor
                 return;
             }
             var pos = FlyCamera.Position;
+            var target = at ?? pos;
+            if (at == null)
+            {
+                if (Physics.Raycast(pos, Vector3.down, out var hit, 1000f, ~0, QueryTriggerInteraction.Ignore)) target = hit.point;
+                else Core.Log.Warning($"play ({why}): no ground below the camera at {pos}; the player stands at the camera");
+            }
+            // Tab brings back the perspective camera, not the top view.
+            FlyCamera.SetTop(false, Camera?.Camera, why);
+            pos = FlyCamera.Position;
             _resumePos = pos;
             _resumeYaw = FlyCamera.Yaw;
             _resumePitch = FlyCamera.Pitch;
-            var target = pos;
-            if (Physics.Raycast(pos, Vector3.down, out var hit, 500f, ~0, QueryTriggerInteraction.Ignore)) target = hit.point;
-            else Core.Log.Warning($"play ({why}): no ground below the camera at {pos}; the player stands at the camera");
             Close(why);
             if (!PlayerSingleton<PlayerMovement>.InstanceExists || PlayerSingleton<PlayerMovement>.Instance == null)
             {
@@ -139,6 +151,20 @@ namespace MapExpansions.Editor
                 PlayerSingleton<PlayerInventory>.Instance.SetViewmodelVisible(false);
             else Core.Log.Warning($"open ({why}): no player inventory found; the held item stays visible");
 
+            // The digit keys are camera bookmarks here; vanilla would also switch the hotbar slot with them.
+            _equipWasOn = false;
+            if (PlayerSingleton<PlayerInventory>.InstanceExists && PlayerSingleton<PlayerInventory>.Instance != null)
+            {
+                var inv = PlayerSingleton<PlayerInventory>.Instance;
+                if (inv.EquippingEnabled)
+                {
+                    inv.SetEquippingEnabled(false);
+                    _equipWasOn = true;
+                    Core.Log.Msg($"open ({why}): equipping off while the editor holds the digit keys");
+                }
+                else Core.Log.Msg($"open ({why}): equipping was already off; it stays off");
+            }
+
             RegisterExit();
             IsOpen = true;
             _openedFrame = Time.frameCount;
@@ -154,6 +180,9 @@ namespace MapExpansions.Editor
                 Core.Log.Msg($"close ({why}): the editor is not open");
                 return;
             }
+            FlyCamera.SetTop(false, Camera?.Camera, why);
+            Catalog.CancelPlace(why);
+            Selection.Hover(null);
             IsOpen = false;
             Gizmo.Release();
             Areas.Release();
@@ -161,6 +190,16 @@ namespace MapExpansions.Editor
             EndFrame();
             Panel.Unmount();
             DeregisterExit();
+            if (_equipWasOn)
+            {
+                if (PlayerSingleton<PlayerInventory>.InstanceExists && PlayerSingleton<PlayerInventory>.Instance != null)
+                {
+                    PlayerSingleton<PlayerInventory>.Instance.SetEquippingEnabled(true);
+                    Core.Log.Msg($"close ({why}): equipping on again, now {PlayerSingleton<PlayerInventory>.Instance.EquippingEnabled}");
+                }
+                else Core.Log.Warning($"close ({why}): no player inventory found; equipping stays off");
+            }
+            _equipWasOn = false;
 
             var cam = Camera;
             Camera = null;
@@ -185,6 +224,10 @@ namespace MapExpansions.Editor
             if (!IsOpen) return;
             IsOpen = false;
             Camera = null;
+            FlyCamera.ForgetTop();
+            Catalog.CancelPlace("the world unloaded");
+            Selection.Hover(null);
+            _equipWasOn = false;
             Gizmo.Release();
             Areas.Release();
             Areas.Deselect("the world unloaded");
@@ -213,7 +256,10 @@ namespace MapExpansions.Editor
                 {
                     if (action == null || action.Type != ExitType.Primary || !IsOpen) return;
                     action.Use();
-                    Close("escape");
+                    // Escape steps back one level: placing, then the key overlay, then the editor.
+                    if (Catalog.Placing) Catalog.CancelPlace("escape");
+                    else if (Panel.Help) Panel.ToggleHelp("escape");
+                    else Close("escape");
                 }
                 catch (Exception e)
                 {
@@ -255,13 +301,22 @@ namespace MapExpansions.Editor
 
             if (!typing && !camBusy && !Gizmo.Dragging && !Areas.Dragging && !Points.Dragging && Time.frameCount != _openedFrame && Keys()) return;
 
+            MapExpansions.World.MainCopies.Placed hovered = null;
             if (!camBusy)
             {
-                // The gizmos take the click first: a handle over another copy moves the selection, it does not change it.
-                bool gizmoTookMouse = Points.Tick(Camera.Camera, overPanel) || Areas.Tick(Camera.Camera, overPanel) || Gizmo.Tick(Camera.Camera, overPanel);
-                if (!gizmoTookMouse) Mouse(overPanel);
+                // Placing takes the click first, then the gizmos: a handle over another copy moves the selection, it
+                // does not change it.
+                bool tookMouse = Catalog.TickPlace(Camera.Camera, overPanel)
+                    || Points.Tick(Camera.Camera, overPanel) || Areas.Tick(Camera.Camera, overPanel) || Gizmo.Tick(Camera.Camera, overPanel);
+                if (!tookMouse)
+                {
+                    Mouse(overPanel);
+                    if (!overPanel && !_pressing) hovered = Selection.At(Camera.Camera, EditorInput.MousePosition, out _, out _);
+                }
             }
             else EndFrame();
+            Selection.Hover(hovered);
+            Panel.ShowReadout(Gizmo.Readout ?? Areas.Readout ?? Points.Readout, EditorInput.MousePosition);
             Selection.Tick();
             Panel.Tick();
         }
@@ -279,6 +334,22 @@ namespace MapExpansions.Editor
                 else if (EditorInput.KeyDown(KeyCode.Z)) Edits.Undo("ctrl+z");
                 else if (EditorInput.KeyDown(KeyCode.Y)) Edits.Redo("ctrl+y");
                 else if (EditorInput.KeyDown(KeyCode.D)) Edits.Duplicate(Selection.All, "ctrl+d");
+                else if (Digit() is int keep) Bookmarks.Store(keep, $"ctrl+{keep}");
+                return false;
+            }
+            if (Digit() is int slot)
+            {
+                Bookmarks.Jump(slot, slot.ToString());
+                return false;
+            }
+            if (EditorInput.KeyDown(KeyCode.T))
+            {
+                FlyCamera.SetTop(!FlyCamera.Top, Camera.Camera, "t");
+                return false;
+            }
+            if (EditorInput.KeyDown(KeyCode.F1))
+            {
+                Panel.ToggleHelp("f1");
                 return false;
             }
             if (EditorInput.KeyDown(KeyCode.W)) Gizmo.SetMode(GizmoMode.Move, "w");
@@ -298,6 +369,14 @@ namespace MapExpansions.Editor
                 return true;
             }
             return false;
+        }
+
+        /// <summary>The digit 1 to 9 pressed this frame, on the number row or the keypad, or null.</summary>
+        private static int? Digit()
+        {
+            for (int n = 1; n <= 9; n++)
+                if (EditorInput.KeyDown(KeyCode.Alpha0 + n) || EditorInput.KeyDown(KeyCode.Keypad0 + n)) return n;
+            return null;
         }
 
         internal static void FrameSelection(string why)

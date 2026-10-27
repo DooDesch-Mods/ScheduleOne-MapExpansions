@@ -270,3 +270,27 @@ body { height: 100%; font-family: game-ui; font-size: 13px; color: var(--text); 
 .status-log .text { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status-right { flex-direction: row; align-items: center; gap: 14px; font-size: 12px; color: var(--faint); }
 .status-right .on { color: var(--text); }
+
+/* Key sheet (F1) and the placing hint */
+
+.empty .more { color: var(--faint); font-size: 12px; }
+
+.help { position: fixed; background: rgba(5, 6, 10, 0.55); align-items: center; justify-content: center; pointer-events: auto; }
+.help .card { background: var(--dock); border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px 20px 20px; gap: 14px; }
+.help .head { gap: 8px; }
+.help .title { font-size: 15px; }
+.help .cols { flex-direction: row; gap: 32px; }
+.help .col { gap: 8px; width: 270px; }
+.help .group-name { color: var(--faint); font-size: 11px; }
+
+.placing {
+  position: fixed; flex-direction: row; align-items: center; gap: 10px; padding: 6px 6px 6px 12px;
+  background: var(--dock); border: 1px solid var(--accent); border-radius: 8px;
+}
+.placing .text { flex: 1; min-width: 0; gap: 2px; }
+.placing .name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.placing .how { color: var(--muted); font-size: 11px; }
+
+.marks { flex-direction: row; align-items: center; gap: 4px; }
+.mark { width: 18px; height: 18px; border-radius: 4px; background: var(--panel); color: var(--muted); font-size: 11px; align-items: center; justify-content: center; }
+.mark:hover { background: var(--elevated); color: var(--text); }

@@ -169,6 +169,22 @@ namespace MapExpansions.Editor
 
         internal static bool Dragging => _drag >= 0;
 
+        /// <summary>The running drag for the cursor readout: the new side length, or the move of the box.</summary>
+        internal static string Readout
+        {
+            get
+            {
+                if (_drag < 0) return null;
+                if (_drag < 6)
+                {
+                    int axis = _drag / 2;
+                    return "XYZ"[axis] + "  " + Panel.Num(_live.size[axis] * _dragScale, 2) + " m";
+                }
+                int a = _drag - 6;
+                return "XYZ"[a] + "  " + Panel.Num((_live.center[a] - _start.center[a]) * _dragScale, 2, true) + " m";
+            }
+        }
+
         internal static void Select(AreaRef a, string why)
         {
             if (a == null) return;
@@ -293,7 +309,7 @@ namespace MapExpansions.Editor
                 m = _m;
             }
             var centre = m.MultiplyPoint3x4(b.center);
-            float size = Mathf.Max(0.3f, Vector3.Distance(cam.transform.position, centre) * 0.12f);
+            float size = Mathf.Max(0.3f, FlyCamera.ViewDistance(cam, centre) * 0.12f);
             Draw(b, m, size);
 
             if (_drag >= 0)
@@ -449,7 +465,7 @@ namespace MapExpansions.Editor
             if (Current == null || cam == null) return "no box is selected";
             if (!Current.Get(out var b, out var m)) return $"{Current} has no box";
             var centre = m.MultiplyPoint3x4(b.center);
-            float size = Mathf.Max(0.3f, Vector3.Distance(cam.transform.position, centre) * 0.12f);
+            float size = Mathf.Max(0.3f, FlyCamera.ViewDistance(cam, centre) * 0.12f);
             string P(Vector3 w)
             {
                 var s = cam.WorldToScreenPoint(w);

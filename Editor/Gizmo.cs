@@ -63,6 +63,21 @@ namespace MapExpansions.Editor
 
         internal static bool Dragging => _drag >= 0;
 
+        /// <summary>The change of the running drag for the cursor readout, or null without a drag.</summary>
+        internal static string Readout
+        {
+            get
+            {
+                if (_drag < 0) return null;
+                switch (_dragMode)
+                {
+                    case GizmoMode.Rotate: return Panel.Num(Mathf.DeltaAngle(0f, _live.turn.eulerAngles.y), 0, true) + "°";
+                    case GizmoMode.Scale: return "× " + Panel.Num(_live.scale, 2);
+                    default: return "XYZ"[_drag] + "  " + Panel.Num(Vector3.Dot(_live.move, Axes[_drag]), 2, true) + " m";
+                }
+            }
+        }
+
         internal static void SetMode(GizmoMode mode, string why)
         {
             if (_drag >= 0) Cancel("the mode changed");
@@ -137,7 +152,7 @@ namespace MapExpansions.Editor
             _root.SetActive(true);
 
             var pivot = _drag >= 0 ? _dragPivot + _live.move : Selection.CurrentBounds.center;
-            float size = Mathf.Max(0.3f, Vector3.Distance(cam.transform.position, pivot) * 0.15f);
+            float size = Mathf.Max(0.3f, FlyCamera.ViewDistance(cam, pivot) * 0.15f);
             bool ring = (_drag >= 0 ? _dragMode : Mode) == GizmoMode.Rotate;
             for (int i = 0; i < 3; i++)
             {
@@ -382,7 +397,7 @@ namespace MapExpansions.Editor
         {
             if (Selection.Count == 0 || cam == null) return "nothing is selected";
             var pivot = Selection.CurrentBounds.center;
-            float size = Mathf.Max(0.3f, Vector3.Distance(cam.transform.position, pivot) * 0.15f);
+            float size = Mathf.Max(0.3f, FlyCamera.ViewDistance(cam, pivot) * 0.15f);
             string P(Vector3 w)
             {
                 var s = cam.WorldToScreenPoint(w);

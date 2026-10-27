@@ -104,6 +104,24 @@ namespace MapExpansions.Editor
                         Core.Log.Msg($"[dev] snap: grid {Snap.Grid}, turn {Snap.Turn}, edges {Snap.Edges}");
                         break;
                     case "key" when p.Length > 2: Key(p[2]); break;
+                    case "hover" when p.Length > 3:
+                    {
+                        // The cursor rests on a point for some frames without a button, as a hover.
+                        var at = Screen(p[2], p[3]);
+                        int frames = p.Length > 4 ? int.Parse(p[4], Ci) : 120;
+                        EditorInput.Queue(Enumerable.Repeat(new EditorInput.Step(at, false, null), frames));
+                        Core.Log.Msg($"[dev] hover: {at} for {frames} frames");
+                        break;
+                    }
+                    case "wheel" when p.Length > 4:
+                    {
+                        var at = Screen(p[3], p[4]);
+                        float turn = F(p[2]);
+                        EditorInput.Queue(new[] { new EditorInput.Step(at, false, null), new EditorInput.Step(at, false, null, KeyCode.None, turn), new EditorInput.Step(at, false, null) });
+                        Core.Log.Msg($"[dev] wheel: {turn} at {at}");
+                        break;
+                    }
+                    case "placing" when p.Length > 2: Catalog.BeginPlace(int.Parse(p[2], Ci), "console"); break;
                     case "click" when p.Length > 3:
                         Script(Screen(p[2], p[3]), Screen(p[2], p[3]), 0, p.Length > 4 ? p[4] : null);
                         break;
@@ -195,6 +213,8 @@ namespace MapExpansions.Editor
             "alt" => KeyCode.LeftAlt,
             "shift" => KeyCode.LeftShift,
             "del" => KeyCode.Delete,
+            // A bare digit is the number row, not the key code of that value.
+            _ when name.Length == 1 && char.IsDigit(name[0]) => KeyCode.Alpha0 + (name[0] - '0'),
             _ => Enum.TryParse(name, true, out KeyCode k) ? k : KeyCode.None,
         };
 
@@ -366,12 +386,13 @@ namespace MapExpansions.Editor
                     else Points.Select(r, "console");
                     break;
                 case "here": Points.Here("console"); break;
+                case "play": Points.PlayHere("console"); break;
                 case "add": Points.AddSub("console"); break;
                 case "remove": Points.RemoveSub("console"); break;
                 case "delete": Points.Delete("console"); break;
                 case "set" when p.Length > 4: Points.SetField(p[3], string.Join(" ", p.Skip(4)), "console"); break;
                 default:
-                    Core.Log.Warning($"[dev] point: '{string.Join(" ", p.Skip(2))}' is not list, markers, new <kind> [id], select <key>, here, add, remove, delete or set <field> <value>");
+                    Core.Log.Warning($"[dev] point: '{string.Join(" ", p.Skip(2))}' is not list, markers, new <kind> [id], select <key>, here, play, add, remove, delete or set <field> <value>");
                     break;
             }
         }

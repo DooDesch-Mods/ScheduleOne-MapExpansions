@@ -187,7 +187,8 @@ namespace MapExpansions.World
                 if (part.Instance == null) continue;
                 try
                 {
-                    if (InstanceFinder.IsServer && part.Instance.IsSpawned) InstanceFinder.ServerManager.Despawn(part.Instance.gameObject, null);
+                    // The interop wrapper reads the despawn type as an object; null throws, an empty Nullable means "default".
+                    if (InstanceFinder.IsServer && part.Instance.IsSpawned) InstanceFinder.ServerManager.Despawn(part.Instance.gameObject, new Il2CppSystem.Nullable<DespawnType>());
                     else Object.Destroy(part.Instance.gameObject);
                     parts++;
                 }

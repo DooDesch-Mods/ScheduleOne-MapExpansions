@@ -16,22 +16,50 @@ namespace MapExpansions.Editor
             public string What;
             public abstract bool Do();
             public abstract void Undo();
+
+            /// <summary>What the step marked as changed while it ran: whole expansions and single copies.</summary>
+            public readonly HashSet<string> TouchedExpansions = new(StringComparer.Ordinal);
+            public readonly HashSet<(string expansion, string owner, string id)> TouchedCopies = new();
         }
 
         private static readonly List<Edit> Done = new();
         private static readonly List<Edit> Undone = new();
 
+        /// <summary>The step that ran while a change is marked; the marks go into it so undo can take them back.</summary>
+        internal static Edit Recording { get; private set; }
+
+        // Where the history stood at the last save: the last done step then, or null for "before the first step".
+        // A new step after undoing past that point drops the saved state from the history for good.
+        private static Edit _saved;
+        private static bool _savedReachable = true;
+
         internal static int UndoCount => Done.Count;
         internal static int RedoCount => Undone.Count;
 
+        /// <summary>The step that Ctrl+Z would take back, or null.</summary>
+        internal static string NextUndo => Done.Count > 0 ? Done[^1].What : null;
+        internal static string NextRedo => Undone.Count > 0 ? Undone[^1].What : null;
+
+        private static bool Record(Edit e, Func<bool> run)
+        {
+            Recording = e;
+            try { return run(); }
+            finally { Recording = null; }
+        }
+
         internal static bool Run(Edit e, string why)
         {
-            if (!e.Do())
+            if (!Record(e, e.Do))
             {
                 Core.Log.Warning($"edit ({why}): {e.What} changed nothing; it is not in the history");
                 return false;
             }
             Done.Add(e);
+            if (Undone.Contains(_saved))
+            {
+                _savedReachable = false;
+                Core.Log.Msg($"edit ({why}): the saved state was undone and is now left behind; every change counts as unsaved");
+            }
             Undone.Clear();
             Core.Log.Msg($"edit ({why}): {e.What}; {Done.Count} steps to undo");
             Panel.Note(e.What);
@@ -48,8 +76,9 @@ namespace MapExpansions.Editor
             }
             var e = Done[^1];
             Done.RemoveAt(Done.Count - 1);
-            e.Undo();
+            Record(e, () => { e.Undo(); return true; });
             Undone.Add(e);
+            Saving.Recount(Unsaved(), $"undo ({why})");
             Core.Log.Msg($"undo ({why}): {e.What}; {Done.Count} steps left to undo, {Undone.Count} to redo");
             Panel.Note("Rückgängig: " + e.What);
         }
@@ -64,10 +93,37 @@ namespace MapExpansions.Editor
             }
             var e = Undone[^1];
             Undone.RemoveAt(Undone.Count - 1);
-            if (!e.Do()) Core.Log.Warning($"redo ({why}): {e.What} changed nothing");
+            if (!Record(e, e.Do))
+            {
+                // Nothing changed, so the step is dropped instead of being listed as done.
+                if (ReferenceEquals(e, _saved)) _savedReachable = false;
+                Core.Log.Warning($"redo ({why}): {e.What} changed nothing; the step is dropped from the history");
+                Panel.Note("Wiederholen ging nicht: " + e.What);
+                return;
+            }
             Done.Add(e);
+            Saving.Recount(Unsaved(), $"redo ({why})");
             Core.Log.Msg($"redo ({why}): {e.What}; {Done.Count} steps to undo, {Undone.Count} to redo");
             Panel.Note("Wiederhergestellt: " + e.What);
+        }
+
+        /// <summary>The steps between the current state and the saved one, or null when the saved state is out of reach.</summary>
+        private static List<Edit> Unsaved()
+        {
+            if (!_savedReachable) return null;
+            if (_saved == null) return new List<Edit>(Done);
+            int i = Done.IndexOf(_saved);
+            if (i >= 0) return Done.GetRange(i + 1, Done.Count - i - 1);
+            int j = Undone.IndexOf(_saved);
+            if (j >= 0) return Undone.GetRange(j, Undone.Count - j);
+            return null;
+        }
+
+        /// <summary>Everything is written: the current point of the history is the saved state.</summary>
+        internal static void MarkSaved()
+        {
+            _saved = Done.Count > 0 ? Done[^1] : null;
+            _savedReachable = true;
         }
 
         internal static void Forget(string why)
@@ -75,6 +131,8 @@ namespace MapExpansions.Editor
             if (Done.Count + Undone.Count > 0) Core.Log.Msg($"history ({why}): {Done.Count} steps to undo and {Undone.Count} to redo are dropped");
             Done.Clear();
             Undone.Clear();
+            _saved = null;
+            _savedReachable = true;
         }
 
         // ---- copies by key

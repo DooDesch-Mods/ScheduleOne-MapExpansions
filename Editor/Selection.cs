@@ -14,6 +14,21 @@ namespace MapExpansions.Editor
     {
         private static readonly List<string> Keys = new();
         private static readonly List<LineRenderer> Lines = new();
+        private static LineRenderer _hoverLine;
+        private static readonly Color Picked = new(1f, 0.75f, 0.1f);
+        private static readonly Color Hovered = new(0.55f, 0.8f, 1f);
+
+        /// <summary>Outlines the copy under the cursor thinly, or hides the outline for null or a selected copy.</summary>
+        internal static void Hover(MainCopies.Placed p)
+        {
+            if (p?.Built?.Handle == null || Keys.Contains(Copies.Key(p)))
+            {
+                if (_hoverLine != null && _hoverLine.gameObject.activeSelf) _hoverLine.gameObject.SetActive(false);
+                return;
+            }
+            if (_hoverLine == null) _hoverLine = NewLine("MapExpansionsEditor_Hover", Hovered);
+            DrawBox(_hoverLine, Copies.Bounds(p), 0.0012f);
+        }
 
         /// <summary>The selected copies that stand in the world, in selection order.</summary>
         internal static IReadOnlyList<MainCopies.Placed> All =>
@@ -29,17 +44,13 @@ namespace MapExpansions.Editor
 
         internal static bool Contains(string key) => Keys.Contains(key);
 
-        internal static void Pick(Camera cam, Vector3 screen, bool add, string why)
+        /// <summary>The copy under a screen point: the first collider the ray hits, else the nearest renderer bounds.</summary>
+        internal static MainCopies.Placed At(Camera cam, Vector3 screen, out float bestDist, out string how)
         {
-            if (cam == null)
-            {
-                Core.Log.Warning($"pick ({why}): no camera");
-                return;
-            }
             var ray = cam.ScreenPointToRay(screen);
             MainCopies.Placed best = null;
-            float bestDist = float.MaxValue;
-            string how = "";
+            bestDist = float.MaxValue;
+            how = "";
 
             if (Physics.Raycast(ray, out var hit, 2000f, ~0, QueryTriggerInteraction.Ignore))
             {
@@ -56,12 +67,26 @@ namespace MapExpansions.Editor
             foreach (var p in Copies.All())
             {
                 if (p == best) continue;
-                if (!Copies.Bounds(p).IntersectRay(ray, out float d) || d >= bestDist) continue;
+                // A box around the camera (a room the camera stands in) would win every test at distance zero; such
+                // a copy is picked by its collider only.
+                var box = Copies.Bounds(p);
+                if (box.Contains(ray.origin)) continue;
+                if (!box.IntersectRay(ray, out float d) || d >= bestDist) continue;
                 best = p;
                 bestDist = d;
                 how = "renderer bounds";
             }
+            return best;
+        }
 
+        internal static void Pick(Camera cam, Vector3 screen, bool add, string why)
+        {
+            if (cam == null)
+            {
+                Core.Log.Warning($"pick ({why}): no camera");
+                return;
+            }
+            var best = At(cam, screen, out float bestDist, out string how);
             if (best == null)
             {
                 if (add)
@@ -182,20 +207,28 @@ namespace MapExpansions.Editor
 
         private static void DrawOutline(int i, Bounds b)
         {
-            while (Lines.Count <= i)
-            {
-                var go = new GameObject("MapExpansionsEditor_Outline" + Lines.Count);
-                Object.DontDestroyOnLoad(go);
-                var line = go.AddComponent<LineRenderer>();
-                line.useWorldSpace = true;
-                line.loop = false;
-                line.material = Gizmo.Material(new Color(1f, 0.75f, 0.1f));
-                line.startColor = line.endColor = new Color(1f, 0.75f, 0.1f);
-                line.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                line.receiveShadows = false;
-                Lines.Add(line);
-            }
-            var l = Lines[i];
+            while (Lines.Count <= i) Lines.Add(NewLine("MapExpansionsEditor_Outline" + Lines.Count, Picked));
+            DrawBox(Lines[i], b, 0.002f);
+        }
+
+        /// <summary>A world-space line for a box outline, kept across scene loads.</summary>
+        internal static LineRenderer NewLine(string name, Color color)
+        {
+            var go = new GameObject(name);
+            Object.DontDestroyOnLoad(go);
+            var line = go.AddComponent<LineRenderer>();
+            line.useWorldSpace = true;
+            line.loop = false;
+            line.material = Gizmo.Material(color);
+            line.startColor = line.endColor = color;
+            line.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            line.receiveShadows = false;
+            return line;
+        }
+
+        /// <summary>Draws the twelve edges of a box; the width grows with the distance to the camera.</summary>
+        internal static void DrawBox(LineRenderer l, Bounds b, float widthPerMetre)
+        {
             l.gameObject.SetActive(true);
             var c = b.center;
             var e = b.extents;
@@ -209,8 +242,8 @@ namespace MapExpansions.Editor
             };
             l.positionCount = pts.Length;
             for (int k = 0; k < pts.Length; k++) l.SetPosition(k, pts[k]);
-            float dist = EditorMode.Camera != null ? Vector3.Distance(EditorMode.Camera.transform.position, c) : 10f;
-            l.startWidth = l.endWidth = Mathf.Max(0.01f, dist * 0.002f);
+            float dist = FlyCamera.ViewDistance(EditorMode.Camera?.Camera, c);
+            l.startWidth = l.endWidth = Mathf.Max(0.01f, dist * widthPerMetre);
         }
     }
 }

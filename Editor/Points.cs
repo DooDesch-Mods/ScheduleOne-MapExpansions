@@ -91,6 +91,30 @@ namespace MapExpansions.Editor
 
         internal static bool Dragging => _dragging;
 
+        private static Vector3 _dragFrom;
+
+        /// <summary>How far the dragged point has gone, for the cursor readout; null without a drag.</summary>
+        internal static string Readout => _dragging ? Panel.Num(Vector3.Distance(_dragFrom, _dragWorld), 2) + " m" : null;
+
+        /// <summary>Leaves the editor and puts the player on the selected point, to walk it.</summary>
+        internal static void PlayHere(string why)
+        {
+            var r = Current;
+            if (r == null)
+            {
+                Core.Log.Msg($"point play ({why}): no point selected");
+                Panel.Note("Kein Punkt gewählt.");
+                return;
+            }
+            if (!WorldOf(r, out var at, out _))
+            {
+                Core.Log.Warning($"point play ({why}): {r} is not in a built expansion");
+                Panel.Note("Der Punkt liegt in keiner gebauten Erweiterung.");
+                return;
+            }
+            EditorMode.Play(why, at);
+        }
+
         // ---- reading points
 
         private static string SubLabel(string kind, int sub) => kind switch
@@ -287,7 +311,7 @@ namespace MapExpansions.Editor
                     m.World = world[i];
                     m.Root.SetActive(true);
                     m.Root.transform.SetPositionAndRotation(world[i], Quaternion.Euler(0f, yaw, 0f));
-                    float scale = Mathf.Clamp(Vector3.Distance(cam.transform.position, world[i]) * 0.05f, 1f, 6f);
+                    float scale = Mathf.Clamp(FlyCamera.ViewDistance(cam, world[i]) * 0.05f, 1f, 6f);
                     m.Root.transform.localScale = Vector3.one * scale;
                     bool hot = Current?.Key == r.Key || _hover == m;
                     bool entry = Current?.EntryKey == r.EntryKey;
@@ -393,6 +417,7 @@ namespace MapExpansions.Editor
             }
             _dragBefore = Layers.PointEntry(b.Definition, Current.Kind, Current.Id);
             _dragging = true;
+            _dragFrom = _dragWorld;
             Core.Log.Msg($"point: drag of {Current} from {_dragWorld}");
         }
 
@@ -670,7 +695,20 @@ namespace MapExpansions.Editor
             int at = 0;
             return Change(r, e =>
             {
-                if (e[name] is not JsonArray a || a.Count == 0) return false;
+                // A lot may lose its last spot; the next one then starts beside the entry.
+                if (r.Kind == Layers.LotsKind && (e[name] is not JsonArray s || s.Count == 0) && e["entry"] is JsonObject entry)
+                {
+                    var first = JsonNode.Parse(entry.ToJsonString());
+                    if (first["pos"] is JsonArray fp) fp[0] = fp[0].GetValue<float>() + 3f;
+                    e[name] = new JsonArray(first);
+                    at = 1;
+                    return true;
+                }
+                if (e[name] is not JsonArray a || a.Count == 0)
+                {
+                    Core.Log.Warning($"point ({why}): {r.EntryKey} has no {name} to copy from; nothing added");
+                    return false;
+                }
                 int i = r.Kind == Layers.LotsKind ? Math.Max(0, r.Sub - 1) : Mathf.Clamp(r.Sub, 0, a.Count - 1);
                 var copy = JsonNode.Parse(a[i].ToJsonString());
                 if (r.Kind == Layers.RegionsKind)
@@ -758,6 +796,8 @@ namespace MapExpansions.Editor
         {
             var r = Current;
             value = (value ?? "").Trim();
+            // Numbers come as typed; a German decimal comma reads like the point the parser expects.
+            if (field is "yaw" or "standIn" or "counterReach") value = value.Replace(',', '.');
             string[] allowed = r?.Kind switch
             {
                 Layers.DealsKind => new[] { "name", "description", "region", "yaw" },

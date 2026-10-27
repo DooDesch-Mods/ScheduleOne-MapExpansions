@@ -77,7 +77,9 @@ function btn(parent, o) {
   if (o.val) b.appendChild(el('div', 'val', o.val));
   if (o.badge) b.appendChild(el('div', 'badge', o.badge));
   if (o.tip) tip(b, o.tip, o.key);
-  b.addEventListener('click', o.click);
+  // A greyed-out button only explains itself; the tooltip names what it is waiting for.
+  const off = (' ' + (o.cls || '') + ' ').indexOf(' off ') >= 0;
+  b.addEventListener('click', off ? () => {} : o.click);
   parent.appendChild(b);
   return b;
 }
@@ -95,29 +97,50 @@ function renderToolbar(s) {
     badge: s.dirty > 0 ? s.dirty : '', tip: s.dirty > 0 ? s.dirty + ' Änderungen speichern' : 'Alles gespeichert',
     key: 'Strg+S', click: () => call('editor.save'),
   });
-  btn(file, { icon: 'undo', cls: s.undo > 0 ? '' : 'off', tip: 'Rückgängig', key: 'Strg+Z', click: () => call('editor.undo') });
-  btn(file, { icon: 'redo', cls: s.redo > 0 ? '' : 'off', tip: 'Wiederholen', key: 'Strg+Y', click: () => call('editor.redo') });
+  btn(file, {
+    icon: 'undo', cls: s.undo > 0 ? '' : 'off', key: 'Strg+Z', click: () => call('editor.undo'),
+    tip: s.nextUndo ? 'Rückgängig: ' + s.nextUndo : 'Nichts rückgängig zu machen',
+  });
+  btn(file, {
+    icon: 'redo', cls: s.redo > 0 ? '' : 'off', key: 'Strg+Y', click: () => call('editor.redo'),
+    tip: s.nextRedo ? 'Wiederholen: ' + s.nextRedo : 'Nichts zu wiederholen',
+  });
 
   const mode = fill('mode-tools');
   for (const [m, ic, name, key] of [['Move', 'move', 'Verschieben', 'W'], ['Rotate', 'rotate', 'Drehen', 'E'], ['Scale', 'scale', 'Skalieren', 'R']])
     btn(mode, { icon: ic, cls: s.mode === m ? 'on' : '', tip: name, key, click: () => call('editor.mode', m) });
 
   const snap = fill('snap-tools');
-  btn(snap, { icon: 'grid', val: '0,5 m', cls: s.grid ? 'on' : '', tip: 'Am Raster einrasten', click: () => call('editor.snap', 'grid') });
-  btn(snap, { icon: 'turn', val: '15°', cls: s.turn ? 'on' : '', tip: 'In 15°-Schritten drehen', click: () => call('editor.snap', 'turn') });
+  const step = s.gridStep || 0.5;
+  btn(snap, { icon: 'grid', val: num(step, 1) + ' m', cls: s.grid ? 'on' : '', tip: 'In ' + num(step, 1) + '-m-Schritten bewegen', click: () => call('editor.snap', 'grid') });
+  const turn = s.turnStep || 15;
+  btn(snap, { icon: 'turn', val: num(turn, 0) + '°', cls: s.turn ? 'on' : '', tip: 'In ' + num(turn, 0) + '°-Schritten drehen', click: () => call('editor.snap', 'turn') });
   btn(snap, { icon: 'edges', cls: s.edges ? 'on' : '', tip: 'An Kanten anderer Objekte einrasten', click: () => call('editor.snap', 'edges') });
 
   const add = fill('add-tools');
   btn(add, { icon: 'rule', label: 'Entfernen', tip: 'Regel, die Objekte im Bereich entfernt', click: () => call('editor.rule.new', 'Remove') });
-  btn(add, { icon: 'block', label: 'Blocker', tip: 'Unsichtbare Wand vor der Fläche im Blick', click: () => call('editor.box.new', 'Block') });
-  btn(add, { icon: 'panel', label: 'Panel', tip: 'Sichtbare Platte vor der Fläche im Blick', click: () => call('editor.box.new', 'Panel') });
-  btn(add, { icon: 'opening', label: 'Öffnung', tip: 'Durchgang ins ausgehöhlte Objekt im Blick', click: () => call('editor.opening.new') });
+  const copy = !!s.selected;
+  const hollow = !!(s.area && s.area.effect === 'Hollow');
+  btn(add, {
+    icon: 'block', label: 'Blocker', cls: copy ? '' : 'off', click: () => call('editor.box.new', 'Block'),
+    tip: copy ? 'Unsichtbare Wand vor der Fläche im Blick' : 'Braucht ein gewähltes Objekt',
+  });
+  btn(add, {
+    icon: 'panel', label: 'Panel', cls: copy ? '' : 'off', click: () => call('editor.box.new', 'Panel'),
+    tip: copy ? 'Sichtbare Platte vor der Fläche im Blick' : 'Braucht ein gewähltes Objekt',
+  });
+  btn(add, {
+    icon: 'opening', label: 'Öffnung', cls: hollow ? '' : 'off', click: () => call('editor.opening.new'),
+    tip: hollow ? 'Durchgang ins ausgehöhlte Objekt im Blick' : 'Braucht eine gewählte Aushöhlen-Regel',
+  });
   btn(add, {
     icon: 'apply', label: 'Anwenden', badge: s.pending > 0 ? s.pending : '', cls: s.pending > 0 ? 'primary' : 'off',
     tip: s.pending > 0 ? s.pending + ' Regeln neu bauen' : 'Keine Regel wartet', click: () => call('editor.apply'),
   });
 
   const end = fill('end-tools');
+  btn(end, { icon: 'top', cls: s.top ? 'on' : '', tip: 'Draufsicht', key: 'T', click: () => call('editor.top') });
+  btn(end, { icon: 'help', cls: s.help ? 'on' : '', tip: 'Alle Tasten', key: 'F1', click: () => call('editor.help') });
   btn(end, { icon: 'play', label: 'Spielen', tip: 'Ab der Kamera spielen', key: 'Tab', click: () => s1.call('editor.play', '') });
   btn(end, { icon: 'close', tip: 'Editor schließen', key: 'F4', click: () => s1.call('editor.close', '') });
 }
@@ -237,7 +260,8 @@ function renderTree(s) {
   }
 
   const ruleOrder = new Map((s.rules || []).map((r, i) => [r, i]));
-  const rules = (s.rules || []).filter((r) => matches(r.id)).sort((a, b) =>
+  const ruleText = (r) => [r.id, r.name, r.parent, (effects[r.effect] || ['', r.effect])[1]].join(' ');
+  const rules = (s.rules || []).filter((r) => matches(ruleText(r))).sort((a, b) =>
     cmp(a.expansion, b.expansion) || cmp(a.side, b.side) || ruleOrder.get(a) - ruleOrder.get(b));
   if (groupHead(tree, 'rules', 'Regeln', rules.length)) {
     let group = null;
@@ -361,12 +385,14 @@ function numField(parent, axis, axisCls, value, digits, unit, onSet) {
     return;
   }
   const input = el('input', '');
-  input.value = num(value, digits);
-  watchFocus(input);
-  input.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
-    const raw = String(e.value !== undefined ? e.value : input.value).replace(',', '.').trim();
-    if (raw === '' || isNaN(Number(raw))) {
+  const shown = num(value, digits);
+  input.value = shown;
+  // Enter or leaving the field takes the typed value, as in Unity's inspector; an unreadable one stays red.
+  let draft = null;
+  const commit = (text) => {
+    const raw = String(text).replace(',', '.').trim();
+    draft = null;
+    if (raw === '' || !isFinite(Number(raw))) {
       console.warn('editor: "' + raw + '" is no number; ' + axis + ' stays');
       n.className = 'num bad';
       return;
@@ -374,7 +400,15 @@ function numField(parent, axis, axisCls, value, digits, unit, onSet) {
     n.className = 'num';
     ui.editing = false;
     onSet(Number(raw));
+  };
+  input.addEventListener('input', (e) => { draft = String(e.value !== undefined ? e.value : input.value); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') commit(e.value !== undefined ? e.value : input.value);
   });
+  input.addEventListener('blur', () => {
+    if (draft !== null && draft.trim() !== shown) commit(draft);
+  });
+  watchFocus(input);
   n.appendChild(input);
   if (unit) n.appendChild(el('div', 'unit', unit));
   parent.appendChild(n);
@@ -384,13 +418,22 @@ function textField(parent, label, value, onSet) {
   const r = el('div', 'kv');
   r.appendChild(el('div', 'k', label));
   const input = el('input', 'field');
-  input.value = value === undefined || value === null ? '' : String(value);
-  watchFocus(input);
-  input.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
+  const shown = value === undefined || value === null ? '' : String(value);
+  input.value = shown;
+  let draft = null;
+  const commit = (text) => {
+    draft = null;
     ui.editing = false;
-    onSet(e.value !== undefined ? e.value : input.value);
+    onSet(text);
+  };
+  input.addEventListener('input', (e) => { draft = String(e.value !== undefined ? e.value : input.value); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') commit(e.value !== undefined ? e.value : input.value);
   });
+  input.addEventListener('blur', () => {
+    if (draft !== null && draft !== shown) commit(draft);
+  });
+  watchFocus(input);
   r.appendChild(input);
   parent.appendChild(r);
 }
@@ -505,7 +548,8 @@ function renderArea(box, a) {
   } else if (a.boxKind) {
     head(box, a.boxKind === 'Block' ? 'block' : 'panel', a.label, (a.boxKind === 'Block' ? 'Blocker' : 'Panel') + ' an ' + a.copy);
   } else {
-    head(box, 'opening', a.label, 'Öffnung');
+    head(box, 'opening', a.label, (a.kind === 'Window' ? 'Fenster' : 'Öffnung') + (a.ruleName ? ' in ' + a.ruleName : ''));
+    if (a.rule) actions(box, [['rule', 'Zur Regel', '', () => call('editor.area', a.rule)]]);
   }
   if (a.min) {
     const b = section(box, 'BEREICH');
@@ -588,7 +632,11 @@ function renderPoint(box, p) {
         () => call('editor.point.set', 'unlocked=' + (f.unlocked ? 'nein' : 'ja')), null);
   }
 
-  const list = [['here', 'Zur Blickmitte', '', () => call('editor.point.here')]];
+  const list = [
+    ['here', 'Zur Blickmitte', '', () => call('editor.point.here')],
+    ['frame', 'In den Blick', 'F', () => call('editor.point.frame')],
+    ['walk', 'Hier spielen', '', () => s1.call('editor.point.play', '')],
+  ];
   if (p.kind === 'regions' || p.kind === 'parkingLots' || p.kind === 'buildings') {
     list.push(['plus', subLabel(p.kind, 1).split(' ')[0], '', () => call('editor.point.add')]);
     list.push(['minus', subLabel(p.kind, p.sub) + ' weg', '', () => call('editor.point.remove')]);
@@ -597,32 +645,114 @@ function renderPoint(box, p) {
   actions(box, list);
 }
 
-const keys = [
-  ['Klick', 'Objekt wählen'],
-  ['Strg+Klick', 'zur Auswahl hinzufügen'],
-  ['Ziehen', 'Rahmen um mehrere'],
-  ['Rechte Maus', 'umsehen, mit WASD fliegen'],
-  ['Q / E', 'ab und auf'],
-  ['Shift', 'schneller fliegen'],
-  ['W E R', 'verschieben, drehen, skalieren'],
-  ['F', 'Auswahl in den Blick'],
-  ['Alt+Ziehen', 'um die Auswahl kreisen'],
-  ['Strg+S', 'speichern'],
-  ['Tab', 'spielen und zurück'],
+// Every editor key. The first group also stands in the empty inspector; F1 shows them all.
+const keyGroups = [
+  ['Auswahl', [
+    ['Klick', 'Objekt wählen'],
+    ['Strg+Klick', 'zur Auswahl hinzufügen'],
+    ['Ziehen', 'Rahmen um mehrere'],
+    ['W E R', 'verschieben, drehen, skalieren'],
+    ['F', 'Auswahl in den Blick'],
+    ['Strg+S', 'speichern'],
+    ['Tab', 'spielen und zurück'],
+  ]],
+  ['Kamera', [
+    ['Rechte Maus', 'umsehen, mit WASD fliegen'],
+    ['Q / E', 'ab und auf, beim Umsehen'],
+    ['Shift', 'schneller fliegen'],
+    ['Mausrad', 'vor und zurück'],
+    ['Alt+Ziehen', 'um die Auswahl kreisen'],
+    ['T', 'Draufsicht an und aus'],
+    ['Strg+1 bis 9', 'Kamera merken'],
+    ['1 bis 9', 'zur gemerkten Kamera'],
+  ]],
+  ['Bearbeiten', [
+    ['Strg+Z', 'rückgängig'],
+    ['Strg+Y', 'wiederholen'],
+    ['Strg+D', 'verdoppeln'],
+    ['Entf', 'löschen'],
+    ['Ende', 'auf den Boden setzen'],
+    ['Mausrad', 'beim Setzen drehen'],
+    ['Shift+Klick', 'beim Setzen weitersetzen'],
+    ['Esc', 'zurück, zuletzt Editor schließen'],
+    ['F1', 'alle Tasten'],
+  ]],
 ];
 
-function renderEmpty(box) {
-  const e = el('div', 'empty');
-  e.appendChild(el('div', 'lead', 'Nichts ausgewählt.'));
+function keyList(rows) {
   const list = el('div', 'keys');
-  for (const [k, what] of keys) {
+  for (const [k, what] of rows) {
     const r = el('div', 'keyrow');
     r.appendChild(el('div', 'kbd', k));
     r.appendChild(el('div', 'what', what));
     list.appendChild(r);
   }
-  e.appendChild(list);
+  return list;
+}
+
+function renderEmpty(box) {
+  const e = el('div', 'empty');
+  e.appendChild(el('div', 'lead', 'Nichts ausgewählt.'));
+  e.appendChild(keyList(keyGroups[0][1]));
+  e.appendChild(el('div', 'more', 'F1 zeigt alle Tasten.'));
   box.appendChild(e);
+}
+
+/* Overlays over the viewport: the key sheet, and the hint while placing from the catalog. */
+
+let overlayNodes = [];
+function pageRect() {
+  const page = document.getElementById('editor');
+  return page.rect ? page.rect() : page.getBoundingClientRect();
+}
+
+function renderOverlays(s) {
+  for (const n of overlayNodes) n.remove();
+  overlayNodes = [];
+  const pr = pageRect();
+  if (!pr || !pr.width) return;
+  if (s.help) {
+    const shade = el('div', 'help');
+    shade.style.left = '0px';
+    shade.style.top = '0px';
+    shade.style.width = Math.round(pr.width) + 'px';
+    shade.style.height = Math.round(pr.height) + 'px';
+    // A click anywhere closes the sheet; it also keeps the click from reaching the world.
+    shade.addEventListener('click', () => call('editor.help'));
+    const card = el('div', 'card');
+    const top = el('div', 'row head');
+    top.appendChild(icon('keys'));
+    top.appendChild(el('div', 'title', 'Tasten'));
+    top.appendChild(el('div', 'spacer'));
+    top.appendChild(el('div', 'kbd', 'Esc'));
+    card.appendChild(top);
+    const cols = el('div', 'cols');
+    for (const [name, rows] of keyGroups) {
+      const col = el('div', 'col');
+      col.appendChild(el('div', 'group-name', name.toUpperCase()));
+      col.appendChild(keyList(rows));
+      cols.appendChild(col);
+    }
+    card.appendChild(cols);
+    shade.appendChild(card);
+    document.body.appendChild(shade);
+    overlayNodes.push(shade);
+  }
+  if (s.placing) {
+    const w = 420;
+    const hint = el('div', 'placing');
+    hint.style.left = Math.round(pr.width / 2 - w / 2) + 'px';
+    hint.style.top = '58px';
+    hint.style.width = w + 'px';
+    hint.appendChild(icon('prefab'));
+    const text = el('div', 'text');
+    text.appendChild(el('div', 'name', s.placing + (s.placeYaw ? ', ' + num(s.placeYaw, 0) + '°' : '')));
+    text.appendChild(el('div', 'how', 'Klick setzt, Mausrad dreht, Shift+Klick setzt weiter'));
+    hint.appendChild(text);
+    btn(hint, { icon: 'close', tip: 'Setzen abbrechen', key: 'Esc', click: () => call('editor.place.cancel') });
+    document.body.appendChild(hint);
+    overlayNodes.push(hint);
+  }
 }
 
 function renderInspector(s) {
@@ -649,7 +779,19 @@ function renderLog(s) {
   const right = fill('status-right');
   const n = (s.keys || []).length;
   if (n > 0) right.appendChild(el('div', 'on', n === 1 ? '1 Objekt gewählt' : n + ' Objekte gewählt'));
-  right.appendChild(el('div', '', 'Kamera ' + num(s.speed || 0, 1) + ' m/s'));
+  const marks = s.bookmarks || [];
+  if (marks.length) {
+    const row = el('div', 'marks');
+    row.appendChild(icon('bookmark', 'small muted'));
+    for (const m of marks) {
+      const chip = el('div', 'mark', m);
+      tip(chip, 'Zur gemerkten Kamera ' + m, String(m));
+      chip.addEventListener('click', () => call('editor.bookmark', m));
+      row.appendChild(chip);
+    }
+    right.appendChild(row);
+  }
+  right.appendChild(el('div', s.top ? 'on' : '', s.top ? 'Draufsicht' : 'Kamera ' + num(s.speed || 0, 1) + ' m/s'));
 }
 
 function render(s) {
@@ -662,6 +804,7 @@ function render(s) {
   renderCatalog(s);
   if (!ui.editing) renderInspector(s);
   renderLog(s);
+  renderOverlays(s);
 }
 
 /* A field being typed in keeps its inspector: a re-render would throw the typed text away. */

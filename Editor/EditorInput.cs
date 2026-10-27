@@ -14,13 +14,15 @@ namespace MapExpansions.Editor
             public readonly bool Left;
             public readonly KeyCode[] Held;
             public readonly KeyCode Down;
+            public readonly float Wheel;
 
-            public Step(Vector2? mouse, bool left, KeyCode[] held, KeyCode down = KeyCode.None)
+            public Step(Vector2? mouse, bool left, KeyCode[] held, KeyCode down = KeyCode.None, float wheel = 0f)
             {
                 Mouse = mouse;
                 Left = left;
                 Held = held ?? System.Array.Empty<KeyCode>();
                 Down = down;
+                Wheel = wheel;
             }
         }
 
@@ -53,6 +55,9 @@ namespace MapExpansions.Editor
             Input.GetKey(k) || (_now != null && (System.Array.IndexOf(_now.Value.Held, k) >= 0 || _now.Value.Down == k));
 
         internal static Vector2 MousePosition => _now?.Mouse ?? (Vector2)Input.mousePosition;
+
+        /// <summary>Wheel turn this frame: Unity's, or the scripted step's.</summary>
+        internal static float Wheel => _now != null && _now.Value.Wheel != 0f ? _now.Value.Wheel : Input.mouseScrollDelta.y;
 
         internal static bool Left(int button) => button == 0 && _now != null ? _now.Value.Left : Input.GetMouseButton(button);
 
