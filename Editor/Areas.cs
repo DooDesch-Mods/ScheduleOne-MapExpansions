@@ -173,6 +173,7 @@ namespace MapExpansions.Editor
         {
             if (a == null) return;
             Selection.ClearQuietly();
+            Points.Deselect(why);
             Current = a;
             if (!a.Get(out var local, out var m))
             {

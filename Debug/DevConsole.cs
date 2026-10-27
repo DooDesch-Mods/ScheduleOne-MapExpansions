@@ -153,6 +153,8 @@ namespace MapExpansions.Debug
                     case "mxagents": Agents(); break;
                     case "mxarrest": Arrest(); break;
                     case "mxshop": World.Shops.Choose(parts.Length > 1 ? parts[1] : ""); break;
+                    case "mxdeal" when parts.Length > 2: Deal(parts[1], string.Join(" ", parts, 2, parts.Length - 2)); break;
+                    case "mxdealcheck" when parts.Length > 1: DealCheck(parts[1]); break;
                     case "mxbuy" when parts.Length > 1: World.RealtorListings.Buy(parts[1]); break;
                     case "mxdoors" when parts.Length > 3: Doors(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 8f, parts.Length > 5 && parts[5] == "open"); break;
                     case "mxnav": NavTest.Handle(parts); break;
@@ -256,6 +258,87 @@ namespace MapExpansions.Debug
                 Core.Log.Msg($"[dev] mxagents: '{(npc != null ? npc.ID : a.name)}' at {pos} ({exp}), agent type {a.agentTypeID}, {near}");
             }
             Core.Log.Msg($"[dev] mxagents: {off} of {agents.Length} agents are enabled but off the NavMesh");
+        }
+
+        /// <summary>
+        /// Gives a customer a contract at the named deal location, as if the player had accepted a deal there, so the
+        /// customer walks to its stand point. Host only. The product is a stand-in; the deal is for the walk.
+        /// </summary>
+        private static void Deal(string npcId, string place)
+        {
+            var npc = Il2CppScheduleOne.NPCs.NPCManager.GetNPC(npcId);
+            if (npc == null)
+            {
+                Core.Log.Warning($"[dev] mxdeal: no NPC '{npcId}'");
+                return;
+            }
+            var customer = npc.GetComponent<Il2CppScheduleOne.Economy.Customer>();
+            if (customer == null)
+            {
+                Core.Log.Warning($"[dev] mxdeal: '{npcId}' is no customer");
+                return;
+            }
+            if (customer.CurrentContract != null)
+            {
+                Core.Log.Warning($"[dev] mxdeal: '{npcId}' has a contract already");
+                return;
+            }
+            Il2CppScheduleOne.Economy.DeliveryLocation loc = null;
+            foreach (var l in Object.FindObjectsOfType<Il2CppScheduleOne.Economy.DeliveryLocation>())
+                if (l != null && (string.Equals(l.LocationName, place, StringComparison.OrdinalIgnoreCase) || string.Equals(l.gameObject.name, place, StringComparison.OrdinalIgnoreCase)))
+                    loc = l;
+            if (loc == null)
+            {
+                Core.Log.Warning($"[dev] mxdeal: no deal location named '{place}'");
+                return;
+            }
+            var tm = NetworkSingleton<Il2CppScheduleOne.GameTime.TimeManager>.Instance;
+            var qm = NetworkSingleton<Il2CppScheduleOne.Quests.QuestManager>.Instance;
+            if (tm == null || qm == null)
+            {
+                Core.Log.Warning($"[dev] mxdeal: time manager {tm != null}, quest manager {qm != null}; no deal");
+                return;
+            }
+            // A customer from across the map would walk for hours of game time; it starts 20 m away instead.
+            var standAt = loc.CustomerStandPoint != null ? loc.CustomerStandPoint.position : loc.transform.position;
+            if (Vector3.Distance(npc.transform.position, standAt) > 40f)
+            {
+                var near = standAt + loc.transform.forward * 20f;
+                if (UnityEngine.AI.NavMesh.SamplePosition(near, out var hit, 15f, UnityEngine.AI.NavMesh.AllAreas))
+                {
+                    npc.Movement.Warp(hit.position);
+                    Core.Log.Msg($"[dev] mxdeal: '{npcId}' warped to {hit.position}, {Vector3.Distance(hit.position, standAt):0.0} m from the stand point");
+                }
+                else Core.Log.Warning($"[dev] mxdeal: no NavMesh near {near}; '{npcId}' walks from {npc.transform.position}");
+            }
+            var products = new Il2CppScheduleOne.Product.ProductList();
+            products.entries.Add(new Il2CppScheduleOne.Product.ProductList.Entry("ogkush", Il2CppScheduleOne.ItemFramework.EQuality.Standard, 1));
+            var window = new Il2CppScheduleOne.Quests.QuestWindowConfig
+            {
+                IsEnabled = true,
+                WindowStartTime = Il2CppScheduleOne.GameTime.TimeManager.AddMinutesTo24HourTime(tm.CurrentTime, -15),
+                WindowEndTime = Il2CppScheduleOne.GameTime.TimeManager.AddMinutesTo24HourTime(tm.CurrentTime, 240),
+            };
+            var info = new Il2CppScheduleOne.Quests.ContractInfo(50f, products, loc.GUID.ToString(), window, true, 1, 0, false);
+            var contract = qm.ContractAccepted(customer, info, true, Il2Cpp.GUIDManager.GenerateUniqueGUID().ToString(), null);
+            Core.Log.Msg($"[dev] mxdeal: '{npcId}' at {npc.transform.position} has contract {(contract != null ? contract.name : "none")} at '{loc.LocationName}', " +
+                         $"stand point {loc.CustomerStandPoint?.position}");
+        }
+
+        private static void DealCheck(string npcId)
+        {
+            var npc = Il2CppScheduleOne.NPCs.NPCManager.GetNPC(npcId);
+            var customer = npc?.GetComponent<Il2CppScheduleOne.Economy.Customer>();
+            if (customer == null)
+            {
+                Core.Log.Warning($"[dev] mxdealcheck: '{npcId}' is no customer");
+                return;
+            }
+            var c = customer.CurrentContract;
+            var stand = c?.DeliveryLocation?.CustomerStandPoint;
+            float dist = stand == null ? -1f : Vector3.Distance(npc.transform.position, stand.position);
+            Core.Log.Msg($"[dev] mxdealcheck: '{npcId}' at {npc.transform.position}, contract {(c != null ? c.name : "none")}, " +
+                         $"location '{c?.DeliveryLocation?.LocationName}', {dist:0.0} m from the stand point, at deal location {customer.IsAtDealLocation()}");
         }
 
         private static void Arrest()

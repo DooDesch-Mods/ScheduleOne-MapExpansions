@@ -11,7 +11,7 @@ namespace MapExpansions.Lifecycle
     /// adds a new one. The code entries are kept as a snapshot and the definition's lists are refilled with copies of
     /// them before each build, so a layer that changes between two builds never stacks on its own earlier result.
     /// </summary>
-    internal static class Layers
+    internal static partial class Layers
     {
         internal const int Format = 1;
 
@@ -45,8 +45,12 @@ namespace MapExpansions.Lifecycle
             public readonly HashSet<string> RemovedRules = new(StringComparer.Ordinal);
             public readonly HashSet<(string owner, string copy, string id)> Boxes = new();
             public readonly HashSet<(string owner, string copy, string id)> RemovedBoxes = new();
+            /// <summary>Gameplay points by kind and key, see <see cref="PointKinds"/>.</summary>
+            public readonly HashSet<(string kind, string id)> Points = new();
+            public readonly HashSet<(string kind, string id)> RemovedPoints = new();
 
-            public int Count => Copies.Count + RemovedCopies.Count + Rules.Count + RemovedRules.Count + Boxes.Count + RemovedBoxes.Count;
+            public int Count => Copies.Count + RemovedCopies.Count + Rules.Count + RemovedRules.Count + Boxes.Count + RemovedBoxes.Count +
+                                Points.Count + RemovedPoints.Count;
         }
 
         /// <summary>The layer state of each expansion as of its last build, changed by the editor until it saves.</summary>
@@ -231,9 +235,12 @@ namespace MapExpansions.Lifecycle
                 Report(def, notes, $"boxes of '{group.Key.owner}/{group.Key.copy}'", merged);
             }
 
+            ApplyPoints(def, root, state, notes);
+
             foreach (var n in notes) Core.Log.Warning($"layer: '{def.Id}' {n}; left out");
             Core.Log.Msg($"layer: '{def.Id}' layer from {from}: {state.Copies.Count} copies ({state.AddedCopies.Count} new), {state.Rules.Count} rules, " +
-                         $"{state.Boxes.Count} boxes laid over the code; {state.RemovedCopies.Count + state.RemovedRules.Count + state.RemovedBoxes.Count} entries taken out");
+                         $"{state.Boxes.Count} boxes, {state.Points.Count} points laid over the code; " +
+                         $"{state.RemovedCopies.Count + state.RemovedRules.Count + state.RemovedBoxes.Count + state.RemovedPoints.Count} entries taken out");
         }
 
         private static void Report<T>(ExpansionDefinition def, List<string> notes, string what, LayerMerge.Result<T> r)
@@ -281,6 +288,7 @@ namespace MapExpansions.Lifecycle
                 s.Copies.Clear();
                 s.Copies.AddRange(list.Select(c => c.Clone()));
             }
+            RestorePoints(def);
         }
 
         /// <summary>Every copy of the definition with the owner name a layer uses for it.</summary>
@@ -517,6 +525,7 @@ namespace MapExpansions.Lifecycle
             if (prefabs.Count > 0) root["prefabs"] = Sorted(prefabs, "owner", "id");
             if (rules.Count > 0) root["rules"] = Sorted(rules, "id");
             if (boxes.Count > 0) root["boxes"] = Sorted(boxes, "owner", "copy", "id");
+            WritePoints(def, state, root);
             // Indented output uses the platform line end; the file keeps one line end everywhere.
             return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }).Replace("\r\n", "\n") + "\n";
         }

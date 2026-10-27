@@ -157,6 +157,25 @@ namespace MapExpansions.Editor
                     else Core.Log.Warning($"panel: catalog place '{i}' is no index");
                     return State();
                 })
+                .OnCall("editor.point", key =>
+                {
+                    var r = PointRef.Parse(key);
+                    if (r == null) Core.Log.Warning($"panel: point '{key}' is no point key");
+                    else Points.Select(r, "hierarchy");
+                    return State();
+                })
+                .OnCall("editor.point.new", kind => { Points.New(kind, null, "toolbar"); return State(); })
+                .OnCall("editor.point.here", _ => { Points.Here("inspector"); return State(); })
+                .OnCall("editor.point.add", _ => { Points.AddSub("inspector"); return State(); })
+                .OnCall("editor.point.remove", _ => { Points.RemoveSub("inspector"); return State(); })
+                .OnCall("editor.point.delete", _ => { Points.Delete("inspector"); return State(); })
+                .OnCall("editor.point.set", fv =>
+                {
+                    int eq = (fv ?? "").IndexOf('=');
+                    if (eq <= 0) Core.Log.Warning($"panel: point field '{fv}' is not field=value");
+                    else Points.SetField(fv.Substring(0, eq), fv.Substring(eq + 1), "inspector");
+                    return State();
+                })
                 .OnCall("editor.materials", q =>
                 {
                     _materialQuery = q ?? "";
@@ -358,8 +377,45 @@ namespace MapExpansions.Editor
                 }
                 area = o;
             }
+            var points = new JsonArray();
+            foreach (var (b, kind, id) in Points.Entries())
+            {
+                var state = Layers.StateOf(b.Id);
+                points.Add(new JsonObject
+                {
+                    ["key"] = $"{b.Id}/{kind}/{id}/0",
+                    ["kind"] = kind,
+                    ["label"] = Points.KindLabels[kind],
+                    ["id"] = id,
+                    ["layer"] = state.Points.Contains((kind, id)),
+                });
+            }
+            JsonNode point = null;
+            var pr = Points.Current;
+            if (pr?.Built != null)
+            {
+                var entry = Layers.PointEntry(pr.Built.Definition, pr.Kind, pr.Id);
+                var o = new JsonObject
+                {
+                    ["key"] = pr.Key,
+                    ["entry"] = pr.EntryKey,
+                    ["kind"] = pr.Kind,
+                    ["label"] = Points.Label(pr),
+                    ["sub"] = pr.Sub,
+                    ["layer"] = Layers.StateOf(pr.Expansion).Points.Contains((pr.Kind, pr.Id)),
+                    ["fields"] = entry == null ? null : JsonNode.Parse(entry.ToJsonString()),
+                };
+                if (Points.WorldOf(pr, out var w, out float yaw))
+                {
+                    o["position"] = Vec(w);
+                    o["yaw"] = Math.Round(yaw, 1);
+                }
+                point = o;
+            }
             var root = new JsonObject
             {
+                ["points"] = points,
+                ["point"] = point,
                 ["rules"] = rules,
                 ["boxes"] = boxes,
                 ["area"] = area,

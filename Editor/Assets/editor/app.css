@@ -93,3 +93,4 @@ body { height: 100%; font-family: game-ui; font-size: 13px; color: var(--text); 
 .lines { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 10px; }
 .lines .l { color: var(--muted); font-size: 12px; }
 .lines .l.last { color: var(--text); }
+.adds { padding: 4px 10px; flex-wrap: wrap; }

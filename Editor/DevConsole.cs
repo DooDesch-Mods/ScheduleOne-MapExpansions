@@ -146,6 +146,7 @@ namespace MapExpansions.Editor
                         else Core.Log.Warning($"[dev] newbox: '{p[2]}' is neither panel nor block");
                         break;
                     case "newopening": AreaEdits.NewOpening("console"); break;
+                    case "point" when p.Length > 2: Point(p); break;
                     case "effect" when p.Length > 2:
                         if (Enum.TryParse(p[2], true, out MapExpansions.ObjectEffect fx))
                             AreaEdits.ChangeRule(Areas.Current, r => r.Effect = fx, $"Wirkung {fx}", "console");
@@ -337,6 +338,36 @@ namespace MapExpansions.Editor
         {
             while (t != null && t.parent != null) t = t.parent;
             return t;
+        }
+
+        /// <summary>mapedit point list|markers|new kind [id]|select key|here|add|remove|delete|set field value</summary>
+        private static void Point(string[] p)
+        {
+            switch (p[2].ToLowerInvariant())
+            {
+                case "list":
+                    foreach (var (b, kind, id) in Points.Entries())
+                    {
+                        var e = MapExpansions.Lifecycle.Layers.PointEntry(b.Definition, kind, id);
+                        Core.Log.Msg($"[dev] point {b.Id}/{kind}/{id}: {e?.ToJsonString()}");
+                    }
+                    break;
+                case "markers": Core.Log.Msg($"[dev] point markers: {Points.Describe(EditorMode.Camera?.Camera)}"); break;
+                case "new" when p.Length > 3: Points.New(p[3], p.Length > 4 ? p[4] : null, "console"); break;
+                case "select" when p.Length > 3:
+                    var r = PointRef.Parse(p[3]);
+                    if (r == null) Core.Log.Warning($"[dev] point select: '{p[3]}' is no key like exp/kind/id/index");
+                    else Points.Select(r, "console");
+                    break;
+                case "here": Points.Here("console"); break;
+                case "add": Points.AddSub("console"); break;
+                case "remove": Points.RemoveSub("console"); break;
+                case "delete": Points.Delete("console"); break;
+                case "set" when p.Length > 4: Points.SetField(p[3], string.Join(" ", p.Skip(4)), "console"); break;
+                default:
+                    Core.Log.Warning($"[dev] point: '{string.Join(" ", p.Skip(2))}' is not list, markers, new <kind> [id], select <key>, here, add, remove, delete or set <field> <value>");
+                    break;
+            }
         }
 
         private static void Rules(string text)

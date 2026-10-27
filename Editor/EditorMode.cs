@@ -157,6 +157,7 @@ namespace MapExpansions.Editor
             IsOpen = false;
             Gizmo.Release();
             Areas.Release();
+            Points.Release();
             EndFrame();
             Panel.Unmount();
             DeregisterExit();
@@ -187,6 +188,8 @@ namespace MapExpansions.Editor
             Gizmo.Release();
             Areas.Release();
             Areas.Deselect("the world unloaded");
+            Points.Release();
+            Points.Deselect("the world unloaded");
             Selection.Clear();
             EndFrame();
             Panel.Unmount();
@@ -250,12 +253,12 @@ namespace MapExpansions.Editor
             FlyCamera.Tick(Camera, typing, overPanel);
             bool camBusy = FlyCamera.Looking || FlyCamera.Orbiting;
 
-            if (!typing && !camBusy && !Gizmo.Dragging && !Areas.Dragging && Time.frameCount != _openedFrame && Keys()) return;
+            if (!typing && !camBusy && !Gizmo.Dragging && !Areas.Dragging && !Points.Dragging && Time.frameCount != _openedFrame && Keys()) return;
 
             if (!camBusy)
             {
                 // The gizmos take the click first: a handle over another copy moves the selection, it does not change it.
-                bool gizmoTookMouse = Areas.Tick(Camera.Camera, overPanel) || Gizmo.Tick(Camera.Camera, overPanel);
+                bool gizmoTookMouse = Points.Tick(Camera.Camera, overPanel) || Areas.Tick(Camera.Camera, overPanel) || Gizmo.Tick(Camera.Camera, overPanel);
                 if (!gizmoTookMouse) Mouse(overPanel);
             }
             else EndFrame();
@@ -283,7 +286,8 @@ namespace MapExpansions.Editor
             else if (EditorInput.KeyDown(KeyCode.R)) Gizmo.SetMode(GizmoMode.Scale, "r");
             else if (EditorInput.KeyDown(KeyCode.Delete))
             {
-                if (Areas.Current != null) AreaEdits.Delete(Areas.Current, "delete");
+                if (Points.Current != null) Points.Delete("delete");
+                else if (Areas.Current != null) AreaEdits.Delete(Areas.Current, "delete");
                 else Edits.Delete(Selection.All, "delete");
             }
             else if (EditorInput.KeyDown(KeyCode.End)) Edits.Drop(Selection.All, "end");
@@ -298,6 +302,11 @@ namespace MapExpansions.Editor
 
         internal static void FrameSelection(string why)
         {
+            if (Points.Current != null && Points.WorldOf(Points.Current, out var point, out _))
+            {
+                FlyCamera.Frame(new Bounds(point + Vector3.up, Vector3.one * 6f), why);
+                return;
+            }
             if (Areas.WorldBounds(out var area))
             {
                 FlyCamera.Frame(area, why);

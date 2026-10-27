@@ -72,6 +72,7 @@ namespace MapExpansions.Editor
                 Core.Log.Msg($"pick ({why}): no copy under the cursor at {screen}; selection cleared");
                 Clear();
                 Areas.Deselect(why);
+                Points.Deselect(why);
                 return;
             }
             Select(best, $"{why}, {how} at {bestDist:0.0} m", add);
@@ -81,6 +82,7 @@ namespace MapExpansions.Editor
         internal static void Frame(Camera cam, Rect screen, bool add, string why)
         {
             Areas.Deselect(why);
+            Points.Deselect(why);
             var found = new List<string>();
             foreach (var p in Copies.All())
             {
@@ -104,6 +106,7 @@ namespace MapExpansions.Editor
                 return;
             }
             Areas.Deselect(why);
+            Points.Deselect(why);
             var key = Copies.Key(p);
             if (add && Keys.Remove(key))
             {
@@ -123,6 +126,7 @@ namespace MapExpansions.Editor
         internal static void Set(IEnumerable<string> keys, string why)
         {
             Areas.Deselect(why);
+            Points.Deselect(why);
             Keys.Clear();
             Keys.AddRange(keys.Distinct());
             Refresh();

@@ -83,6 +83,98 @@ function renderHierarchy(s) {
     if (g !== group) { group = g; list.appendChild(el('div', 'group', g)); }
     row(list, b.copy + ' / ' + b.id, b.kind === 'Block' ? 'Blocker' : 'Panel', b.key === areaKey, 'item', () => call('editor.area', b.key));
   }
+  list.appendChild(el('div', 'group', 'Punkte'));
+  const add = el('div', 'choices adds');
+  for (const k of ['locations', 'dealLocations', 'parkingLots', 'buildings', 'regions']) {
+    const c = el('div', 'choice', '+ ' + pointKinds[k]);
+    c.addEventListener('click', () => call('editor.point.new', k));
+    add.appendChild(c);
+  }
+  list.appendChild(add);
+  const entry = s.point ? s.point.entry : null;
+  for (const pt of s.points || []) {
+    const k = pt.key.slice(0, pt.key.lastIndexOf('/'));
+    row(list, pt.label + ' ' + pt.id, pt.layer ? 'Ebene' : '', k === entry, 'item', () => call('editor.point', pt.key));
+  }
+}
+
+const pointKinds = { locations: 'Ort', regions: 'Region', dealLocations: 'Deal-Ort', parkingLots: 'Parkplatz', buildings: 'Gebäude', shops: 'Laden' };
+
+function subLabel(kind, i) {
+  if (kind === 'parkingLots') return i === 0 ? 'Zufahrt' : 'Stellplatz ' + i;
+  if (kind === 'buildings') return 'Tür ' + (i + 1);
+  if (kind === 'regions') return 'Ecke ' + (i + 1);
+  if (kind === 'shops') return 'Theke';
+  return 'Punkt';
+}
+
+function subCount(p) {
+  const f = p.fields || {};
+  if (p.kind === 'regions') return (f.polygon || []).length;
+  if (p.kind === 'parkingLots') return 1 + (f.spots || []).length;
+  if (p.kind === 'buildings') return (f.doors || []).length;
+  return 1;
+}
+
+const pointFields = {
+  dealLocations: [['name', 'Name'], ['description', 'Beschreibung'], ['region', 'Region']],
+  parkingLots: [['name', 'Name']],
+  buildings: [['name', 'Name']],
+  shops: [['seller', 'Verkäufer'], ['choiceText', 'Dialogzeile'], ['counterReach', 'Reichweite']],
+  regions: [['standIn', 'Vertretung']],
+};
+
+function pfield(box, label, key, value) {
+  const r = el('div', 'prop');
+  r.appendChild(el('div', 'k', label));
+  const input = el('input', 'field v');
+  input.value = value === undefined || value === null ? '' : String(value);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') call('editor.point.set', key + '=' + input.value); });
+  r.appendChild(input);
+  box.appendChild(r);
+}
+
+function button(box, text, name, arg) {
+  const c = el('div', 'choice', text);
+  c.addEventListener('click', () => call(name, arg || ''));
+  box.appendChild(c);
+}
+
+function renderPoint(box, p) {
+  prop(box, 'Auswahl', p.label);
+  prop(box, 'Punkt', subLabel(p.kind, p.sub));
+  if (p.position) { prop(box, 'Position', fmt(p.position)); prop(box, 'Richtung', Number(p.yaw).toFixed(1) + '°'); }
+  prop(box, 'Ebene', p.layer ? 'geändert in der Ebene' : 'aus dem Code');
+  const f = p.fields || {};
+  for (const [key, label] of pointFields[p.kind] || []) pfield(box, label, key, f[key]);
+  if (p.kind === 'regions') {
+    const r = el('div', 'prop');
+    r.appendChild(el('div', 'k', 'Offen'));
+    const c = el('div', 'choices v');
+    button(c, f.unlocked ? 'ja' : 'nein', 'editor.point.set', 'unlocked=' + (f.unlocked ? 'nein' : 'ja'));
+    r.appendChild(c);
+    box.appendChild(r);
+  }
+  const n = subCount(p);
+  if (n > 1) {
+    const subs = el('div', 'choices');
+    const base = p.entry + '/';
+    for (let i = 0; i < n; i++) {
+      const c = el('div', i === p.sub ? 'choice active' : 'choice', subLabel(p.kind, i));
+      c.addEventListener('click', () => call('editor.point', base + i));
+      subs.appendChild(c);
+    }
+    box.appendChild(subs);
+  }
+  const acts = el('div', 'choices');
+  button(acts, 'Zur Blickmitte', 'editor.point.here');
+  if (p.kind === 'regions' || p.kind === 'parkingLots' || p.kind === 'buildings') {
+    button(acts, '+ ' + subLabel(p.kind, 1).split(' ')[0], 'editor.point.add');
+    button(acts, subLabel(p.kind, p.sub) + ' entfernen', 'editor.point.remove');
+  }
+  if (p.kind !== 'shops') button(acts, 'Eintrag löschen', 'editor.point.delete');
+  box.appendChild(acts);
+  box.appendChild(el('div', 'empty', 'Wirkt nach dem nächsten Laden.'));
 }
 
 function field(box, k, value, name) {
@@ -147,6 +239,7 @@ function prop(box, k, v) {
 function renderInspector(s) {
   const box = document.getElementById('props');
   box.replaceChildren();
+  if (s.point) { renderPoint(box, s.point); return; }
   if (s.area) { renderArea(box, s.area); return; }
   const x = s.selected;
   if (!x) { box.appendChild(el('div', 'empty', 'Nichts ausgewählt.')); return; }
