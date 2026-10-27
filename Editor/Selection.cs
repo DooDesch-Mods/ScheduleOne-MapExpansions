@@ -17,7 +17,7 @@ namespace MapExpansions.Editor
 
         /// <summary>The selected copies that stand in the world, in selection order.</summary>
         internal static IReadOnlyList<MainCopies.Placed> All =>
-            Keys.Select(Copies.Find).Where(p => p?.Built?.Local != null).ToList();
+            Keys.Select(Copies.Find).Where(p => p?.Built?.Handle != null).ToList();
 
         /// <summary>The first selected copy; the inspector shows it.</summary>
         internal static MainCopies.Placed Current => All.FirstOrDefault();
@@ -45,7 +45,7 @@ namespace MapExpansions.Editor
             {
                 foreach (var p in Copies.All())
                 {
-                    if (!hit.transform.IsChildOf(p.Built.Local.transform)) continue;
+                    if (!hit.transform.IsChildOf(p.Built.Handle)) continue;
                     best = p;
                     bestDist = hit.distance;
                     how = $"collider '{hit.collider.name}'";
@@ -98,7 +98,7 @@ namespace MapExpansions.Editor
         /// <summary>Selects a copy; with <paramref name="add"/> a selected copy goes out and another one comes in.</summary>
         internal static void Select(MainCopies.Placed p, string why, bool add = false)
         {
-            if (p?.Built?.Local == null)
+            if (p?.Built?.Handle == null)
             {
                 Core.Log.Warning($"select ({why}): the copy has no local object; nothing selected");
                 return;
@@ -115,7 +115,7 @@ namespace MapExpansions.Editor
             if (!add) Keys.Clear();
             Keys.Add(key);
             Refresh();
-            Core.Log.Msg($"select ({why}): {key} at {p.Built.Local.transform.position}, bounds {Copies.Bounds(p).size}; {Keys.Count} selected");
+            Core.Log.Msg($"select ({why}): {key} at {p.Built.Handle.position}, bounds {Copies.Bounds(p).size}; {Keys.Count} selected");
             Panel.Note(Keys.Count == 1 ? $"Ausgewählt: {p.Built.Def.Id}" : $"{Keys.Count} ausgewählt");
         }
 
@@ -167,7 +167,7 @@ namespace MapExpansions.Editor
             var all = All;
             if (all.Count < Keys.Count)
             {
-                var gone = Keys.Where(k => Copies.Find(k)?.Built?.Local == null).ToList();
+                var gone = Keys.Where(k => Copies.Find(k)?.Built?.Handle == null).ToList();
                 foreach (var k in gone) Keys.Remove(k);
                 Core.Log.Warning($"selected copies are gone: {string.Join(", ", gone)}; they leave the selection");
             }

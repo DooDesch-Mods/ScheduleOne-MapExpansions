@@ -172,13 +172,41 @@ function renderConsole(s) {
   if (box.scrollToEnd) box.scrollToEnd();
 }
 
+const tabNames = { Main: 'Hauptwelt', Source: 'Quellszene', Prefabs: 'Prefabs', Models: 'Modelle' };
+
+function renderCatalog(s) {
+  const c = s.catalog;
+  if (!c) return;
+  const tabs = document.getElementById('tabs');
+  tabs.replaceChildren();
+  for (const t of Object.keys(tabNames)) {
+    const b = el('div', t === c.tab ? 'tab active' : 'tab', tabNames[t]);
+    b.addEventListener('click', () => call('editor.catalog.tab', t));
+    tabs.appendChild(b);
+  }
+  document.getElementById('cat-hint').textContent = c.hint || (c.results.length + ' Treffer');
+  const box = document.getElementById('results');
+  box.replaceChildren();
+  for (const r of c.results) {
+    const e = el('div', 'result');
+    e.appendChild(el('div', 'name', r.label));
+    e.appendChild(el('div', 'detail', r.detail));
+    e.addEventListener('click', () => call('editor.catalog.place', String(r.i)));
+    box.appendChild(e);
+  }
+}
+
 function render(s) {
   if (!s) return;
   renderToolbar(s);
   renderHierarchy(s);
   renderInspector(s);
+  renderCatalog(s);
   renderConsole(s);
 }
+
+const search = document.getElementById('search');
+search.addEventListener('keydown', (e) => { if (e.key === 'Enter') call('editor.catalog.search', search.value); });
 
 document.getElementById('save').addEventListener('click', () => render(parse(s1.call('editor.save', ''))));
 document.getElementById('close').addEventListener('click', () => s1.call('editor.close', ''));
@@ -200,7 +228,7 @@ act('apply', 'editor.apply', '');
 
 // A dock is a hit target only when the script listens to it; without this a click on an empty dock area would
 // fall through to the world behind it.
-for (const id of ['toolbar', 'hierarchy', 'inspector', 'console']) {
+for (const id of ['toolbar', 'hierarchy', 'inspector', 'bottom']) {
   document.getElementById(id).addEventListener('click', () => {});
 }
 

@@ -68,6 +68,24 @@ namespace MapExpansions
         /// <summary>Which world <see cref="Template"/> and <see cref="Frame"/> are found in.</summary>
         public WorldSide TemplateSide { get; set; } = WorldSide.Main;
 
+        /// <summary>
+        /// A glTF binary file to place instead of a template: "kiosk.glb" is <c>Mods/&lt;expansion&gt;/models/kiosk.glb</c>
+        /// or an embedded resource of the layer's assembly whose name ends in ".kiosk.glb". Every peer builds it itself.
+        /// </summary>
+        public string Model { get; set; }
+
+        /// <summary>Which collider a <see cref="Model"/> gets.</summary>
+        public ModelCollider Collider { get; set; } = ModelCollider.Mesh;
+
+        /// <summary>
+        /// Item id of a buildable game item to place instead of a template, such as "floorlamp". The host spawns it for
+        /// everyone; it stays out of the save and cannot be picked up.
+        /// </summary>
+        public string Prefab { get; set; }
+
+        /// <summary>What the copy is made from, for log lines: a model, a game prefab or a template.</summary>
+        internal string Source => !string.IsNullOrEmpty(Model) ? $"model '{Model}'" : !string.IsNullOrEmpty(Prefab) ? $"prefab '{Prefab}'" : $"'{Template}'";
+
         public CopyDefinition() { }
 
         /// <summary>A copy of this definition with its own lists and boxes, for a layer to change.</summary>
@@ -86,6 +104,13 @@ namespace MapExpansions
             Frame = frame;
             At = at;
         }
+
+        /// <summary>A glTF model placed at a point of the expansion.</summary>
+        public static CopyDefinition OfModel(string id, string file, LocalPoint at, ModelCollider collider = ModelCollider.Mesh) =>
+            new() { Id = id, Model = file, At = at, Collider = collider };
+
+        /// <summary>A buildable game item placed at a point of the expansion, spawned by the host.</summary>
+        public static CopyDefinition OfPrefab(string id, string itemId, LocalPoint at) => new() { Id = id, Prefab = itemId, At = at };
 
         /// <summary>A copy whose frame stands on an object of the expansion's source.</summary>
         public static CopyDefinition OnObject(string id, string template, string frame, string onto,
@@ -112,6 +137,17 @@ namespace MapExpansions
             });
             return this;
         }
+    }
+
+    /// <summary>The collider of a glTF model.</summary>
+    public enum ModelCollider
+    {
+        /// <summary>Nothing to walk into or stand on.</summary>
+        None,
+        /// <summary>One box around the whole model.</summary>
+        Box,
+        /// <summary>One mesh collider per part, exact but costlier.</summary>
+        Mesh,
     }
 
     public enum BoxKind

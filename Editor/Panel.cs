@@ -144,6 +144,19 @@ namespace MapExpansions.Editor
                     else AreaEdits.ChangeBox(Areas.Current, x => x.Material = name, $"Material {name}", "inspector");
                     return State();
                 })
+                .OnCall("editor.catalog.tab", t =>
+                {
+                    if (Enum.TryParse(t, true, out Catalog.Tab tab)) Catalog.SetTab(tab, "catalog tab");
+                    else Core.Log.Warning($"panel: '{t}' is no catalog tab");
+                    return State();
+                })
+                .OnCall("editor.catalog.search", q => { Catalog.Search(q, "catalog search"); return State(); })
+                .OnCall("editor.catalog.place", i =>
+                {
+                    if (int.TryParse(i, out int index)) Catalog.Place(index, "catalog");
+                    else Core.Log.Warning($"panel: catalog place '{i}' is no index");
+                    return State();
+                })
                 .OnCall("editor.materials", q =>
                 {
                     _materialQuery = q ?? "";
@@ -261,7 +274,7 @@ namespace MapExpansions.Editor
                     ["dirty"] = Saving.IsDirty(p),
                 });
             JsonNode selected = null;
-            if (sel?.Built?.Local != null)
+            if (sel?.Built?.Handle != null)
             {
                 var d = sel.Built.Def;
                 selected = new JsonObject
@@ -270,10 +283,10 @@ namespace MapExpansions.Editor
                     ["id"] = d.Id,
                     ["owner"] = sel.LayerOwner,
                     ["expansion"] = sel.Expansion.Id,
-                    ["template"] = d.Template,
+                    ["template"] = !string.IsNullOrEmpty(d.Model) ? "Modell " + d.Model : !string.IsNullOrEmpty(d.Prefab) ? "Prefab " + d.Prefab : d.Template,
                     ["onto"] = d.Onto,
-                    ["position"] = Vec(sel.Built.Local.transform.position),
-                    ["yaw"] = Math.Round(sel.Built.Local.transform.eulerAngles.y, 1),
+                    ["position"] = Vec(sel.Built.Handle.position),
+                    ["yaw"] = Math.Round(sel.Built.Handle.eulerAngles.y, 1),
                     ["scale"] = Math.Round(d.Scale, 3),
                     ["size"] = Vec(Selection.CurrentBounds.size),
                     ["dirty"] = Saving.IsDirty(sel),
@@ -364,6 +377,7 @@ namespace MapExpansions.Editor
                 ["dirty"] = Saving.DirtyCount,
                 ["speed"] = Math.Round(FlyCamera.Speed, 1),
                 ["log"] = new JsonArray(Lines.Select(l => (JsonNode)l).ToArray()),
+                ["catalog"] = Catalog.State(),
             };
             return root.ToJsonString();
         }

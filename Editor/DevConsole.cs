@@ -106,7 +106,7 @@ namespace MapExpansions.Editor
                         break;
                     case "handles": Core.Log.Msg($"[dev] handles: {Gizmo.Describe(EditorMode.Camera?.Camera)}"); break;
                     case "sel":
-                        Core.Log.Msg($"[dev] sel: {Selection.Count} selected: {string.Join(", ", Selection.All.Select(x => $"{Copies.Key(x)} at {x.Built.Local.transform.position} yaw {x.Built.Local.transform.eulerAngles.y:0.#} scale {x.Built.Def.Scale:0.###}"))}; undo {Edits.UndoCount}, redo {Edits.RedoCount}, playing {EditorMode.Playing}");
+                        Core.Log.Msg($"[dev] sel: {Selection.Count} selected: {string.Join(", ", Selection.All.Select(x => $"{Copies.Key(x)} at {x.Built.Handle.position} yaw {x.Built.Handle.eulerAngles.y:0.#} scale {x.Built.Def.Scale:0.###}"))}; undo {Edits.UndoCount}, redo {Edits.RedoCount}, playing {EditorMode.Playing}");
                         break;
                     case "save": Saving.SaveAll("console"); break;
                     case "target" when p.Length > 3: Core.SetLayerFile(p[2], string.Join(" ", p.Skip(3))); break;
@@ -159,6 +159,13 @@ namespace MapExpansions.Editor
                         Core.Log.Msg($"[dev] materials: {string.Join(", ", found.Select(m => m.name))}");
                         break;
                     case "apply": AreaEdits.Apply("console"); break;
+                    case "catalog" when p.Length > 2 && Enum.TryParse(p[2], true, out Catalog.Tab tab):
+                        Catalog.SetTab(tab, "console", false);
+                        Catalog.Search(string.Join(" ", p.Skip(3)), "console");
+                        foreach (var (x, i) in Catalog.Items.Take(15).Select((x, i) => (x, i)))
+                            Core.Log.Msg($"[dev] catalog {i}: {x.Label} | {x.Detail}");
+                        break;
+                    case "place" when p.Length > 2: Catalog.Place(int.Parse(p[2], Ci), "console"); break;
                     case "walk" when p.Length > 4: MelonLoader.MelonCoroutines.Start(Walk(F(p[2]), F(p[3]), F(p[4]))); break;
                     case "areas":
                         Core.Log.Msg($"[dev] areas: selected {Areas.Current?.ToString() ?? "none"}; {AreaEdits.PendingCount} rules wait, {AreaEdits.StaleCount} stale");
@@ -304,7 +311,7 @@ namespace MapExpansions.Editor
         {
             var copy = Copies.Find(name);
             var rs = copy != null
-                ? copy.Built.Local.GetComponentsInChildren<MeshRenderer>(true).ToList()
+                ? copy.Built.Handle.GetComponentsInChildren<MeshRenderer>(true).ToList()
                 : Object.FindObjectsOfType<MeshRenderer>().Where(r => r.name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
             int batched = rs.Count(r => r.isPartOfStaticBatch);
             Core.Log.Msg($"[dev] batch '{name}' ({(copy != null ? "placed copy" : "main world by name")}): {rs.Count} mesh renderers, {batched} part of a static batch");

@@ -32,6 +32,8 @@ namespace MapExpansions.World
             public Matrix4x4 ToMain;
             /// <summary>Holder of the expansion's probe anchors, see <see cref="AnchorProbes"/>.</summary>
             public Transform Anchors;
+            /// <summary>A game prefab spawned as it is: no original in the main world, nothing batched, nothing to light from there.</summary>
+            public bool Fresh;
         }
 
         /// <summary>What one definition became on this peer.</summary>
@@ -47,6 +49,13 @@ namespace MapExpansions.World
             /// zone is not part of the copy, so the owner of the copy switches these.
             /// </summary>
             public readonly List<ToggleableLight> ZoneLights = new();
+
+            /// <summary>
+            /// What stands for the copy in the world: its local object, or for a copy networked as a whole its first
+            /// spawned part. Null while nothing of it exists on this peer.
+            /// </summary>
+            public Transform Handle =>
+                Local != null ? Local.transform : Parts.Count > 0 && Parts[0].Instance != null ? Parts[0].Instance.transform : null;
         }
 
         /// <summary>A built copy with what a map editor needs to find it and write it back.</summary>
@@ -87,7 +96,7 @@ namespace MapExpansions.World
                 }
                 catch (Exception e)
                 {
-                    Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}' of '{d.Template}' failed: {e}");
+                    Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}' of {d.Source} failed: {e}");
                 }
             }
             Core.Log.Msg($"copies: '{b.Id}' {owner}: {result.Count}/{defs.Count} copies built, {result.Sum(x => x.Parts.Count)} networked parts");
@@ -106,6 +115,9 @@ namespace MapExpansions.World
             }
             return names;
         }
+
+        /// <summary>The inactive holder of the expansion's copy templates, made on first use.</summary>
+        internal static Transform TemplateHolder(BuiltExpansion b) => Holders(b).templates;
 
         private static (Transform templates, Transform holder) Holders(BuiltExpansion b)
         {
@@ -195,41 +207,30 @@ namespace MapExpansions.World
         private static Built BuildOne(BuiltExpansion b, CopyDefinition d, string owner, Dictionary<string, Transform> found,
             HashSet<int> zoneLights, Transform templates, Transform holder)
         {
-            if (string.IsNullOrEmpty(d.Id) || string.IsNullOrEmpty(d.Template))
+            bool model = !string.IsNullOrEmpty(d.Model), prefab = !string.IsNullOrEmpty(d.Prefab);
+            if (string.IsNullOrEmpty(d.Id) || (!model && !prefab && string.IsNullOrEmpty(d.Template)))
             {
                 Core.Log.Error($"copies: '{b.Id}' {owner} has a copy without id or template ('{d.Id}', '{d.Template}'); it is not built");
                 return null;
             }
-            bool fromMain = d.TemplateSide == WorldSide.Main;
-            string world = fromMain ? "the main world" : "the expansion";
-            var src = fromMain ? Resolve(found, d.Template) : FindInExpansion(b, d.Template);
+            if (prefab) return BuildPrefab(b, d, owner);
+            bool fromMain = !model && d.TemplateSide == WorldSide.Main;
+            string world = model ? "the expansion's models" : fromMain ? "the main world" : "the expansion";
+            var src = model ? Models.Template(b, d.Model, d.Collider, templates)
+                : fromMain ? Resolve(found, d.Template) : FindInExpansion(b, d.Template);
             if (src == null)
             {
-                Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': '{d.Template}' is not in {world}; it is not built");
+                Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': {d.Source} is not in {world}; it is not built");
                 return null;
             }
-            var frame = string.IsNullOrEmpty(d.Frame) ? src : fromMain ? Resolve(found, d.Frame) : FindInExpansion(b, d.Frame);
+            var frame = string.IsNullOrEmpty(d.Frame) || model ? src : fromMain ? Resolve(found, d.Frame) : FindInExpansion(b, d.Frame);
             if (frame == null)
             {
                 Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': frame '{d.Frame}' is not in {world}; it is not built");
                 return null;
             }
 
-            Matrix4x4 at;
-            if (string.IsNullOrEmpty(d.Onto))
-                at = Matrix4x4.TRS(b.Root.transform.TransformPoint(d.At.Position),
-                    b.Root.transform.rotation * Quaternion.Euler(0f, d.At.Yaw, 0f), Vector3.one * d.Scale);
-            else
-            {
-                var onto = FindInExpansion(b, d.Onto);
-                if (onto == null)
-                {
-                    Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': '{d.Onto}' is not in the expansion; it is not built");
-                    return null;
-                }
-                at = Matrix4x4.TRS(onto.position, onto.rotation, Vector3.one)
-                     * Matrix4x4.TRS(d.OntoOffset, Quaternion.Euler(d.OntoRotation), Vector3.one * d.Scale);
-            }
+            if (!At(b, d, owner, out var at)) return null;
             var frameM = Matrix4x4.TRS(frame.position, frame.rotation, Vector3.one);
             var move = at * frameM.inverse;
             var pose = move * src.localToWorldMatrix;
@@ -259,7 +260,7 @@ namespace MapExpansions.World
                     if (srcLights[i] != null && zoneLights.Contains(srcLights[i].GetInstanceID())) built.ZoneLights.Add(copyLights[i]);
             }
             else
-                Core.Log.Error($"copies: '{b.Id}' {owner} '{d.Id}': {copyLights.Length} lamps in the copy against {srcLights.Length} in '{d.Template}'; " +
+                Core.Log.Error($"copies: '{b.Id}' {owner} '{d.Id}': {copyLights.Length} lamps in the copy against {srcLights.Length} in {d.Source}; " +
                                "no lamp of it follows opening hours");
             Trim(b, d, owner, go);
             AddPanels(b, d, owner, go, move);
@@ -299,9 +300,63 @@ namespace MapExpansions.World
             var (batched, batchRoots, _) = StaticBatches.Follow(go.transform, move, $"{owner} {d.Id}");
             var (anchored, points) = anchors != null ? AnchorProbes(anchors, go, toMain) : (0, 0);
             built.Local = go;
-            Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}' from '{d.Template}' stands at {go.transform.position}, " +
+            Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}' from {d.Source} stands at {go.transform.position}, " +
                          $"{go.GetComponentsInChildren<Renderer>(true).Length} renderers, {batched} batched over {batchRoots} roots, " +
                          $"{anchored} take their light probes at {points} points of the main world, {built.ZoneLights.Count} lamps follow opening hours");
+            return built;
+        }
+
+        /// <summary>Where the copy's frame stands, scaled: at <see cref="CopyDefinition.At"/> or on <see cref="CopyDefinition.Onto"/>.</summary>
+        private static bool At(BuiltExpansion b, CopyDefinition d, string owner, out Matrix4x4 at)
+        {
+            at = Matrix4x4.identity;
+            if (string.IsNullOrEmpty(d.Onto))
+            {
+                at = Matrix4x4.TRS(b.Root.transform.TransformPoint(d.At.Position),
+                    b.Root.transform.rotation * Quaternion.Euler(0f, d.At.Yaw, 0f), Vector3.one * d.Scale);
+                return true;
+            }
+            var onto = FindInExpansion(b, d.Onto);
+            if (onto == null)
+            {
+                Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': '{d.Onto}' is not in the expansion; it is not built");
+                return false;
+            }
+            at = Matrix4x4.TRS(onto.position, onto.rotation, Vector3.one)
+                 * Matrix4x4.TRS(d.OntoOffset, Quaternion.Euler(d.OntoRotation), Vector3.one * d.Scale);
+            return true;
+        }
+
+        /// <summary>
+        /// A buildable game item: nothing is built locally, the host spawns the item's own prefab where the frame stands
+        /// and every peer knows it by its prefab id, as for a networked part.
+        /// </summary>
+        private static Built BuildPrefab(BuiltExpansion b, CopyDefinition d, string owner)
+        {
+            var template = GamePrefabs.Template(d.Prefab);
+            if (template == null)
+            {
+                Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': prefab '{d.Prefab}' is not available; it is not built");
+                return null;
+            }
+            if (template.GetComponent<NetworkObject>() == null)
+            {
+                Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': prefab '{d.Prefab}' has no network object on its root; it is not built");
+                return null;
+            }
+            if (!At(b, d, owner, out var at)) return null;
+            var t = template.transform;
+            var move = at * Matrix4x4.TRS(t.position, t.rotation, Vector3.one).inverse;
+            var pose = move * Matrix4x4.TRS(t.position, t.rotation, t.localScale);
+            var part = new Part
+            {
+                Key = $"prefab:{b.Id}/{KeyOf(owner)}/{d.Id}", Template = template, Position = pose.GetColumn(3), Rotation = pose.rotation,
+                Scale = pose.lossyScale, ToMain = Matrix4x4.identity, Fresh = true,
+            };
+            var built = new Built { Def = d, Move = move };
+            built.Parts.Add(part);
+            Parts.Add(part);
+            Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}' is prefab '{d.Prefab}' ('{template.name}'), to stand at {part.Position}");
             return built;
         }
 
@@ -604,6 +659,11 @@ namespace MapExpansions.World
         /// </summary>
         private static void SettlePart(Part p)
         {
+            if (p.Fresh)
+            {
+                Core.Log.Msg($"copies: prefab '{p.Key}' stands at {p.Instance.transform.position}");
+                return;
+            }
             var (batched, roots, own) = StaticBatches.Follow(p.Instance.transform, p.ToMain.inverse, p.Key);
             if (batched + own > 0)
                 Core.Log.Msg($"copies: networked part '{p.Key}': {batched} batched renderers draw where the part stands, over {roots} roots; {own} had their root in the part");
@@ -713,6 +773,7 @@ namespace MapExpansions.World
             All.Clear();
             Parts.Clear();
             AnchorCells.Clear();
+            Models.Clear();
             _nextFind = 0f;
         }
     }

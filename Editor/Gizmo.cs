@@ -167,8 +167,8 @@ namespace MapExpansions.Editor
                     _live = Live(cam);
                     foreach (var (p, pos, rot, scale) in Start)
                     {
-                        if (p.Built.Local == null) continue;
-                        var t = p.Built.Local.transform;
+                        if (p.Built.Handle == null) continue;
+                        var t = p.Built.Handle;
                         t.SetPositionAndRotation(_dragPivot + _live.turn * ((pos - _dragPivot) * _live.scale) + _live.move, _live.turn * rot);
                         t.localScale = scale * _live.scale;
                     }
@@ -192,7 +192,7 @@ namespace MapExpansions.Editor
                 Start.Clear();
                 foreach (var p in sel)
                 {
-                    var t = p.Built.Local.transform;
+                    var t = p.Built.Handle;
                     Start.Add((p, t.position, t.rotation, t.localScale));
                 }
                 Core.Log.Msg($"gizmo: {_dragMode} drag{(_dragMode == GizmoMode.Rotate ? "" : " on " + "XYZ"[_drag])} of {sel.Count} copies from {pivot}");
@@ -327,8 +327,8 @@ namespace MapExpansions.Editor
         {
             foreach (var (p, pos, rot, scale) in Start)
             {
-                if (p.Built.Local == null) continue;
-                var t = p.Built.Local.transform;
+                if (p.Built.Handle == null) continue;
+                var t = p.Built.Handle;
                 t.SetPositionAndRotation(pos, rot);
                 t.localScale = scale;
             }
@@ -336,7 +336,7 @@ namespace MapExpansions.Editor
 
         private static void Commit()
         {
-            var sel = Start.Select(x => x.p).Where(p => p.Built.Local != null).ToList();
+            var sel = Start.Select(x => x.p).Where(p => p.Built.Handle != null).ToList();
             var (turn, scale, move) = _live;
             var mode = _dragMode;
             // The live drag moved only the local objects; the step moves them again together with their networked parts.

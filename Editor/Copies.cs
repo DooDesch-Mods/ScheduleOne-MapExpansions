@@ -11,7 +11,7 @@ namespace MapExpansions.Editor
 
         internal static int Count() => MainCopies.All.Count;
 
-        internal static IEnumerable<MainCopies.Placed> All() => MainCopies.All.Where(p => p?.Built?.Local != null);
+        internal static IEnumerable<MainCopies.Placed> All() => MainCopies.All.Where(p => p?.Built?.Handle != null);
 
         internal static MainCopies.Placed Find(string keyOrId)
         {
@@ -23,10 +23,10 @@ namespace MapExpansions.Editor
         /// <summary>World bounds of the copy's renderers; a 1 m box at its root when it draws nothing.</summary>
         internal static Bounds Bounds(MainCopies.Placed p)
         {
-            var root = p.Built.Local.transform;
+            var root = p.Built.Handle;
             bool any = false;
             var b = new Bounds(root.position, Vector3.one);
-            foreach (var r in p.Built.Local.GetComponentsInChildren<Renderer>(false))
+            foreach (var r in p.Built.Handle.GetComponentsInChildren<Renderer>(false))
             {
                 if (r == null || !r.enabled) continue;
                 if (!any) { b = r.bounds; any = true; }

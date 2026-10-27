@@ -156,7 +156,8 @@ namespace MapExpansions.Lifecycle
             var notes = new List<string>();
 
             // Copies, per owner list.
-            var copyEntries = Array(root, "copies").Select(e => (owner: Str(e, "owner") ?? ExpansionOwner, e)).ToList();
+            // Models and prefabs are copies made from something else than a template; one list holds all three.
+            var copyEntries = Array(root, "copies").Concat(Array(root, "models")).Concat(Array(root, "prefabs")).Select(e => (owner: Str(e, "owner") ?? ExpansionOwner, e)).ToList();
             foreach (var group in copyEntries.GroupBy(x => x.owner, StringComparer.Ordinal))
             {
                 var list = CopyList(def, group.Key);
@@ -333,6 +334,9 @@ namespace MapExpansions.Lifecycle
             if (Vec(e["ontoRotation"]) is Vector3 rot) d.OntoRotation = rot;
             if (Num(e, "scale") is float scale) d.Scale = scale;
             if (e["ownMesh"] != null) d.OwnMesh = Bool(e, "ownMesh");
+            if (e["file"] != null) d.Model = Str(e, "file");
+            if (e["prefab"] != null) d.Prefab = Str(e, "prefab");
+            if (Enum<ModelCollider>(e, "collider") is ModelCollider col) d.Collider = col;
             if (e["exclude"] is JsonArray ex)
             {
                 d.Exclude.Clear();
@@ -340,12 +344,13 @@ namespace MapExpansions.Lifecycle
             }
         }
 
-        /// <summary>A copy the layer adds; it needs at least an id and a template.</summary>
+        /// <summary>A copy the layer adds; it needs at least an id and a template, a model file or a prefab.</summary>
         private static CopyDefinition NewCopy(JsonNode e)
         {
             var d = new CopyDefinition { Id = Str(e, "id") };
             ReadCopy(e, d);
-            return string.IsNullOrEmpty(d.Id) || string.IsNullOrEmpty(d.Template) ? null : d;
+            bool made = !string.IsNullOrEmpty(d.Template) || !string.IsNullOrEmpty(d.Model) || !string.IsNullOrEmpty(d.Prefab);
+            return string.IsNullOrEmpty(d.Id) || !made ? null : d;
         }
 
         /// <summary>A rule from a layer entry; it needs a name and an effect.</summary>
@@ -395,7 +400,13 @@ namespace MapExpansions.Lifecycle
         internal static JsonObject CopyEntry(string owner, CopyDefinition d, bool full)
         {
             var o = new JsonObject { ["id"] = d.Id, ["owner"] = owner };
-            if (full)
+            if (full && !string.IsNullOrEmpty(d.Model))
+            {
+                o["file"] = d.Model;
+                o["collider"] = d.Collider.ToString();
+            }
+            else if (full && !string.IsNullOrEmpty(d.Prefab)) o["prefab"] = d.Prefab;
+            else if (full)
             {
                 o["template"] = d.Template;
                 if (d.TemplateSide != WorldSide.Main) o["templateSide"] = d.TemplateSide.ToString();
@@ -459,6 +470,8 @@ namespace MapExpansions.Lifecycle
         internal static string Write(ExpansionDefinition def, State state)
         {
             var copies = new List<JsonObject>();
+            var models = new List<JsonObject>();
+            var prefabs = new List<JsonObject>();
             foreach (var (owner, id) in state.Copies)
             {
                 var d = CopyList(def, owner)?.FirstOrDefault(c => c.Id == id);
@@ -467,7 +480,8 @@ namespace MapExpansions.Lifecycle
                     Core.Log.Warning($"layer: write '{def.Id}': copy '{owner}/{id}' is no longer in the definition; it is not written");
                     continue;
                 }
-                copies.Add(CopyEntry(owner, d, state.AddedCopies.Contains((owner, id))));
+                var to = !string.IsNullOrEmpty(d.Model) ? models : !string.IsNullOrEmpty(d.Prefab) ? prefabs : copies;
+                to.Add(CopyEntry(owner, d, state.AddedCopies.Contains((owner, id))));
             }
             copies.AddRange(state.RemovedCopies.Select(k => new JsonObject { ["id"] = k.id, ["owner"] = k.owner, ["removed"] = true }));
 
@@ -499,6 +513,8 @@ namespace MapExpansions.Lifecycle
 
             var root = new JsonObject { ["format"] = Format, ["expansion"] = def.Id };
             root["copies"] = Sorted(copies, "owner", "id");
+            if (models.Count > 0) root["models"] = Sorted(models, "owner", "id");
+            if (prefabs.Count > 0) root["prefabs"] = Sorted(prefabs, "owner", "id");
             if (rules.Count > 0) root["rules"] = Sorted(rules, "id");
             if (boxes.Count > 0) root["boxes"] = Sorted(boxes, "owner", "copy", "id");
             // Indented output uses the platform line end; the file keeps one line end everywhere.

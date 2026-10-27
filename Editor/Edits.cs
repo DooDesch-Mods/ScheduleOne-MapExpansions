@@ -251,7 +251,7 @@ namespace MapExpansions.Editor
                 float best = float.MaxValue;
                 foreach (var hit in Physics.RaycastAll(from, Vector3.down, 500f, ~0, QueryTriggerInteraction.Ignore))
                 {
-                    if (p.Built.Local != null && hit.transform.IsChildOf(p.Built.Local.transform)) continue;
+                    if (p.Built.Handle != null && hit.transform.IsChildOf(p.Built.Handle)) continue;
                     if (hit.distance < best) best = hit.distance;
                 }
                 if (best == float.MaxValue)
@@ -371,6 +371,26 @@ namespace MapExpansions.Editor
                 Selection.Set(Items.Select(x => x.source.Key), "undo duplicate");
             }
         }
+
+        /// <summary>A new copy from the catalog, selected once it stands.</summary>
+        internal sealed class PlaceEdit : Edit
+        {
+            public CopyRef Made;
+            public CopyDefinition Def;
+
+            public override bool Do()
+            {
+                var list = Made.List;
+                bool ok = AddCopy(Made, Def, list?.Count ?? 0, new Membership { Copy = true, Added = true }, "place");
+                if (ok) Selection.Set(new[] { Made.Key }, "place");
+                return ok;
+            }
+
+            public override void Undo() => TakeCopy(Made, new Membership(), "undo place");
+        }
+
+        internal static bool PlaceNew(BuiltExpansion b, CopyDefinition d, string what, string why) =>
+            Run(new PlaceEdit { Made = new CopyRef(b.Id, Layers.ExpansionOwner, d.Id), Def = d, What = what }, why);
 
         internal static bool Duplicate(IReadOnlyList<MainCopies.Placed> sel, string why)
         {
