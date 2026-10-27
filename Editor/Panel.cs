@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MapExpansions.Lifecycle;
+using MapExpansions.World;
 using Sideload.Api;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -26,6 +28,7 @@ namespace MapExpansions.Editor
         private static bool _warnedNoEventSystem;
 
         private static readonly List<string> Lines = new();
+        private static string _materialQuery = "";
 
         internal static bool Mounted => _root != null;
 
@@ -93,7 +96,60 @@ namespace MapExpansions.Editor
                 .OnCall("editor.frame", _ => { EditorMode.FrameSelection("toolbar"); return State(); })
                 .OnCall("editor.play", _ => { EditorMode.Play("toolbar"); return ""; })
                 .OnCall("editor.save", _ => { Saving.SaveAll("toolbar"); return State(); })
-                .OnCall("editor.close", _ => { EditorMode.Close("toolbar"); return ""; });
+                .OnCall("editor.close", _ => { EditorMode.Close("toolbar"); return ""; })
+                .OnCall("editor.area", key =>
+                {
+                    var a = AreaRef.Parse(key ?? "");
+                    if (a == null) Core.Log.Warning($"panel: area '{key}' is no rule, opening or box key");
+                    else Areas.Select(a, "hierarchy");
+                    return State();
+                })
+                .OnCall("editor.rule.new", e =>
+                {
+                    if (Enum.TryParse(e, true, out MapExpansions.ObjectEffect effect)) AreaEdits.NewRule(effect, "toolbar");
+                    else Core.Log.Warning($"panel: '{e}' is no rule effect");
+                    return State();
+                })
+                .OnCall("editor.box.new", k =>
+                {
+                    if (Enum.TryParse(k, true, out MapExpansions.BoxKind kind)) AreaEdits.NewBox(kind, "toolbar");
+                    else Core.Log.Warning($"panel: '{k}' is neither Panel nor Block");
+                    return State();
+                })
+                .OnCall("editor.opening.new", _ => { AreaEdits.NewOpening("toolbar"); return State(); })
+                .OnCall("editor.apply", _ => { AreaEdits.Apply("toolbar"); return State(); })
+                .OnCall("editor.rule.effect", e =>
+                {
+                    if (Enum.TryParse(e, true, out MapExpansions.ObjectEffect effect))
+                        AreaEdits.ChangeRule(Areas.Current, r => r.Effect = effect, $"Wirkung {effect}", "inspector");
+                    else Core.Log.Warning($"panel: '{e}' is no rule effect");
+                    return State();
+                })
+                .OnCall("editor.rule.name", text =>
+                {
+                    var t = (text ?? "").Trim();
+                    if (t.Length == 0) Core.Log.Warning("panel: an empty name matches every object; the name stays");
+                    else AreaEdits.ChangeRule(Areas.Current, r => r.Name = t, $"Name {t}", "inspector");
+                    return State();
+                })
+                .OnCall("editor.rule.parent", text =>
+                {
+                    var t = (text ?? "").Trim();
+                    AreaEdits.ChangeRule(Areas.Current, r => r.Parent = t.Length == 0 ? null : t, t.Length == 0 ? "ohne Eltern" : $"Eltern {t}", "inspector");
+                    return State();
+                })
+                .OnCall("editor.box.material", name =>
+                {
+                    if (ObjectRules.LoadedMaterial(name ?? "") == null) Core.Log.Warning($"panel: no loaded material '{name}'; the panel keeps its material");
+                    else AreaEdits.ChangeBox(Areas.Current, x => x.Material = name, $"Material {name}", "inspector");
+                    return State();
+                })
+                .OnCall("editor.materials", q =>
+                {
+                    _materialQuery = q ?? "";
+                    Core.Log.Msg($"panel: material search '{_materialQuery}'");
+                    return State();
+                });
 
             // The selection frame: an outline over the page that takes no pointer.
             var frame = new GameObject("frame");
@@ -223,8 +279,79 @@ namespace MapExpansions.Editor
                     ["dirty"] = Saving.IsDirty(sel),
                 };
             }
+            var rules = new JsonArray();
+            var boxes = new JsonArray();
+            foreach (var b in BuildPipeline.All)
+            {
+                var state = Layers.StateOf(b.Id);
+                foreach (var r in b.Definition.Hide.Take(400))
+                    rules.Add(new JsonObject
+                    {
+                        ["key"] = AreaRef.OfRule(b.Id, r.Key).Key,
+                        ["id"] = r.Key,
+                        ["expansion"] = b.Id,
+                        ["effect"] = r.Effect.ToString(),
+                        ["layer"] = state.Rules.Contains(r.Key),
+                        ["pending"] = AreaEdits.IsPending(b.Id, r.Key),
+                        ["stale"] = AreaEdits.IsStale(b.Id, r.Key),
+                        ["openings"] = r.Effect == MapExpansions.ObjectEffect.Hollow ? r.Openings.Count : 0,
+                    });
+                foreach (var (owner, _, d) in Layers.AllCopies(b.Definition))
+                    foreach (var x in d.Boxes)
+                        boxes.Add(new JsonObject
+                        {
+                            ["key"] = AreaRef.OfBox(b.Id, owner, d.Id, x.Id).Key,
+                            ["id"] = x.Id,
+                            ["copy"] = d.Id,
+                            ["expansion"] = b.Id,
+                            ["kind"] = x.Kind.ToString(),
+                        });
+            }
+            JsonNode area = null;
+            var cur = Areas.Current;
+            if (cur != null)
+            {
+                var o = new JsonObject { ["key"] = cur.Key, ["label"] = cur.Label, ["kind"] = cur.Kind.ToString() };
+                if (cur.Get(out var local, out _))
+                {
+                    o["min"] = Vec(local.min);
+                    o["max"] = Vec(local.max);
+                }
+                var r = cur.RuleDef;
+                if (cur.Kind != AreaKind.Box && r != null)
+                {
+                    o["effect"] = r.Effect.ToString();
+                    o["name"] = r.Name;
+                    o["parent"] = r.Parent ?? "";
+                    o["side"] = r.Side.ToString();
+                    o["pending"] = AreaEdits.IsPending(cur.Expansion, r.Key);
+                    o["stale"] = AreaEdits.IsStale(cur.Expansion, r.Key);
+                }
+                var box = cur.Kind == AreaKind.Box ? cur.BoxDef : null;
+                if (box != null)
+                {
+                    o["boxKind"] = box.Kind.ToString();
+                    o["copy"] = cur.Copy;
+                    o["material"] = box.Material ?? "";
+                    if (box.Kind == MapExpansions.BoxKind.Panel)
+                    {
+                        o["query"] = _materialQuery;
+                        o["materials"] = new JsonArray(AreaEdits.Materials(_materialQuery, 40).Select(m => (JsonNode)new JsonObject
+                        {
+                            ["name"] = m.name,
+                            ["color"] = "#" + ColorUtility.ToHtmlStringRGB(m.color),
+                        }).ToArray());
+                    }
+                }
+                area = o;
+            }
             var root = new JsonObject
             {
+                ["rules"] = rules,
+                ["boxes"] = boxes,
+                ["area"] = area,
+                ["pending"] = AreaEdits.PendingCount,
+                ["stale"] = AreaEdits.StaleCount,
                 ["copies"] = copies,
                 ["selected"] = selected,
                 ["keys"] = keys,

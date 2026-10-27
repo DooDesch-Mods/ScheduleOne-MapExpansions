@@ -38,6 +38,8 @@ namespace MapExpansions.World
         internal sealed class Built
         {
             public CopyDefinition Def;
+            /// <summary>Takes a point of the template to the same point of the copy, in world space; boxes stand by it.</summary>
+            public Matrix4x4 Move;
             public GameObject Local;
             public readonly List<Part> Parts = new();
             /// <summary>
@@ -247,7 +249,7 @@ namespace MapExpansions.World
             go.name = src.name;
             go.transform.SetPositionAndRotation(pose.GetColumn(3), pose.rotation);
             go.transform.localScale = pose.lossyScale;
-            var built = new Built { Def = d };
+            var built = new Built { Def = d, Move = move };
             // A fresh copy has the original's hierarchy, so its lamps pair up with the original's in order.
             var srcLights = src.GetComponentsInChildren<ToggleableLight>(true);
             var copyLights = go.GetComponentsInChildren<ToggleableLight>(true);
@@ -636,6 +638,7 @@ namespace MapExpansions.World
                 d.OntoOffset += Quaternion.Inverse(onto.rotation) * delta;
             }
             if (p.Built.Local != null) p.Built.Local.transform.position += delta;
+            p.Built.Move = Matrix4x4.Translate(delta) * p.Built.Move;
             foreach (var part in p.Built.Parts)
             {
                 part.Position += delta;

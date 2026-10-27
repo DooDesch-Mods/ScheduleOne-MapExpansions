@@ -71,6 +71,7 @@ namespace MapExpansions.Editor
                 }
                 Core.Log.Msg($"pick ({why}): no copy under the cursor at {screen}; selection cleared");
                 Clear();
+                Areas.Deselect(why);
                 return;
             }
             Select(best, $"{why}, {how} at {bestDist:0.0} m", add);
@@ -79,6 +80,7 @@ namespace MapExpansions.Editor
         /// <summary>Selects every copy whose bounds centre lies inside a screen rectangle.</summary>
         internal static void Frame(Camera cam, Rect screen, bool add, string why)
         {
+            Areas.Deselect(why);
             var found = new List<string>();
             foreach (var p in Copies.All())
             {
@@ -101,6 +103,7 @@ namespace MapExpansions.Editor
                 Core.Log.Warning($"select ({why}): the copy has no local object; nothing selected");
                 return;
             }
+            Areas.Deselect(why);
             var key = Copies.Key(p);
             if (add && Keys.Remove(key))
             {
@@ -119,6 +122,7 @@ namespace MapExpansions.Editor
         /// <summary>Replaces the selection by keys, for a step that made or brought back copies.</summary>
         internal static void Set(IEnumerable<string> keys, string why)
         {
+            Areas.Deselect(why);
             Keys.Clear();
             Keys.AddRange(keys.Distinct());
             Refresh();
@@ -140,6 +144,13 @@ namespace MapExpansions.Editor
         {
             Keys.Clear();
             foreach (var l in Lines) l.gameObject.SetActive(false);
+        }
+
+        /// <summary>Clears the copies for a box selection, without touching the box selection.</summary>
+        internal static void ClearQuietly()
+        {
+            if (Keys.Count > 0) Core.Log.Msg($"select: {Keys.Count} copies leave the selection for a box");
+            Clear();
         }
 
         private static void Refresh()

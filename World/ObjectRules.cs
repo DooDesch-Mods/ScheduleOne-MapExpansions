@@ -150,8 +150,54 @@ namespace MapExpansions.World
         private static readonly Dictionary<IntPtr, Hold> Holds = new();
         private static readonly List<Record> Records = new();
 
+        /// <summary>What one hollow rule built and switched off: its shells hold the boxes, linings and frames.</summary>
+        private sealed class HollowRecord
+        {
+            public string ExpansionId;
+            public ObjectRule Rule;
+            public readonly List<BoxCollider> Boxes = new();
+            public readonly List<GameObject> Shells = new();
+        }
+
+        private static readonly List<HollowRecord> Hollows = new();
+
         /// <summary>The effects a rule can be taken back from alone; the others change meshes and colliders for good.</summary>
-        internal static bool CanRevert(ObjectEffect e) => e is ObjectEffect.Hide or ObjectEffect.NoCollision or ObjectEffect.Remove;
+        internal static bool CanRevert(ObjectEffect e) => e is ObjectEffect.Hide or ObjectEffect.NoCollision or ObjectEffect.Remove or ObjectEffect.Hollow;
+
+        /// <summary>Whether the rule is applied in the loaded world, as far as a rule can be taken back.</summary>
+        internal static bool IsApplied(string expansionId, ObjectRule rule) =>
+            Records.Any(r => r.ExpansionId == expansionId && ReferenceEquals(r.Rule, rule)) ||
+            Hollows.Any(r => r.ExpansionId == expansionId && ReferenceEquals(r.Rule, rule));
+
+        /// <summary>Takes back a hollow rule: its shells go and the solid boxes are switched on again.</summary>
+        private static int RevertHollow(BuiltExpansion b, ObjectRule rule)
+        {
+            var rec = Hollows.FirstOrDefault(r => r.ExpansionId == b.Id && ReferenceEquals(r.Rule, rule));
+            if (rec == null)
+            {
+                Core.Log.Warning($"rules: revert '{b.Id}' {rule}: the rule is not applied");
+                return -1;
+            }
+            int shells = 0, boxes = 0;
+            foreach (var s in rec.Shells)
+            {
+                if (s == null) continue;
+                // Destroy runs at the end of the frame; switched off first, the shell stops colliding at once.
+                s.SetActive(false);
+                Object.Destroy(s);
+                shells++;
+            }
+            foreach (var box in rec.Boxes)
+            {
+                if (box == null) continue;
+                box.enabled = true;
+                boxes++;
+            }
+            Hollows.Remove(rec);
+            Physics.SyncTransforms();
+            Core.Log.Msg($"rules: revert '{b.Id}' {rule}: {shells} shells taken out, {boxes} boxes solid again (they stay out of their collider groups)");
+            return boxes;
+        }
 
         /// <summary>Counts the rule as holding the component off and switches it off. True when it was on.</summary>
         private static bool Take(Record rec, Component target, bool enabled, Action<bool> set)
@@ -172,6 +218,7 @@ namespace MapExpansions.World
         /// </summary>
         internal static int Revert(BuiltExpansion b, ObjectRule rule)
         {
+            if (rule.Effect == ObjectEffect.Hollow) return RevertHollow(b, rule);
             var rec = Records.FirstOrDefault(r => r.ExpansionId == b.Id && ReferenceEquals(r.Rule, rule));
             if (rec == null)
             {
@@ -219,6 +266,7 @@ namespace MapExpansions.World
         {
             Holds.Clear();
             Records.Clear();
+            Hollows.Clear();
         }
 
         /// <summary>
@@ -437,6 +485,8 @@ namespace MapExpansions.World
             var added = new List<Collider>();
             var liners = new List<Renderer>();
             bool lined = rule.Bands.Count > 0 || rule.CeilingMaterial != null || rule.FloorMaterial != null;
+            var rec = new HollowRecord { ExpansionId = b.Id, Rule = rule };
+            Hollows.Add(rec);
             foreach (var c in part.Colliders)
             {
                 if (c == null || !c.enabled || c.isTrigger || !SceneIndex.MatchesSelfOrAncestor(c.transform, rule, area)) continue;
@@ -463,6 +513,8 @@ namespace MapExpansions.World
                         pieces += ShellFace(shell, box, th, axis, side, holes, used, added);
                 box.enabled = false;
                 offColliders.Add(box.Pointer);
+                rec.Boxes.Add(box);
+                rec.Shells.Add(shell);
                 hollowed++;
                 if (lined)
                 {

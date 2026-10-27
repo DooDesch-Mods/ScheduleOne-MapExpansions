@@ -300,7 +300,7 @@ namespace MapExpansions.Editor
             return -1;
         }
 
-        private static float DistanceToSegment(Vector2 p, Vector2 a, Vector2 b, float from = 0.2f)
+        internal static float DistanceToSegment(Vector2 p, Vector2 a, Vector2 b, float from = 0.2f)
         {
             var ab = b - a;
             float len = ab.sqrMagnitude;

@@ -52,6 +52,18 @@ namespace MapExpansions.Lifecycle
         /// <summary>The layer state of each expansion as of its last build, changed by the editor until it saves.</summary>
         internal static readonly Dictionary<string, State> States = new(StringComparer.Ordinal);
 
+        /// <summary>Whether the code definition has a rule with this id; a layer then removes it instead of dropping it.</summary>
+        internal static bool IsCodeRule(string expansionId, string key) =>
+            Code.TryGetValue(expansionId, out var c) && c.Rules.Any(r => (string.IsNullOrEmpty(r.Id) ? r.MadeId() : r.Id) == key);
+
+        /// <summary>Whether a copy of the code definition has a box with this id.</summary>
+        internal static bool IsCodeBox(string expansionId, string owner, string copy, string id)
+        {
+            if (!Code.TryGetValue(expansionId, out var c)) return false;
+            var list = owner == ExpansionOwner ? c.Copies : c.ShopCopies.TryGetValue(owner, out var l) ? l : null;
+            return list?.FirstOrDefault(x => x.Id == copy)?.Boxes.Any(x => x.Id == id) == true;
+        }
+
         internal static State StateOf(string expansionId)
         {
             if (!States.TryGetValue(expansionId, out var s)) States[expansionId] = s = new State();

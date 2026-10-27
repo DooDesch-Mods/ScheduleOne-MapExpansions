@@ -124,8 +124,47 @@ namespace MapExpansions.Editor
                     case "rules": Rules(p.Length > 2 ? p[2] : null); break;
                     case "rule" when p.Length > 3: Rule(p[2].ToLowerInvariant(), string.Join(" ", p.Skip(3))); break;
                     case "copy" when p.Length > 3: Copy(p[2].ToLowerInvariant(), p[3]); break;
+                    case "area" when p.Length > 2:
+                        var areaKey = string.Join(" ", p.Skip(2));
+                        var area = AreaRef.Parse(areaKey);
+                        if (area == null) Core.Log.Warning($"[dev] area: '{areaKey}' is no key like exp/rule/key, exp/rule/key/opening/0 or exp/owner/copy/box/id");
+                        else Areas.Select(area, "console");
+                        break;
+                    case "areahandles": Core.Log.Msg($"[dev] areahandles: {Areas.Describe(EditorMode.Camera?.Camera)}"); break;
+                    case "areaset" when p.Length > 7 && Areas.Current != null:
+                        var nb = new Bounds();
+                        nb.SetMinMax(new Vector3(F(p[2]), F(p[3]), F(p[4])), new Vector3(F(p[5]), F(p[6]), F(p[7])));
+                        AreaEdits.SetBox(Areas.Current, nb, $"{Areas.Current.Label} gesetzt", "console");
+                        break;
+                    case "newrule":
+                        var eff = MapExpansions.ObjectEffect.Remove;
+                        if (p.Length > 2 && !Enum.TryParse(p[2], true, out eff)) Core.Log.Warning($"[dev] newrule: '{p[2]}' is no effect");
+                        else AreaEdits.NewRule(eff, "console");
+                        break;
+                    case "newbox" when p.Length > 2:
+                        if (Enum.TryParse(p[2], true, out MapExpansions.BoxKind bk)) AreaEdits.NewBox(bk, "console");
+                        else Core.Log.Warning($"[dev] newbox: '{p[2]}' is neither panel nor block");
+                        break;
+                    case "newopening": AreaEdits.NewOpening("console"); break;
+                    case "effect" when p.Length > 2:
+                        if (Enum.TryParse(p[2], true, out MapExpansions.ObjectEffect fx))
+                            AreaEdits.ChangeRule(Areas.Current, r => r.Effect = fx, $"Wirkung {fx}", "console");
+                        else Core.Log.Warning($"[dev] effect: '{p[2]}' is no effect");
+                        break;
+                    case "material" when p.Length > 2:
+                        AreaEdits.ChangeBox(Areas.Current, x => x.Material = string.Join(" ", p.Skip(2)), $"Material {string.Join(" ", p.Skip(2))}", "console");
+                        break;
+                    case "materials":
+                        var found = AreaEdits.Materials(p.Length > 2 ? string.Join(" ", p.Skip(2)) : "", 30);
+                        Core.Log.Msg($"[dev] materials: {string.Join(", ", found.Select(m => m.name))}");
+                        break;
+                    case "apply": AreaEdits.Apply("console"); break;
+                    case "walk" when p.Length > 4: MelonLoader.MelonCoroutines.Start(Walk(F(p[2]), F(p[3]), F(p[4]))); break;
+                    case "areas":
+                        Core.Log.Msg($"[dev] areas: selected {Areas.Current?.ToString() ?? "none"}; {AreaEdits.PendingCount} rules wait, {AreaEdits.StaleCount} stale");
+                        break;
                     default:
-                        Core.Log.Warning($"[dev] unknown or incomplete: '{sig}'. Use mapedit open|close|state|select <id>...|pick x y [add]|frame x0 y0 x1 y1|move dx dy dz|turn deg|scale s|undo|redo|dup|del|drop|focus|play|resume|draft|mode m|snap grid|turn|edges on|off|sel|save|target <expansion> <file>|cam x y z yaw pitch|look <id> [m]|fly dx dy dz s|hit x y|batch <name>|viewmodel|hold <slot>|count|rules [text]|rule apply|revert <key>|copy apply|revert <expansion/owner/id>");
+                        Core.Log.Warning($"[dev] unknown or incomplete: '{sig}'. Use mapedit open|close|state|select <id>...|pick x y [add]|frame x0 y0 x1 y1|move dx dy dz|turn deg|scale s|undo|redo|dup|del|drop|focus|play|resume|draft|mode m|snap grid|turn|edges on|off|sel|save|target <expansion> <file>|cam x y z yaw pitch|look <id> [m]|fly dx dy dz s|hit x y|batch <name>|viewmodel|hold <slot>|count|rules [text]|rule apply|revert <key>|copy apply|revert <expansion/owner/id>|area <key>|areahandles|areaset x0 y0 z0 x1 y1 z1|newrule [effect]|newbox panel|block|newopening|effect <effect>|material <name>|materials [text]|apply|walk dx dz metres|areas");
                         break;
                 }
             }
@@ -299,6 +338,47 @@ namespace MapExpansions.Editor
                 foreach (var r in b.Definition.Hide)
                     if (text == null || r.Key.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0)
                         Core.Log.Msg($"[dev] rule {b.Id}: '{r.Key}' {r.Effect}{(World.ObjectRules.CanRevert(r.Effect) ? "" : " (not revertable alone)")}");
+        }
+
+        /// <summary>
+        /// Walks the player through the character controller towards a direction, as walking keys would, and logs
+        /// where the walk ended and what stopped it. Runs while the editor is closed or playing.
+        /// </summary>
+        private static System.Collections.IEnumerator Walk(float dx, float dz, float metres)
+        {
+            if (EditorMode.IsOpen && !EditorMode.Playing)
+            {
+                Core.Log.Warning("[dev] walk: the editor holds the player; play (Tab) or close it first");
+                yield break;
+            }
+            var pm = Il2CppScheduleOne.DevUtilities.PlayerSingleton<Il2CppScheduleOne.PlayerScripts.PlayerMovement>.Instance;
+            var cc = pm != null ? pm.Controller : null;
+            if (cc == null)
+            {
+                Core.Log.Warning("[dev] walk: the player has no character controller");
+                yield break;
+            }
+            var dir = new Vector3(dx, 0f, dz).normalized;
+            var start = cc.transform.position;
+            const float speed = 3f;
+            float moved = 0f, stuck = 0f;
+            var last = start;
+            Collider blocker = null;
+            while (moved < metres && stuck < 0.5f)
+            {
+                var flags = cc.Move(dir * speed * Time.deltaTime + Vector3.down * 2f * Time.deltaTime);
+                var now = cc.transform.position;
+                var step = Vector3.Dot(now - last, dir);
+                moved += Mathf.Max(0f, step);
+                stuck = step < speed * Time.deltaTime * 0.2f ? stuck + Time.deltaTime : 0f;
+                if ((flags & CollisionFlags.Sides) != 0 && Physics.Raycast(now + Vector3.up * 0.9f, dir, out var hit, cc.radius + 0.3f, ~0, QueryTriggerInteraction.Ignore))
+                    blocker = hit.collider;
+                last = now;
+                yield return null;
+            }
+            var end = cc.transform.position;
+            if (moved >= metres) Core.Log.Msg($"[dev] walk: walked {moved:0.00} m of {metres:0.00} from {start} to {end}, nothing stopped the player");
+            else Core.Log.Msg($"[dev] walk: stopped after {moved:0.00} m of {metres:0.00} at {end}, against '{(blocker == null ? "?" : World.MeshCarver.Path(blocker.transform))}'");
         }
 
         private static void Rule(string op, string key)
