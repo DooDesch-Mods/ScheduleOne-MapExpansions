@@ -92,6 +92,35 @@ namespace MapExpansions.Editor
         internal static bool Dragging => _dragging;
 
         private static Vector3 _dragFrom;
+        /// <summary>The turn a gizmo drag adds to the dragged point's facing, in degrees.</summary>
+        private static float _dragTurn;
+
+        /// <summary>Region corners have no facing; every other point has one.</summary>
+        internal static bool HasFacing(PointRef r) => r != null && r.Kind != Layers.RegionsKind;
+
+        /// <summary>Region corners lie on the ground; every other point keeps its height.</summary>
+        internal static bool HasHeight(PointRef r) => r != null && r.Kind != Layers.RegionsKind;
+
+        /// <summary>A gizmo drag of the selected point begins; its marker follows <see cref="LiveGizmo"/> until it ends.</summary>
+        internal static void BeginGizmo(Vector3 from)
+        {
+            _press = null;
+            _dragging = true;
+            _dragFrom = _dragWorld = from;
+            _dragTurn = 0f;
+        }
+
+        internal static void LiveGizmo(Vector3 at, float turn)
+        {
+            _dragWorld = at;
+            _dragTurn = turn;
+        }
+
+        internal static void EndGizmo()
+        {
+            _dragging = false;
+            _dragTurn = 0f;
+        }
 
         /// <summary>How far the dragged point has gone, for the cursor readout; null without a drag.</summary>
         internal static string Readout => _dragging ? Panel.Num(Vector3.Distance(_dragFrom, _dragWorld), 2) + " m" : null;
@@ -117,7 +146,7 @@ namespace MapExpansions.Editor
 
         // ---- reading points
 
-        private static string SubLabel(string kind, int sub) => kind switch
+        internal static string SubLabel(string kind, int sub) => kind switch
         {
             Layers.LotsKind => sub == 0 ? "Zufahrt" : $"Stellplatz {sub}",
             Layers.BuildingsKind => $"Tür {sub + 1}",
@@ -304,6 +333,7 @@ namespace MapExpansions.Editor
                     bool live = _dragging && Current?.Key == r.Key;
                     world[i] = live ? _dragWorld : ToWorld(b, kind, pts[i], out _);
                     ToWorld(b, kind, pts[i], out float yaw);
+                    if (live) yaw += _dragTurn;
                     // Region corners are many and far apart; only the selected region's corners get posts.
                     if (kind == Layers.RegionsKind && Current?.EntryKey != r.EntryKey) continue;
                     var m = NextMarker();
@@ -376,7 +406,8 @@ namespace MapExpansions.Editor
                 return true;
             }
 
-            _hover = overPanel ? null : Hovered(cam, mouse);
+            // A gizmo handle over a marker moves the selection; the marker under it does not take the click.
+            _hover = overPanel || Gizmo.OverHandle(cam, overPanel) ? null : Hovered(cam, mouse);
             if (_hover != null && EditorInput.LeftDown(0))
             {
                 Select(_hover.Ref, "click");

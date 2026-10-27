@@ -57,6 +57,9 @@ namespace MapExpansions.Editor
         private static float _dragT0;
         private static readonly List<(MainCopies.Placed p, Vector3 pos, Quaternion rot, Vector3 scale)> Start = new();
         private static (Quaternion turn, float scale, Vector3 move) _live = (Quaternion.identity, 1f, Vector3.zero);
+        /// <summary>The point a running drag moves, or null when it moves the selected copies.</summary>
+        private static PointRef _point;
+        private static float _pointYaw;
 
         private static Shader _shader;
         private static bool _shaderLogged;
@@ -138,30 +141,71 @@ namespace MapExpansions.Editor
             _ring.receiveShadows = false;
         }
 
+        /// <summary>
+        /// What the gizmo works on: the selected copies around the centre of their box, or else the selected point at
+        /// its foot. False when neither is there.
+        /// </summary>
+        private static bool Target(out Vector3 pivot, out PointRef point, out float pointYaw)
+        {
+            point = null;
+            pointYaw = 0f;
+            pivot = default;
+            if (Selection.All.Count > 0)
+            {
+                pivot = Selection.CurrentBounds.center;
+                return true;
+            }
+            var r = Points.Current;
+            if (r == null || !Points.WorldOf(r, out pivot, out pointYaw)) return false;
+            point = r;
+            return true;
+        }
+
+        /// <summary>A point has no size, so it moves under the scale mode; it turns only when it has a facing.</summary>
+        private static GizmoMode ModeFor(PointRef point) =>
+            point == null ? Mode : Mode == GizmoMode.Rotate && Points.HasFacing(point) ? GizmoMode.Rotate : GizmoMode.Move;
+
+        /// <summary>A region corner keeps to the ground; it has no up arrow.</summary>
+        private static bool Flat(PointRef point) => point != null && !Points.HasHeight(point);
+
+        private static float Size(Camera cam, Vector3 pivot) => Mathf.Max(0.3f, FlyCamera.ViewDistance(cam, pivot) * 0.15f);
+
+        /// <summary>True when the cursor is over a handle or a drag runs, so a point marker under it does not take the click.</summary>
+        internal static bool OverHandle(Camera cam, bool overPanel)
+        {
+            if (_drag >= 0) return true;
+            if (cam == null || overPanel || !Target(out var pivot, out var point, out _)) return false;
+            float size = Size(cam, pivot);
+            return ModeFor(point) == GizmoMode.Rotate ? HoveredRing(cam, pivot, size) >= 0 : HoveredAxis(cam, pivot, size, Flat(point)) >= 0;
+        }
+
         /// <summary>Returns true when the gizmo owns the mouse this frame (a drag, or a press on a handle).</summary>
         internal static bool Tick(Camera cam, bool overPanel)
         {
             var sel = Selection.All;
-            if (sel.Count == 0 || cam == null)
+            bool has = Target(out var at, out var point, out float pointYaw) && cam != null;
+            if (_drag >= 0 && (!has || point?.Key != _point?.Key)) Cancel("the selection is gone");
+            if (!has)
             {
-                if (_drag >= 0) Cancel("the selection is gone");
                 if (_root != null) _root.SetActive(false);
                 return false;
             }
             if (_root == null) Build();
             _root.SetActive(true);
 
-            var pivot = _drag >= 0 ? _dragPivot + _live.move : Selection.CurrentBounds.center;
-            float size = Mathf.Max(0.3f, FlyCamera.ViewDistance(cam, pivot) * 0.15f);
-            bool ring = (_drag >= 0 ? _dragMode : Mode) == GizmoMode.Rotate;
+            var pivot = _drag >= 0 ? _dragPivot + _live.move : at;
+            float size = Size(cam, pivot);
+            var mode = _drag >= 0 ? _dragMode : ModeFor(point);
+            bool ring = mode == GizmoMode.Rotate;
+            bool flat = Flat(point);
             for (int i = 0; i < 3; i++)
             {
-                Handles[i].SetActive(!ring);
+                Handles[i].SetActive(!ring && !(flat && i == 1));
                 var t = Handles[i].transform;
                 t.position = pivot + Axes[i] * (size * 0.5f);
                 t.rotation = Quaternion.FromToRotation(Vector3.up, Axes[i]);
                 // Scaling draws thicker handles, so the mode reads at a glance.
-                float thick = Mode == GizmoMode.Scale ? 0.08f : 0.04f;
+                float thick = mode == GizmoMode.Scale ? 0.08f : 0.04f;
                 t.localScale = new Vector3(size * thick, size * 0.5f, size * thick);
             }
             _ring.gameObject.SetActive(ring);
@@ -180,6 +224,7 @@ namespace MapExpansions.Editor
                 if (EditorInput.Left(0))
                 {
                     _live = Live(cam);
+                    if (_point != null) Points.LiveGizmo(_dragPivot + _live.move, _live.turn.eulerAngles.y);
                     foreach (var (p, pos, rot, scale) in Start)
                     {
                         if (p.Built.Handle == null) continue;
@@ -194,23 +239,28 @@ namespace MapExpansions.Editor
                 return true;
             }
 
-            _hover = overPanel ? -1 : ring ? HoveredRing(cam, pivot, size) : HoveredAxis(cam, pivot, size);
+            _hover = overPanel ? -1 : ring ? HoveredRing(cam, pivot, size) : HoveredAxis(cam, pivot, size, flat);
             Paint();
             if (_hover >= 0 && EditorInput.LeftDown(0))
             {
                 _drag = _hover;
-                _dragMode = Mode;
+                _dragMode = mode;
                 _dragPivot = pivot;
                 _dragMouse = EditorInput.MousePosition;
                 _dragT0 = _dragMode == GizmoMode.Move ? AxisParam(cam.ScreenPointToRay(EditorInput.MousePosition), pivot, Axes[_drag]) : 0f;
                 _live = (Quaternion.identity, 1f, Vector3.zero);
+                _point = point;
+                _pointYaw = pointYaw;
                 Start.Clear();
-                foreach (var p in sel)
-                {
-                    var t = p.Built.Handle;
-                    Start.Add((p, t.position, t.rotation, t.localScale));
-                }
-                Core.Log.Msg($"gizmo: {_dragMode} drag{(_dragMode == GizmoMode.Rotate ? "" : " on " + "XYZ"[_drag])} of {sel.Count} copies from {pivot}");
+                if (point != null) Points.BeginGizmo(pivot);
+                else
+                    foreach (var p in sel)
+                    {
+                        var t = p.Built.Handle;
+                        Start.Add((p, t.position, t.rotation, t.localScale));
+                    }
+                string what = point != null ? point.Key : $"{sel.Count} copies";
+                Core.Log.Msg($"gizmo: {_dragMode} drag{(_dragMode == GizmoMode.Rotate ? "" : " on " + "XYZ"[_drag])} of {what} from {pivot}");
                 return true;
             }
             return false;
@@ -238,8 +288,10 @@ namespace MapExpansions.Editor
                 {
                     var ray = cam.ScreenPointToRay(EditorInput.MousePosition);
                     float t = AxisParam(ray, _dragPivot, Axes[_drag]) - _dragT0;
-                    if (Snap.Grid) t = Mathf.Round(t / Snap.GridStep) * Snap.GridStep;
-                    if (Snap.Edges) t += EdgeOffset(_drag, t);
+                    // Points snap as finely as boxes; copies on the coarser grid and against the faces of other copies.
+                    float step = _point != null ? Areas.Step : Snap.GridStep;
+                    if (Snap.Grid) t = Mathf.Round(t / step) * step;
+                    if (Snap.Edges && _point == null) t += EdgeOffset(_drag, t);
                     return (Quaternion.identity, 1f, Axes[_drag] * t);
                 }
             }
@@ -277,7 +329,7 @@ namespace MapExpansions.Editor
             _ring.startColor = _ring.endColor = c;
         }
 
-        private static int HoveredAxis(Camera cam, Vector3 pivot, float size)
+        private static int HoveredAxis(Camera cam, Vector3 pivot, float size, bool flat)
         {
             var mouse = EditorInput.MousePosition;
             var a = cam.WorldToScreenPoint(pivot);
@@ -286,6 +338,7 @@ namespace MapExpansions.Editor
             float bestD = HandlePixels;
             for (int i = 0; i < 3; i++)
             {
+                if (flat && i == 1) continue;
                 var b = cam.WorldToScreenPoint(pivot + Axes[i] * size);
                 if (b.z <= 0f) continue;
                 float d = DistanceToSegment(mouse, a, b);
@@ -351,6 +404,11 @@ namespace MapExpansions.Editor
 
         private static void Commit()
         {
+            if (_point != null)
+            {
+                CommitPoint();
+                return;
+            }
             var sel = Start.Select(x => x.p).Where(p => p.Built.Handle != null).ToList();
             var (turn, scale, move) = _live;
             var mode = _dragMode;
@@ -383,8 +441,31 @@ namespace MapExpansions.Editor
             }
         }
 
+        /// <summary>Writes the moved or turned point as one step; its marker drew the change while dragging.</summary>
+        private static void CommitPoint()
+        {
+            var r = _point;
+            var (turn, _, move) = _live;
+            Points.EndGizmo();
+            _drag = -1;
+            _point = null;
+            _live = (Quaternion.identity, 1f, Vector3.zero);
+            float angle = Mathf.DeltaAngle(0f, turn.eulerAngles.y);
+            bool turned = Mathf.Abs(angle) >= 0.01f;
+            if (!turned && move.sqrMagnitude < 1e-8f)
+            {
+                Core.Log.Msg($"gizmo: {r} stayed where it was");
+                return;
+            }
+            string what = $"{Points.Label(r)}: {Points.SubLabel(r.Kind, r.Sub)} {(turned ? $"um {angle:0.#}° gedreht" : "verschoben")}";
+            if (!Points.MoveTo(r, _dragPivot + move, _pointYaw + angle, what, "drag"))
+                Core.Log.Warning($"gizmo: the drag of {r} was not written; the point stays where it was");
+        }
+
         private static void Cancel(string why)
         {
+            if (_point != null) Points.EndGizmo();
+            _point = null;
             RestoreStart();
             Start.Clear();
             Core.Log.Warning($"gizmo: drag cancelled, {why}; the copies are back at their start");
@@ -395,16 +476,16 @@ namespace MapExpansions.Editor
         /// <summary>Screen points on each handle, for scripted drags: three axis points and two ring points.</summary>
         internal static string Describe(Camera cam)
         {
-            if (Selection.Count == 0 || cam == null) return "nothing is selected";
-            var pivot = Selection.CurrentBounds.center;
-            float size = Mathf.Max(0.3f, FlyCamera.ViewDistance(cam, pivot) * 0.15f);
+            if (cam == null || !Target(out var pivot, out var point, out _)) return "nothing is selected";
+            float size = Size(cam, pivot);
             string P(Vector3 w)
             {
                 var s = cam.WorldToScreenPoint(w);
                 return s.z > 0f ? $"{s.x:0} {s.y:0}" : "behind";
             }
             return $"pivot {P(pivot)}; x {P(pivot + Axes[0] * size * 0.7f)}; y {P(pivot + Axes[1] * size * 0.7f)}; z {P(pivot + Axes[2] * size * 0.7f)}; " +
-                   $"ring {P(pivot + Vector3.right * size)} / {P(pivot + Vector3.forward * size)}; mode {Mode}; screen {Screen.width}x{Screen.height}";
+                   $"ring {P(pivot + Vector3.right * size)} / {P(pivot + Vector3.forward * size)}; mode {ModeFor(point)}; " +
+                   $"target {(point != null ? point.Key : "copies")}; screen {Screen.width}x{Screen.height}";
         }
 
         /// <summary>Ends a drag without writing it and hides the handles.</summary>
