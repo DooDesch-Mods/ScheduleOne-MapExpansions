@@ -72,8 +72,20 @@ namespace MapExpansions.Lifecycle
             var def = entry.Definition;
             var problems = new List<string>();
             if (!IdPattern.IsMatch(def.Id)) problems.Add($"id '{def.Id}' must be 2 to 40 characters of a-z, 0-9, '-' and '_'");
-            if (def.Source == null || string.IsNullOrEmpty(def.Source.SceneName)) problems.Add("no source scene");
-            else if (string.IsNullOrEmpty(def.Source.RootName)) problems.Add("no source root name");
+            if (def.HasSource)
+            {
+                if (string.IsNullOrEmpty(def.Source.RootName)) problems.Add("no source root name");
+            }
+            else
+            {
+                // Without a source the expansion's coordinates are the main world's.
+                if (def.Offset != Vector3.zero || def.QuarterTurns != 0) problems.Add("without a source scene the offset is zero and there is no turn");
+                if (def.Connections.Count > 0) problems.Add($"{def.Connections.Count} connections need a source scene to lead into");
+                if (def.GroundPlates.Count > 0) problems.Add("ground plates need a source scene");
+                if (def.SeparateViews) problems.Add("separate views need a source scene");
+                foreach (var r in def.Hide.Where(r => r.Side == WorldSide.Expansion))
+                    problems.Add($"rule {r} selects in the expansion, which has no source scene");
+            }
             if (def.QuarterTurns < 0 || def.QuarterTurns > 3) problems.Add($"QuarterTurns {def.QuarterTurns} is outside 0..3");
             if (def.Map != null)
             {
@@ -115,6 +127,14 @@ namespace MapExpansions.Lifecycle
                 Core.Log.Warning($"validate: '{def.Id}' was checked against game {string.Join(", ", def.Source.TestedGameVersions)}, " +
                                  $"this is {Application.version}; its source content may have moved");
 
+            var ruleKeys = LayerMerge.Unique(def.Hide.Select(r => string.IsNullOrEmpty(r.Id) ? r.MadeId() : r.Id));
+            for (int i = 0; i < def.Hide.Count; i++) def.Hide[i].Key = ruleKeys[i];
+            foreach (var key in ruleKeys.Where(k => k.Contains('#')))
+                Core.Log.Warning($"validate: '{def.Id}': two rules select the same objects the same way; one is '{key}'");
+            foreach (var c in def.Copies.Concat(def.Shops.SelectMany(s => s.Copies)))
+                foreach (var id in c.Boxes.GroupBy(x => x.Id).Where(g => g.Count() > 1).Select(g => g.Key))
+                    problems.Add($"copy '{c.Id}' has two boxes with the id '{id}'");
+
             if (problems.Count > 0)
             {
                 foreach (var p in problems) Core.Log.Error($"validate: '{def.Id}': {p}");
@@ -123,7 +143,7 @@ namespace MapExpansions.Lifecycle
                 return;
             }
             entry.State = ExpansionState.Validated;
-            Core.Log.Msg($"validate: '{def.Id}' ok: source {def.Source.Key}, offset {def.Offset}, {def.QuarterTurns * 90} degrees, " +
+            Core.Log.Msg($"validate: '{def.Id}' ok: {(def.HasSource ? "source " + def.Source.Key : "no source scene, an edit layer over the main world")}, offset {def.Offset}, {def.QuarterTurns * 90} degrees, " +
                          $"{def.Regions.Count} regions, {def.Connections.Count} connections, {def.Locations.Count} locations, {def.Hide.Count} object rules");
         }
 
@@ -134,7 +154,7 @@ namespace MapExpansions.Lifecycle
         {
             foreach (var e in Entries)
             {
-                if (e.State == ExpansionState.Rejected) continue;
+                if (e.State == ExpansionState.Rejected || !e.Definition.HasSource) continue;
                 string scene = e.Definition.Source.SceneName;
                 if (Application.CanStreamedLevelBeLoaded(scene)) continue;
                 Core.Log.Error($"validate: '{e.Definition.Id}': source scene '{scene}' is not in the game build; the expansion is rejected");

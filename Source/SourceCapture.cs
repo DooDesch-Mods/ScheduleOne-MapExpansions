@@ -111,6 +111,12 @@ namespace MapExpansions.Source
             var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var def in Registry.Usable())
             {
+                if (!def.HasSource)
+                {
+                    // Nothing to capture; the expansion builds from its definition alone.
+                    Registry.SetState(def.Id, ExpansionState.Captured);
+                    continue;
+                }
                 string key = def.Source.Key;
                 if (Captured.ContainsKey(key))
                 {
@@ -213,7 +219,7 @@ namespace MapExpansions.Source
                 _loading = null;
             }
             foreach (var def in Registry.Usable())
-                Registry.SetState(def.Id, Captured.ContainsKey(def.Source.Key) ? ExpansionState.Captured : ExpansionState.CaptureFailed);
+                Registry.SetState(def.Id, !def.HasSource || Captured.ContainsKey(def.Source.Key) ? ExpansionState.Captured : ExpansionState.CaptureFailed);
             Busy = false;
             LoadGate.Release();
         }

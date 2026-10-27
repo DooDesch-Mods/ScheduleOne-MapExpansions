@@ -74,8 +74,12 @@ namespace MapExpansions.Editor
                     case "batch" when p.Length > 2: Batch(string.Join(" ", p.Skip(2))); break;
                     case "viewmodel": Viewmodel(); break;
                     case "hold" when p.Length > 2: Hold(int.Parse(p[2], Ci)); break;
+                    case "count": Count(); break;
+                    case "rules": Rules(p.Length > 2 ? p[2] : null); break;
+                    case "rule" when p.Length > 3: Rule(p[2].ToLowerInvariant(), string.Join(" ", p.Skip(3))); break;
+                    case "copy" when p.Length > 3: Copy(p[2].ToLowerInvariant(), p[3]); break;
                     default:
-                        Core.Log.Warning($"[dev] unknown or incomplete: '{sig}'. Use mapedit open|close|state|select <id>|pick x y|move dx dy dz|save|target <expansion> <file>|cam x y z yaw pitch|look <id> [m]|fly dx dy dz s|hit x y|batch <name>|viewmodel|hold <slot>");
+                        Core.Log.Warning($"[dev] unknown or incomplete: '{sig}'. Use mapedit open|close|state|select <id>|pick x y|move dx dy dz|save|target <expansion> <file>|cam x y z yaw pitch|look <id> [m]|fly dx dy dz s|hit x y|batch <name>|viewmodel|hold <slot>|count|rules [text]|rule apply|revert <key>|copy apply|revert <expansion/owner/id>");
                         break;
                 }
             }
@@ -177,6 +181,82 @@ namespace MapExpansions.Editor
             Core.Log.Msg($"[dev] batch '{name}' ({(copy != null ? "placed copy" : "main world by name")}): {rs.Count} mesh renderers, {batched} part of a static batch");
             foreach (var r in rs.Take(12))
                 Core.Log.Msg($"[dev]   {Path(r.gameObject)}: static batch {r.isPartOfStaticBatch}, static {r.gameObject.isStatic}, enabled {r.enabled}, at {r.transform.position}");
+        }
+
+        /// <summary>What is drawn and solid in the loaded scenes, to compare before and after an apply or revert.</summary>
+        private static void Count()
+        {
+            var all = Object.FindObjectsOfType<Renderer>(true);
+            int renderers = all.Count(r => r.enabled && r.gameObject.activeInHierarchy);
+            // Copies stand below the expansions' roots, which the separate views switch off as a whole.
+            int ours = all.Count(r => Root(r.transform)?.name.StartsWith("MapExpansions.", StringComparison.Ordinal) == true);
+            int colliders = Object.FindObjectsOfType<Collider>().Count(c => c.enabled);
+            int lights = Object.FindObjectsOfType<Light>().Count(l => l.enabled);
+            var held = string.Join(", ", Lifecycle.BuildPipeline.All.Select(b => $"{b.Id} {World.ObjectRules.Counts(b.Id).rules} revertable rules"));
+            Core.Log.Msg($"[dev] count: {renderers} renderers, {colliders} colliders, {lights} lights on; {ours} renderers below expansion roots; {World.MainCopies.All.Count} copies placed; " +
+                         $"{World.ObjectRules.Counts("").held} components held off; {held}");
+        }
+
+        private static Transform Root(Transform t)
+        {
+            while (t != null && t.parent != null) t = t.parent;
+            return t;
+        }
+
+        private static void Rules(string text)
+        {
+            foreach (var b in Lifecycle.BuildPipeline.All)
+                foreach (var r in b.Definition.Hide)
+                    if (text == null || r.Key.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0)
+                        Core.Log.Msg($"[dev] rule {b.Id}: '{r.Key}' {r.Effect}{(World.ObjectRules.CanRevert(r.Effect) ? "" : " (not revertable alone)")}");
+        }
+
+        private static void Rule(string op, string key)
+        {
+            foreach (var b in Lifecycle.BuildPipeline.All)
+            {
+                var rule = b.Definition.Hide.FirstOrDefault(r => r.Key == key);
+                if (rule == null) continue;
+                if (op == "revert") World.ObjectRules.Revert(b, rule);
+                else if (op == "apply") World.ObjectRules.ApplyOne(b, Lifecycle.BuildPipeline.Index, rule);
+                else Core.Log.Warning($"[dev] rule: '{op}' is neither apply nor revert");
+                return;
+            }
+            Core.Log.Warning($"[dev] rule: no built expansion has a rule '{key}'; 'mapedit rules' lists them");
+        }
+
+        private static void Copy(string op, string key)
+        {
+            if (op == "revert")
+            {
+                var placed = Copies.Find(key);
+                if (placed == null)
+                {
+                    Core.Log.Warning($"[dev] copy revert: no placed copy '{key}'");
+                    return;
+                }
+                if (Selection.Current == placed) Selection.Clear();
+                World.MainCopies.Revert(placed);
+                return;
+            }
+            if (op != "apply")
+            {
+                Core.Log.Warning($"[dev] copy: '{op}' is neither apply nor revert");
+                return;
+            }
+            foreach (var b in Lifecycle.BuildPipeline.All)
+                foreach (var (owner, shop, d) in Lifecycle.Layers.AllCopies(b.Definition))
+                {
+                    if ($"{b.Id}/{owner}/{d.Id}" != key && d.Id != key) continue;
+                    if (Copies.Find($"{b.Id}/{owner}/{d.Id}") != null)
+                    {
+                        Core.Log.Warning($"[dev] copy apply: '{b.Id}/{owner}/{d.Id}' is placed already; revert it first");
+                        return;
+                    }
+                    World.MainCopies.ApplyOne(b, d, shop == null ? "expansion" : $"shop '{shop}'", owner);
+                    return;
+                }
+            Core.Log.Warning($"[dev] copy apply: no definition has a copy '{key}'");
         }
 
         /// <summary>Equips a hotbar slot (1 based), as the number key does.</summary>

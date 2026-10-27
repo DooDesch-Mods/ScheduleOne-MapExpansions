@@ -29,6 +29,9 @@ namespace MapExpansions.Editor
                              "An expansion without a path is written to Mods/<id>/map.json.");
             ReadKey();
             _openKey.OnEntryValueChanged.Subscribe((_, _) => ReadKey());
+#if DEBUG
+            TestExpansion.RegisterIfAsked();
+#endif
             Log.Msg($"initialized; {HarmonyInstance.GetPatchedMethods().Count()} methods patched, open key {_key}");
         }
 

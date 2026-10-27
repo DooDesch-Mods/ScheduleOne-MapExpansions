@@ -68,34 +68,15 @@ namespace MapExpansions.World
         {
             var result = new List<Built>();
             if (defs.Count == 0) return result;
-            var names = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var d in defs)
-            {
-                names.Add(FirstSegment(d.Template));
-                if (!string.IsNullOrEmpty(d.Frame)) names.Add(FirstSegment(d.Frame));
-            }
-            var found = FindInMain(names);
+            var found = FindInMain(MainNames(defs));
             var zoneLights = ZoneLightsOfMain();
-
-            var templates = b.Root.transform.Find("Copy Templates")?.gameObject;
-            if (templates == null)
-            {
-                templates = new GameObject("Copy Templates");
-                templates.SetActive(false);
-                templates.transform.SetParent(b.Root.transform, false);
-            }
-            var holder = b.Root.transform.Find("Copies")?.gameObject;
-            if (holder == null)
-            {
-                holder = new GameObject("Copies");
-                holder.transform.SetParent(b.Root.transform, false);
-            }
+            var (templates, holder) = Holders(b);
 
             foreach (var d in defs)
             {
                 try
                 {
-                    var built = BuildOne(b, d, owner, found, zoneLights, templates.transform, holder.transform);
+                    var built = BuildOne(b, d, owner, found, zoneLights, templates, holder);
                     if (built != null)
                     {
                         result.Add(built);
@@ -112,6 +93,98 @@ namespace MapExpansions.World
             return result;
         }
 
+        private static HashSet<string> MainNames(IEnumerable<CopyDefinition> defs)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var d in defs)
+            {
+                if (d.TemplateSide != WorldSide.Main || string.IsNullOrEmpty(d.Template)) continue;
+                names.Add(FirstSegment(d.Template));
+                if (!string.IsNullOrEmpty(d.Frame)) names.Add(FirstSegment(d.Frame));
+            }
+            return names;
+        }
+
+        private static (Transform templates, Transform holder) Holders(BuiltExpansion b)
+        {
+            var templates = b.Root.transform.Find("Copy Templates")?.gameObject;
+            if (templates == null)
+            {
+                templates = new GameObject("Copy Templates");
+                templates.SetActive(false);
+                templates.transform.SetParent(b.Root.transform, false);
+            }
+            var holder = b.Root.transform.Find("Copies")?.gameObject;
+            if (holder == null)
+            {
+                holder = new GameObject("Copies");
+                holder.transform.SetParent(b.Root.transform, false);
+            }
+            return (templates.transform, holder.transform);
+        }
+
+        /// <summary>
+        /// Builds one copy into a world that is already built, as a map editor adds or rebuilds it. Its networked parts
+        /// are spawned at once when this peer is the host.
+        /// </summary>
+        internal static Placed ApplyOne(BuiltExpansion b, CopyDefinition d, string owner, string layerOwner)
+        {
+            if (b?.Root == null)
+            {
+                Core.Log.Error($"copies: apply '{d?.Id}': the expansion is not built");
+                return null;
+            }
+            var (templates, holder) = Holders(b);
+            Built built;
+            try
+            {
+                built = BuildOne(b, d, owner, FindInMain(MainNames(new[] { d })), ZoneLightsOfMain(), templates, holder);
+            }
+            catch (Exception e)
+            {
+                Core.Log.Error($"copies: apply '{b.Id}' {owner} '{d.Id}' failed: {e}");
+                return null;
+            }
+            if (built == null) return null;
+            var placed = new Placed { Expansion = b, LayerOwner = layerOwner, Built = built };
+            All.Add(placed);
+            if (built.Parts.Count > 0)
+            {
+                if (InstanceFinder.IsServer) MelonCoroutines.Start(SpawnWhenNetworked());
+                else Core.Log.Warning($"copies: apply '{b.Id}' {owner} '{d.Id}': this peer is no host; its {built.Parts.Count} networked parts are not spawned");
+            }
+            Core.Log.Msg($"copies: apply '{b.Id}' {owner} '{d.Id}': built, {built.Parts.Count} networked parts");
+            return placed;
+        }
+
+        /// <summary>Takes a built copy out of the world: its local object, its spawned parts and its place in <see cref="All"/>.</summary>
+        internal static void Revert(Placed p)
+        {
+            if (p == null) return;
+            var d = p.Built.Def;
+            int parts = 0;
+            foreach (var part in p.Built.Parts)
+            {
+                Parts.Remove(part);
+                if (part.Instance == null) continue;
+                try
+                {
+                    if (InstanceFinder.IsServer && part.Instance.IsSpawned) InstanceFinder.ServerManager.Despawn(part.Instance.gameObject, null);
+                    else Object.Destroy(part.Instance.gameObject);
+                    parts++;
+                }
+                catch (Exception e)
+                {
+                    Core.Log.Error($"copies: revert '{p.Expansion.Id}' {p.LayerOwner} '{d.Id}': removing part '{part.Key}' failed: {e}");
+                }
+                part.Instance = null;
+            }
+            if (p.Built.Local != null) Object.Destroy(p.Built.Local);
+            p.Built.Local = null;
+            All.Remove(p);
+            Core.Log.Msg($"copies: revert '{p.Expansion.Id}' {p.LayerOwner} '{d.Id}': taken out, {parts} networked parts removed");
+        }
+
         private static Built BuildOne(BuiltExpansion b, CopyDefinition d, string owner, Dictionary<string, Transform> found,
             HashSet<int> zoneLights, Transform templates, Transform holder)
         {
@@ -120,16 +193,18 @@ namespace MapExpansions.World
                 Core.Log.Error($"copies: '{b.Id}' {owner} has a copy without id or template ('{d.Id}', '{d.Template}'); it is not built");
                 return null;
             }
-            var src = Resolve(found, d.Template);
+            bool fromMain = d.TemplateSide == WorldSide.Main;
+            string world = fromMain ? "the main world" : "the expansion";
+            var src = fromMain ? Resolve(found, d.Template) : FindInExpansion(b, d.Template);
             if (src == null)
             {
-                Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': '{d.Template}' is not in the main world; it is not built");
+                Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': '{d.Template}' is not in {world}; it is not built");
                 return null;
             }
-            var frame = string.IsNullOrEmpty(d.Frame) ? src : Resolve(found, d.Frame);
+            var frame = string.IsNullOrEmpty(d.Frame) ? src : fromMain ? Resolve(found, d.Frame) : FindInExpansion(b, d.Frame);
             if (frame == null)
             {
-                Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': frame '{d.Frame}' is not in the main world; it is not built");
+                Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': frame '{d.Frame}' is not in {world}; it is not built");
                 return null;
             }
 
@@ -152,8 +227,9 @@ namespace MapExpansions.World
             var move = at * frameM.inverse;
             var pose = move * src.localToWorldMatrix;
             var toMain = move.inverse;
-            var anchors = AnchorHolder(b);
-            if (!string.IsNullOrEmpty(d.Onto))
+            // A template of the expansion has no baked light in the main world to borrow.
+            var anchors = fromMain ? AnchorHolder(b) : null;
+            if (fromMain && !string.IsNullOrEmpty(d.Onto))
             {
                 // The building the copy goes into is the counterpart of the original's, so its walls light like those.
                 var onto = FindInExpansion(b, d.Onto);
@@ -214,7 +290,7 @@ namespace MapExpansions.World
             go.transform.SetParent(holder, true);
             go.SetActive(true);
             var (batched, batchRoots, _) = StaticBatches.Follow(go.transform, move, $"{owner} {d.Id}");
-            var (anchored, points) = AnchorProbes(anchors, go, toMain);
+            var (anchored, points) = anchors != null ? AnchorProbes(anchors, go, toMain) : (0, 0);
             built.Local = go;
             Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}' from '{d.Template}' stands at {go.transform.position}, " +
                          $"{go.GetComponentsInChildren<Renderer>(true).Length} renderers, {batched} batched over {batchRoots} roots, " +
@@ -225,34 +301,42 @@ namespace MapExpansions.World
         /// <summary>The definition's panels and blocks as boxes below the copy, moved from the main world like it.</summary>
         private static void AddPanels(BuiltExpansion b, CopyDefinition d, string owner, GameObject go, Matrix4x4 move)
         {
-            foreach (var (box, material) in d.Panels)
+            foreach (var box in d.Boxes) AddBox(b, d, owner, go.transform, move, box);
+        }
+
+        /// <summary>Name of a box's object below its copy; a map editor finds the box by it.</summary>
+        internal static string BoxName(BoxDefinition box) => $"MapExpansions.{box.Kind}.{box.Id}";
+
+        internal static GameObject AddBox(BuiltExpansion b, CopyDefinition d, string owner, Transform copy, Matrix4x4 move, BoxDefinition box)
+        {
+            var bounds = box.Box;
+            GameObject go;
+            if (box.Kind == BoxKind.Panel)
             {
-                var mat = ObjectRules.LoadedMaterial(material);
+                var mat = ObjectRules.LoadedMaterial(box.Material);
                 if (mat == null)
                 {
-                    Core.Log.Error($"copies: '{b.Id}' {owner} '{d.Id}': no loaded material '{material}'; the panel at {box.center} is left out");
-                    continue;
+                    Core.Log.Error($"copies: '{b.Id}' {owner} '{d.Id}' panel '{box.Id}': no loaded material '{box.Material}'; the panel at {bounds.center} is left out");
+                    return null;
                 }
-                var panel = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                panel.name = "MapExpansions.Panel";
+                go = GameObject.CreatePrimitive(PrimitiveType.Cube);
                 // The copy's own colliders already stand around the panel.
-                Object.Destroy(panel.GetComponent<Collider>());
-                panel.layer = go.layer;
-                panel.transform.SetPositionAndRotation(move.MultiplyPoint3x4(box.center), move.rotation);
-                panel.transform.localScale = Vector3.Scale(box.size, move.lossyScale);
-                panel.GetComponent<MeshRenderer>().sharedMaterial = mat;
-                panel.transform.SetParent(go.transform, true);
-                Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': panel of {box.size} in '{material}' stands at {panel.transform.position}");
+                Object.Destroy(go.GetComponent<Collider>());
+                go.layer = copy.gameObject.layer;
+                go.GetComponent<MeshRenderer>().sharedMaterial = mat;
             }
-            foreach (var box in d.Blocks)
+            else
             {
-                var block = new GameObject("MapExpansions.Block");
-                block.transform.SetPositionAndRotation(move.MultiplyPoint3x4(box.center), move.rotation);
-                block.transform.localScale = Vector3.Scale(box.size, move.lossyScale);
-                block.AddComponent<BoxCollider>();
-                block.transform.SetParent(go.transform, true);
-                Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': block of {box.size} stands at {block.transform.position}");
+                go = new GameObject();
+                go.AddComponent<BoxCollider>();
             }
+            go.name = BoxName(box);
+            go.transform.SetPositionAndRotation(move.MultiplyPoint3x4(bounds.center), move.rotation);
+            go.transform.localScale = Vector3.Scale(bounds.size, move.lossyScale);
+            go.transform.SetParent(copy, true);
+            Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {box.Kind.ToString().ToLowerInvariant()} '{box.Id}' of {bounds.size}" +
+                         $"{(box.Kind == BoxKind.Panel ? $" in '{box.Material}'" : "")} stands at {go.transform.position}");
+            return go;
         }
 
         /// <summary>Side of the cells in which renderers share one probe anchor, in metres.</summary>

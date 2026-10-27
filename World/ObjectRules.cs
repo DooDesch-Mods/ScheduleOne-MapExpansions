@@ -88,26 +88,26 @@ namespace MapExpansions.World
                 int renderers = 0, colliders = 0, terrains = 0, lights = 0;
                 bool hide = rule.Effect != ObjectEffect.NoCollision;
                 bool noCollision = rule.Effect != ObjectEffect.Hide;
+                var rec = new Record { ExpansionId = b.Id, Rule = rule };
+                Records.Add(rec);
                 if (hide)
                     foreach (var r in part.Renderers)
                     {
-                        if (r == null || !r.enabled || !SceneIndex.MatchesSelfOrAncestor(r.transform, rule, area)) continue;
-                        r.enabled = false;
-                        renderers++;
+                        if (r == null || !SceneIndex.MatchesSelfOrAncestor(r.transform, rule, area)) continue;
+                        if (Take(rec, r, r.enabled, v => r.enabled = v)) renderers++;
                     }
                 // A removed car's headlights would still light up the walls it stood in front of.
                 if (hide)
                     foreach (var l in part.Lights)
                     {
-                        if (l == null || !l.enabled || !SceneIndex.MatchesSelfOrAncestor(l.transform, rule, area)) continue;
-                        l.enabled = false;
-                        lights++;
+                        if (l == null || !SceneIndex.MatchesSelfOrAncestor(l.transform, rule, area)) continue;
+                        if (Take(rec, l, l.enabled, v => l.enabled = v)) lights++;
                     }
                 if (noCollision)
                     foreach (var c in part.Colliders)
                     {
-                        if (c == null || !c.enabled || !SceneIndex.MatchesSelfOrAncestor(c.transform, rule, area)) continue;
-                        c.enabled = false;
+                        if (c == null || !SceneIndex.MatchesSelfOrAncestor(c.transform, rule, area)) continue;
+                        if (!Take(rec, c, c.enabled, v => c.enabled = v)) continue;
                         offColliders.Add(c.Pointer);
                         colliders++;
                     }
@@ -115,15 +115,11 @@ namespace MapExpansions.World
                 {
                     if (t == null || !SceneIndex.MatchesSelfOrAncestor(t.transform, rule, area)) continue;
                     // A switched-off terrain also drops out of Terrain.activeTerrains, which the vehicle graph scan reads.
-                    if (hide) t.enabled = false;
+                    if (hide) Take(rec, t, t.enabled, v => t.enabled = v);
                     if (noCollision)
                     {
                         var tc = t.GetComponent<TerrainCollider>();
-                        if (tc != null && tc.enabled)
-                        {
-                            tc.enabled = false;
-                            offColliders.Add(tc.Pointer);
-                        }
+                        if (tc != null && Take(rec, tc, tc.enabled, v => tc.enabled = v)) offColliders.Add(tc.Pointer);
                     }
                     terrains++;
                 }
@@ -131,6 +127,98 @@ namespace MapExpansions.World
                 if (renderers + colliders + terrains == 0) Core.Log.Warning(line + "; the rule matched nothing");
                 else Core.Log.Msg(line);
             }
+        }
+
+        /// <summary>A component a hiding rule switched off, and how many rules want it off.</summary>
+        private sealed class Hold
+        {
+            public Object Target;
+            public Action<bool> Set;
+            public int Count;
+            /// <summary>A rule switched it off; it was on before. Only these are switched on again.</summary>
+            public bool Ours;
+        }
+
+        /// <summary>What one hiding rule holds off, so the rule can be taken back alone.</summary>
+        private sealed class Record
+        {
+            public string ExpansionId;
+            public ObjectRule Rule;
+            public readonly List<IntPtr> Keys = new();
+        }
+
+        private static readonly Dictionary<IntPtr, Hold> Holds = new();
+        private static readonly List<Record> Records = new();
+
+        /// <summary>The effects a rule can be taken back from alone; the others change meshes and colliders for good.</summary>
+        internal static bool CanRevert(ObjectEffect e) => e is ObjectEffect.Hide or ObjectEffect.NoCollision or ObjectEffect.Remove;
+
+        /// <summary>Counts the rule as holding the component off and switches it off. True when it was on.</summary>
+        private static bool Take(Record rec, Component target, bool enabled, Action<bool> set)
+        {
+            var key = target.Pointer;
+            if (!Holds.TryGetValue(key, out var h)) Holds[key] = h = new Hold { Target = target, Set = set };
+            h.Count++;
+            rec.Keys.Add(key);
+            if (!enabled) return false;
+            set(false);
+            h.Ours = true;
+            return true;
+        }
+
+        /// <summary>
+        /// Takes back one hiding rule: what no other rule still holds off and a rule switched off comes back on.
+        /// Returns the components switched on, or -1 when the rule cannot be taken back alone.
+        /// </summary>
+        internal static int Revert(BuiltExpansion b, ObjectRule rule)
+        {
+            var rec = Records.FirstOrDefault(r => r.ExpansionId == b.Id && ReferenceEquals(r.Rule, rule));
+            if (rec == null)
+            {
+                if (CanRevert(rule.Effect)) Core.Log.Warning($"rules: revert '{b.Id}' {rule}: the rule is not applied");
+                else Core.Log.Warning($"rules: revert '{b.Id}' {rule}: {rule.Effect} changes meshes or colliders; only rebuilding the world takes it back");
+                return -1;
+            }
+            int back = 0;
+            foreach (var key in rec.Keys)
+            {
+                if (!Holds.TryGetValue(key, out var h)) continue;
+                if (--h.Count > 0) continue;
+                Holds.Remove(key);
+                if (!h.Ours || h.Target == null) continue;
+                h.Set(true);
+                back++;
+            }
+            Records.Remove(rec);
+            Core.Log.Msg($"rules: revert '{b.Id}' {rule}: {back} components on again, {rec.Keys.Count - back} stay as other rules or the world keep them");
+            return back;
+        }
+
+        /// <summary>Applies one rule to a world that is already built, as a map editor adds or changes it.</summary>
+        internal static void ApplyOne(BuiltExpansion b, SceneIndex index, ObjectRule rule)
+        {
+            if (index == null)
+            {
+                Core.Log.Error($"rules: apply '{b.Id}' {rule}: the world has no scene index; nothing is applied");
+                return;
+            }
+            var off = new HashSet<IntPtr>();
+            var holes = new TerrainOps.HoleMask(b);
+            Apply(b, index, new[] { rule }, off, holes);
+            int cells = holes.Apply();
+            int detached = ColliderKeepAlive.Detach(off);
+            Physics.SyncTransforms();
+            Core.Log.Msg($"rules: apply '{b.Id}' {rule}: {off.Count} colliders off ({detached} taken out of collider groups), {cells} terrain cells changed");
+        }
+
+        /// <summary>How many hiding rules are applied and how many components they hold off, for checks.</summary>
+        internal static (int rules, int held) Counts(string expansionId) =>
+            (Records.Count(r => r.ExpansionId == expansionId), Holds.Count);
+
+        internal static void Clear()
+        {
+            Holds.Clear();
+            Records.Clear();
         }
 
         /// <summary>

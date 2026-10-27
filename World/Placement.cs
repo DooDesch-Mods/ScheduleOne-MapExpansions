@@ -12,7 +12,7 @@ namespace MapExpansions.World
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var src = b.Source?.Root;
-            if (src == null)
+            if (src == null && b.Definition.HasSource)
             {
                 Core.Log.Error($"place: '{b.Id}' has no captured root");
                 return false;
@@ -22,6 +22,11 @@ namespace MapExpansions.World
             SceneManager.MoveGameObjectToScene(root, main);
             root.transform.SetPositionAndRotation(b.Frame.Offset, b.Frame.Rotation);
             b.Root = root;
+            if (src == null)
+            {
+                Core.Log.Msg($"place: '{b.Id}' has no source scene; its root holds only what the definition adds");
+                return true;
+            }
 
             // The captured root sits at the cache's origin, so its local pose is its pose in the source scene.
             var copy = Object.Instantiate(src, root.transform, false);

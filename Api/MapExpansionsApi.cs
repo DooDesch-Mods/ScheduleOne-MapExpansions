@@ -127,7 +127,7 @@ namespace MapExpansions
         {
             character = null;
             var def = Registry.GetDefinition(expansionId);
-            var src = def != null ? Source.SourceCapture.Get(def.Source.Key) : null;
+            var src = def != null && def.HasSource ? Source.SourceCapture.Get(def.Source.Key) : null;
             character = src?.Characters.FirstOrDefault(c => string.Equals(c.ObjectName, objectName, StringComparison.Ordinal));
             return character != null;
         }

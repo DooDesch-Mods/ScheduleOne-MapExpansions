@@ -34,6 +34,9 @@ namespace MapExpansions.Lifecycle
 
         public static IReadOnlyList<BuiltExpansion> All => Builds.Select(x => x.Expansion).ToList();
 
+        /// <summary>The scene index of the last build, kept for rules applied one at a time afterwards.</summary>
+        internal static SceneIndex Index { get; private set; }
+
         public static void OnMainInitialized()
         {
             if (Builds.Count > 0)
@@ -56,8 +59,8 @@ namespace MapExpansions.Lifecycle
                     Core.Log.Warning($"build: '{def.Id}' is {state}; it is not built");
                     continue;
                 }
-                var src = SourceCapture.Get(def.Source.Key);
-                if (src == null || src.Root == null)
+                var src = def.HasSource ? SourceCapture.Get(def.Source.Key) : null;
+                if (def.HasSource && (src == null || src.Root == null))
                 {
                     Core.Log.Error($"build: '{def.Id}' source '{def.Source.Key}' is not in the cache; it is not built");
                     Registry.SetState(def.Id, ExpansionState.BuildFailed);
@@ -89,6 +92,7 @@ namespace MapExpansions.Lifecycle
             Physics.SyncTransforms();
             var built = Builds.Select(x => x.Expansion).ToList();
             var index = SceneIndex.Build(main, built);
+            Index = index;
             foreach (var x in Builds.ToList())
             {
                 var b = x.Expansion;
@@ -180,6 +184,14 @@ namespace MapExpansions.Lifecycle
                     Core.Log.Warning($"build: '{b.Id}' is {Registry.GetState(b.Id)}; navigation is not joined");
                     continue;
                 }
+                if (!b.Definition.HasSource)
+                {
+                    // An edit layer brings no ground of its own to drive or walk on.
+                    Core.Log.Msg($"build: '{b.Id}' has no source scene; no navigation to join");
+                    Registry.SetState(b.Id, ExpansionState.Ready);
+                    MapExpansionsApi.RaiseReady(b.Id);
+                    continue;
+                }
                 bool failed = false;
                 try
                 {
@@ -237,6 +249,8 @@ namespace MapExpansions.Lifecycle
             if (_navRoutine != null) MelonCoroutines.Stop(_navRoutine);
             _navRoutine = null;
             NavLinks.Clear();
+            ObjectRules.Clear();
+            Index = null;
             Properties.Clear();
             PoliceStations.Clear();
             Shops.Clear();

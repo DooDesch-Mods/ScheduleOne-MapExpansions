@@ -47,6 +47,8 @@
   <!-- The map editor is its own mod in Editor/. It is not part of this assembly, but sees its internals. -->
   <ItemGroup>
     <Compile Remove="Editor/**" />
+    <Compile Remove="Tests/**" />
+    <None Remove="Tests/**" />
     <EmbeddedResource Remove="Editor/**" />
     <None Remove="Editor/**" />
     <InternalsVisibleTo Include="MapExpansions.Editor" />

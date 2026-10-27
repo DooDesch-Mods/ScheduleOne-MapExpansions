@@ -50,15 +50,34 @@ namespace MapExpansions
         public bool OwnMesh { get; set; } = true;
 
         /// <summary>Paths below the template that are left out of the copy, such as a door to a room the expansion lacks.</summary>
-        public List<string> Exclude { get; } = new();
+        public List<string> Exclude { get; private set; } = new();
 
         /// <summary>
-        /// Solid boxes added to the copy, in the main world's coordinates like the template, each with the name of a
-        /// loaded material. For a side the original leaves open because it stands against a wall the expansion lacks.
+        /// Boxes added to the copy, in the main world's coordinates like the template: panels with a loaded material for
+        /// a side the original leaves open, and invisible blocks for a collider that would reach through the
+        /// expansion's walls.
         /// </summary>
-        public List<(Bounds Box, string Material)> Panels { get; } = new();
+        public List<BoxDefinition> Boxes { get; private set; } = new();
+
+        /// <summary>The panels among <see cref="Boxes"/>.</summary>
+        public IEnumerable<BoxDefinition> Panels => Boxes.Where(b => b.Kind == BoxKind.Panel);
+
+        /// <summary>The blocks among <see cref="Boxes"/>.</summary>
+        public IEnumerable<BoxDefinition> Blocks => Boxes.Where(b => b.Kind == BoxKind.Block);
+
+        /// <summary>Which world <see cref="Template"/> and <see cref="Frame"/> are found in.</summary>
+        public WorldSide TemplateSide { get; set; } = WorldSide.Main;
 
         public CopyDefinition() { }
+
+        /// <summary>A copy of this definition with its own lists and boxes, for a layer to change.</summary>
+        internal CopyDefinition Clone()
+        {
+            var c = (CopyDefinition)MemberwiseClone();
+            c.Exclude = new List<string>(Exclude);
+            c.Boxes = Boxes.Select(b => b.Clone()).ToList();
+            return c;
+        }
 
         public CopyDefinition(string id, string template, string frame, LocalPoint at)
         {
@@ -73,29 +92,51 @@ namespace MapExpansions
             Vector3 offset = default, Vector3 rotation = default) =>
             new() { Id = id, Template = template, Frame = frame, Onto = onto, OntoOffset = offset, OntoRotation = rotation };
 
-        /// <summary>Adds a box to <see cref="Panels"/>.</summary>
-        public CopyDefinition Panel(Vector3 min, Vector3 max, string material)
+        /// <summary>Adds a panel to <see cref="Boxes"/>. Without an id it is "panel-1", "panel-2" in order.</summary>
+        public CopyDefinition Panel(Vector3 min, Vector3 max, string material, string id = null) =>
+            AddBox(BoxKind.Panel, min, max, material, id);
+
+        /// <summary>Adds a block to <see cref="Boxes"/>. Without an id it is "block-1", "block-2" in order.</summary>
+        public CopyDefinition Block(Vector3 min, Vector3 max, string id = null) => AddBox(BoxKind.Block, min, max, null, id);
+
+        private CopyDefinition AddBox(BoxKind kind, Vector3 min, Vector3 max, string material, string id)
         {
             var b = new Bounds();
             b.SetMinMax(Vector3.Min(min, max), Vector3.Max(min, max));
-            Panels.Add((b, material));
+            Boxes.Add(new BoxDefinition
+            {
+                Id = string.IsNullOrEmpty(id) ? Lifecycle.LayerMerge.BoxId(kind.ToString(), Boxes.Count(x => x.Kind == kind)) : id,
+                Kind = kind,
+                Box = b,
+                Material = material,
+            });
             return this;
         }
+    }
 
-        /// <summary>
-        /// Invisible boxes that block the player, in the main world's coordinates like <see cref="Panels"/>. For a
-        /// collider of the original that would reach through the expansion's walls.
-        /// </summary>
-        public List<Bounds> Blocks { get; } = new();
+    public enum BoxKind
+    {
+        /// <summary>A solid box drawn with a loaded material; the copy's own colliders stand around it.</summary>
+        Panel,
 
-        /// <summary>Adds a box to <see cref="Blocks"/>.</summary>
-        public CopyDefinition Block(Vector3 min, Vector3 max)
-        {
-            var b = new Bounds();
-            b.SetMinMax(Vector3.Min(min, max), Vector3.Max(min, max));
-            Blocks.Add(b);
-            return this;
-        }
+        /// <summary>An invisible box collider that blocks the player.</summary>
+        Block,
+    }
+
+    /// <summary>A box of a copy, in the main world's coordinates like the copy's template.</summary>
+    public sealed class BoxDefinition
+    {
+        /// <summary>Stable id inside its copy, which a map layer uses to replace or remove the box.</summary>
+        public string Id { get; set; }
+
+        public BoxKind Kind { get; set; }
+
+        public Bounds Box { get; set; }
+
+        /// <summary>For <see cref="BoxKind.Panel"/>: the name of a loaded material.</summary>
+        public string Material { get; set; }
+
+        internal BoxDefinition Clone() => (BoxDefinition)MemberwiseClone();
     }
 
     /// <summary>What a shop's counter opens.</summary>
