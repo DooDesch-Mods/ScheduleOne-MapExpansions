@@ -11,43 +11,48 @@ namespace MapExpansions.Editor
         Scale,
     }
 
-    /// <summary>Snapping the toolbar switches: a move grid, a turn step, and the faces of other copies.</summary>
-    internal static class Snap
-    {
-        internal const float GridStep = 0.5f;
-        internal const float TurnStep = 15f;
-        internal const float ScaleStep = 0.05f;
-        /// <summary>How near a face of another copy must come before the moved selection lies against it.</summary>
-        internal const float EdgeReach = 0.25f;
-
-        internal static bool Grid = true;
-        internal static bool Turn = true;
-        internal static bool Edges;
-    }
-
     /// <summary>
-    /// The gizmo at the selection. Moving and scaling show three axis handles: a drag along one moves the selection
-    /// along that axis, or scales it evenly from its centre. Turning shows a ring around the vertical axis; a drag
-    /// sideways turns the selection around its centre. The copies follow the mouse while dragging, and the change is
-    /// one step of the history on release.
+    /// The gizmo at the selection, drawn as in Unity and Unreal. Moving shows three arrows with cone tips and three
+    /// small squares between them: a drag on an arrow moves the selection along that axis, a drag on a square moves it
+    /// in that plane. Scaling shows the axes with cube tips; a drag scales evenly from the centre. Turning shows a ring
+    /// around the vertical axis; a drag sideways turns the selection around its centre. The copies follow the mouse
+    /// while dragging, and the change is one step of the history on release.
     /// </summary>
     internal static class Gizmo
     {
         private const float HandlePixels = 10f;
         private const int RingPoints = 64;
+        private const int ConeSides = 16;
+
+        /// <summary>Where along an axis the shaft ends and the cone begins, as a share of the gizmo size.</summary>
+        private const float ShaftEnd = 0.8f;
+        private const float ConeRadius = 0.065f;
+        /// <summary>The plane squares span this share of the size, starting this far from the pivot.</summary>
+        private const float PlaneFrom = 0.2f;
+        private const float PlaneSize = 0.22f;
+
+        /// <summary>Handle numbers: 0 to 2 the axes X, Y, Z, 3 to 5 the plane whose normal is X, Y or Z.</summary>
+        private const int FirstPlane = 3;
 
         private static readonly Vector3[] Axes = { Vector3.right, Vector3.up, Vector3.forward };
         private static readonly Color[] AxisColors = { new(0.9f, 0.2f, 0.2f), new(0.3f, 0.85f, 0.3f), new(0.25f, 0.45f, 1f) };
         private static readonly Color Hot = new(1f, 0.85f, 0.2f);
         private static readonly Color RingColor = new(0.3f, 0.85f, 0.3f);
+        private const float PlaneAlpha = 0.35f;
+        private const float PlaneHotAlpha = 0.65f;
 
         internal static GizmoMode Mode { get; private set; } = GizmoMode.Move;
 
         private static GameObject _root;
-        private static readonly GameObject[] Handles = new GameObject[3];
+        private static readonly GameObject[] Shafts = new GameObject[3];
+        private static readonly GameObject[] Cones = new GameObject[3];
+        private static readonly GameObject[] Cubes = new GameObject[3];
+        private static readonly GameObject[] Planes = new GameObject[3];
         private static readonly Material[] Mats = new Material[3];
+        private static readonly Material[] PlaneMats = new Material[3];
         private static LineRenderer _ring;
         private static Material _ringMat;
+        private static Mesh _cone;
 
         private static int _hover = -1;
         private static int _drag = -1;
@@ -55,6 +60,7 @@ namespace MapExpansions.Editor
         private static Vector3 _dragPivot;
         private static Vector2 _dragMouse;
         private static float _dragT0;
+        private static Vector3 _dragHit0;
         private static readonly List<(MainCopies.Placed p, Vector3 pos, Quaternion rot, Vector3 scale)> Start = new();
         private static (Quaternion turn, float scale, Vector3 move) _live = (Quaternion.identity, 1f, Vector3.zero);
         /// <summary>The point a running drag moves, or null when it moves the selected copies.</summary>
@@ -76,8 +82,10 @@ namespace MapExpansions.Editor
                 {
                     case GizmoMode.Rotate: return Panel.Num(Mathf.DeltaAngle(0f, _live.turn.eulerAngles.y), 0, true) + "°";
                     case GizmoMode.Scale: return "× " + Panel.Num(_live.scale, 2);
-                    default: return "XYZ"[_drag] + "  " + Panel.Num(Vector3.Dot(_live.move, Axes[_drag]), 2, true) + " m";
                 }
+                if (_drag < FirstPlane) return "XYZ"[_drag] + "  " + Panel.Num(Vector3.Dot(_live.move, Axes[_drag]), 2, true) + " m";
+                var (u, v) = PlaneAxes(_drag - FirstPlane);
+                return $"{"XYZ"[u]} {Panel.Num(_live.move[u], 2, true)}  {"XYZ"[v]} {Panel.Num(_live.move[v], 2, true)} m";
             }
         }
 
@@ -89,7 +97,7 @@ namespace MapExpansions.Editor
             Panel.Note(mode switch { GizmoMode.Move => "Verschieben", GizmoMode.Rotate => "Drehen", _ => "Skalieren" });
         }
 
-        /// <summary>A colour material drawn over everything, for handles and outlines.</summary>
+        /// <summary>A colour material drawn over everything, for handles and outlines; alpha below one blends.</summary>
         internal static Material Material(Color c)
         {
             if (_shader == null)
@@ -109,7 +117,73 @@ namespace MapExpansions.Editor
             if (m.HasProperty("_ZTest")) m.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
             if (m.HasProperty("_ZWrite")) m.SetInt("_ZWrite", 0);
             if (m.HasProperty("_Cull")) m.SetInt("_Cull", 0);
+            if (m.HasProperty("_SrcBlend")) m.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            if (m.HasProperty("_DstBlend")) m.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
             return m;
+        }
+
+        /// <summary>A cone of height one on a base of radius one, its apex up, for arrow tips.</summary>
+        internal static Mesh Cone()
+        {
+            if (_cone != null) return _cone;
+            var v = new Vector3[ConeSides + 2];
+            v[0] = Vector3.up;
+            v[1] = Vector3.zero;
+            for (int k = 0; k < ConeSides; k++)
+            {
+                float a = k * Mathf.PI * 2f / ConeSides;
+                v[2 + k] = new Vector3(Mathf.Cos(a), 0f, Mathf.Sin(a));
+            }
+            var tris = new int[ConeSides * 6];
+            for (int k = 0; k < ConeSides; k++)
+            {
+                int next = (k + 1) % ConeSides;
+                tris[k * 6] = 0;
+                tris[k * 6 + 1] = 2 + next;
+                tris[k * 6 + 2] = 2 + k;
+                tris[k * 6 + 3] = 1;
+                tris[k * 6 + 4] = 2 + k;
+                tris[k * 6 + 5] = 2 + next;
+            }
+            _cone = new Mesh { name = "MapExpansionsEditor_Cone" };
+            _cone.vertices = v;
+            _cone.triangles = tris;
+            _cone.RecalculateBounds();
+            Object.DontDestroyOnLoad(_cone);
+            return _cone;
+        }
+
+        /// <summary>A handle part without collider or shadow, under a parent.</summary>
+        internal static GameObject Part(Transform parent, string name, Material mat, PrimitiveType? shape)
+        {
+            GameObject go;
+            if (shape != null)
+            {
+                go = GameObject.CreatePrimitive(shape.Value);
+                Object.Destroy(go.GetComponent<Collider>());
+            }
+            else
+            {
+                go = new GameObject();
+                go.AddComponent<MeshFilter>().sharedMesh = Cone();
+                go.AddComponent<MeshRenderer>();
+            }
+            go.name = name;
+            go.transform.SetParent(parent, false);
+            var r = go.GetComponent<MeshRenderer>();
+            r.sharedMaterial = mat;
+            r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            r.receiveShadows = false;
+            return go;
+        }
+
+        /// <summary>Places a cone with its base at <paramref name="from"/>, pointing along the axis.</summary>
+        internal static void PlaceCone(GameObject cone, Vector3 from, Vector3 axis, float length, float radius)
+        {
+            var t = cone.transform;
+            t.position = from;
+            t.rotation = Quaternion.FromToRotation(Vector3.up, axis);
+            t.localScale = new Vector3(radius, length, radius);
         }
 
         private static void Build()
@@ -118,16 +192,14 @@ namespace MapExpansions.Editor
             Object.DontDestroyOnLoad(_root);
             for (int i = 0; i < 3; i++)
             {
-                var h = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-                h.name = "axis" + "XYZ"[i];
-                Object.Destroy(h.GetComponent<Collider>());
-                h.transform.SetParent(_root.transform, false);
                 Mats[i] = Material(AxisColors[i]);
-                var r = h.GetComponent<MeshRenderer>();
-                r.sharedMaterial = Mats[i];
-                r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                r.receiveShadows = false;
-                Handles[i] = h;
+                Shafts[i] = Part(_root.transform, "axis" + "XYZ"[i], Mats[i], PrimitiveType.Cylinder);
+                Cones[i] = Part(_root.transform, "cone" + "XYZ"[i], Mats[i], null);
+                Cubes[i] = Part(_root.transform, "cube" + "XYZ"[i], Mats[i], PrimitiveType.Cube);
+                var pc = AxisColors[i];
+                pc.a = PlaneAlpha;
+                PlaneMats[i] = Material(pc);
+                Planes[i] = Part(_root.transform, "plane" + "XYZ"[i], PlaneMats[i], PrimitiveType.Quad);
             }
             var ring = new GameObject("ring");
             ring.transform.SetParent(_root.transform, false);
@@ -165,10 +237,35 @@ namespace MapExpansions.Editor
         private static GizmoMode ModeFor(PointRef point) =>
             point == null ? Mode : Mode == GizmoMode.Rotate && Points.HasFacing(point) ? GizmoMode.Rotate : GizmoMode.Move;
 
-        /// <summary>A region corner keeps to the ground; it has no up arrow.</summary>
+        /// <summary>A region corner keeps to the ground; it has no up arrow and moves only in the ground plane.</summary>
         private static bool Flat(PointRef point) => point != null && !Points.HasHeight(point);
 
         private static float Size(Camera cam, Vector3 pivot) => Mathf.Max(0.3f, FlyCamera.ViewDistance(cam, pivot) * 0.15f);
+
+        /// <summary>The two axes that span the plane with normal <paramref name="n"/>.</summary>
+        private static (int u, int v) PlaneAxes(int n) => n == 0 ? (1, 2) : n == 1 ? (0, 2) : (0, 1);
+
+        /// <summary>Whether a handle shows in a mode: no up arrow and only the ground plane for a flat point.</summary>
+        private static bool Shown(int handle, GizmoMode mode, bool flat)
+        {
+            if (mode == GizmoMode.Rotate) return false;
+            if (handle < FirstPlane) return !(flat && handle == 1);
+            return mode == GizmoMode.Move && (!flat || handle == FirstPlane + 1);
+        }
+
+        /// <summary>
+        /// The four corners of a plane square. It sits in the quarter of its plane that faces the camera, as in Unity,
+        /// so it never hides behind the pivot.
+        /// </summary>
+        private static Vector3[] PlaneCorners(Camera cam, Vector3 pivot, float size, int n)
+        {
+            var (u, v) = PlaneAxes(n);
+            var toCam = cam.transform.position - pivot;
+            var du = Axes[u] * (toCam[u] < 0f ? -1f : 1f);
+            var dv = Axes[v] * (toCam[v] < 0f ? -1f : 1f);
+            float a = PlaneFrom * size, b = (PlaneFrom + PlaneSize) * size;
+            return new[] { pivot + du * a + dv * a, pivot + du * b + dv * a, pivot + du * b + dv * b, pivot + du * a + dv * b };
+        }
 
         /// <summary>True when the cursor is over a handle or a drag runs, so a point marker under it does not take the click.</summary>
         internal static bool OverHandle(Camera cam, bool overPanel)
@@ -176,7 +273,8 @@ namespace MapExpansions.Editor
             if (_drag >= 0) return true;
             if (cam == null || overPanel || !Target(out var pivot, out var point, out _)) return false;
             float size = Size(cam, pivot);
-            return ModeFor(point) == GizmoMode.Rotate ? HoveredRing(cam, pivot, size) >= 0 : HoveredAxis(cam, pivot, size, Flat(point)) >= 0;
+            var mode = ModeFor(point);
+            return mode == GizmoMode.Rotate ? HoveredRing(cam, pivot, size) >= 0 : HoveredHandle(cam, pivot, size, mode, Flat(point)) >= 0;
         }
 
         /// <summary>Returns true when the gizmo owns the mouse this frame (a drag, or a press on a handle).</summary>
@@ -198,26 +296,7 @@ namespace MapExpansions.Editor
             var mode = _drag >= 0 ? _dragMode : ModeFor(point);
             bool ring = mode == GizmoMode.Rotate;
             bool flat = Flat(point);
-            for (int i = 0; i < 3; i++)
-            {
-                Handles[i].SetActive(!ring && !(flat && i == 1));
-                var t = Handles[i].transform;
-                t.position = pivot + Axes[i] * (size * 0.5f);
-                t.rotation = Quaternion.FromToRotation(Vector3.up, Axes[i]);
-                // Scaling draws thicker handles, so the mode reads at a glance.
-                float thick = mode == GizmoMode.Scale ? 0.08f : 0.04f;
-                t.localScale = new Vector3(size * thick, size * 0.5f, size * thick);
-            }
-            _ring.gameObject.SetActive(ring);
-            if (ring)
-            {
-                for (int k = 0; k < RingPoints; k++)
-                {
-                    float a = k * Mathf.PI * 2f / RingPoints;
-                    _ring.SetPosition(k, pivot + new Vector3(Mathf.Cos(a), 0f, Mathf.Sin(a)) * size);
-                }
-                _ring.startWidth = _ring.endWidth = size * 0.03f;
-            }
+            Draw(cam, pivot, size, mode, flat);
 
             if (_drag >= 0)
             {
@@ -239,7 +318,7 @@ namespace MapExpansions.Editor
                 return true;
             }
 
-            _hover = overPanel ? -1 : ring ? HoveredRing(cam, pivot, size) : HoveredAxis(cam, pivot, size, flat);
+            _hover = overPanel ? -1 : ring ? HoveredRing(cam, pivot, size) : HoveredHandle(cam, pivot, size, mode, flat);
             Paint();
             if (_hover >= 0 && EditorInput.LeftDown(0))
             {
@@ -247,7 +326,9 @@ namespace MapExpansions.Editor
                 _dragMode = mode;
                 _dragPivot = pivot;
                 _dragMouse = EditorInput.MousePosition;
-                _dragT0 = _dragMode == GizmoMode.Move ? AxisParam(cam.ScreenPointToRay(EditorInput.MousePosition), pivot, Axes[_drag]) : 0f;
+                var ray = cam.ScreenPointToRay(EditorInput.MousePosition);
+                _dragT0 = _dragMode == GizmoMode.Move && _drag < FirstPlane ? AxisParam(ray, pivot, Axes[_drag]) : 0f;
+                _dragHit0 = _dragMode == GizmoMode.Move && _drag >= FirstPlane && PlaneHit(ray, pivot, Axes[_drag - FirstPlane], out var h0) ? h0 : pivot;
                 _live = (Quaternion.identity, 1f, Vector3.zero);
                 _point = point;
                 _pointYaw = pointYaw;
@@ -260,10 +341,70 @@ namespace MapExpansions.Editor
                         Start.Add((p, t.position, t.rotation, t.localScale));
                     }
                 string what = point != null ? point.Key : $"{sel.Count} copies";
-                Core.Log.Msg($"gizmo: {_dragMode} drag{(_dragMode == GizmoMode.Rotate ? "" : " on " + "XYZ"[_drag])} of {what} from {pivot}");
+                Core.Log.Msg($"gizmo: {_dragMode} drag{(_dragMode == GizmoMode.Rotate ? "" : " on " + HandleName(_drag))} of {what} from {pivot}");
                 return true;
             }
             return false;
+        }
+
+        private static string HandleName(int handle)
+        {
+            if (handle < FirstPlane) return "XYZ"[handle].ToString();
+            var (u, v) = PlaneAxes(handle - FirstPlane);
+            return $"{"XYZ"[u]}{"XYZ"[v]} plane";
+        }
+
+        /// <summary>Puts every part of the gizmo where it belongs this frame and hides what the mode does not use.</summary>
+        private static void Draw(Camera cam, Vector3 pivot, float size, GizmoMode mode, bool flat)
+        {
+            bool scale = mode == GizmoMode.Scale;
+            for (int i = 0; i < 3; i++)
+            {
+                bool axis = Shown(i, mode, flat);
+                Shafts[i].SetActive(axis);
+                Cones[i].SetActive(axis && !scale);
+                Cubes[i].SetActive(axis && scale);
+                if (axis)
+                {
+                    var t = Shafts[i].transform;
+                    float shaft = (scale ? 0.88f : ShaftEnd) * size;
+                    t.position = pivot + Axes[i] * (shaft * 0.5f);
+                    t.rotation = Quaternion.FromToRotation(Vector3.up, Axes[i]);
+                    // The primitive cylinder is two units high.
+                    t.localScale = new Vector3(size * 0.025f, shaft * 0.5f, size * 0.025f);
+                    if (scale)
+                    {
+                        var c = Cubes[i].transform;
+                        c.position = pivot + Axes[i] * (0.94f * size);
+                        c.rotation = Quaternion.identity;
+                        c.localScale = Vector3.one * (0.12f * size);
+                    }
+                    else PlaceCone(Cones[i], pivot + Axes[i] * (ShaftEnd * size), Axes[i], (1f - ShaftEnd) * size, ConeRadius * size);
+                }
+
+                bool plane = Shown(FirstPlane + i, mode, flat);
+                Planes[i].SetActive(plane);
+                if (plane)
+                {
+                    var c = PlaneCorners(cam, pivot, size, i);
+                    var q = Planes[i].transform;
+                    q.position = (c[0] + c[2]) * 0.5f;
+                    // The primitive quad lies in its own XY plane, facing along Z.
+                    q.rotation = i == 0 ? Quaternion.LookRotation(Vector3.right) : i == 1 ? Quaternion.LookRotation(Vector3.up, Vector3.forward) : Quaternion.identity;
+                    q.localScale = new Vector3(PlaneSize * size, PlaneSize * size, 1f);
+                }
+            }
+            bool ring = mode == GizmoMode.Rotate;
+            _ring.gameObject.SetActive(ring);
+            if (ring)
+            {
+                for (int k = 0; k < RingPoints; k++)
+                {
+                    float a = k * Mathf.PI * 2f / RingPoints;
+                    _ring.SetPosition(k, pivot + new Vector3(Mathf.Cos(a), 0f, Mathf.Sin(a)) * size);
+                }
+                _ring.startWidth = _ring.endWidth = size * 0.03f;
+            }
         }
 
         /// <summary>The change the mouse makes since the drag began, snapped as the toolbar says.</summary>
@@ -284,17 +425,30 @@ namespace MapExpansions.Editor
                     if (Snap.Grid) s = Mathf.Max(Snap.ScaleStep, Mathf.Round(s / Snap.ScaleStep) * Snap.ScaleStep);
                     return (Quaternion.identity, s, Vector3.zero);
                 }
-                default:
-                {
-                    var ray = cam.ScreenPointToRay(EditorInput.MousePosition);
-                    float t = AxisParam(ray, _dragPivot, Axes[_drag]) - _dragT0;
-                    // Points snap as finely as boxes; copies on the coarser grid and against the faces of other copies.
-                    float step = _point != null ? Areas.Step : Snap.GridStep;
-                    if (Snap.Grid) t = Mathf.Round(t / step) * step;
-                    if (Snap.Edges && _point == null) t += EdgeOffset(_drag, t);
-                    return (Quaternion.identity, 1f, Axes[_drag] * t);
-                }
             }
+            var ray = cam.ScreenPointToRay(EditorInput.MousePosition);
+            if (_drag < FirstPlane)
+            {
+                float t = AxisParam(ray, _dragPivot, Axes[_drag]) - _dragT0;
+                return (Quaternion.identity, 1f, Axes[_drag] * Along(_drag, t));
+            }
+            int n = _drag - FirstPlane;
+            // Seen edge-on, the plane gives no usable point; the selection stays where the last good frame put it.
+            if (!PlaneHit(ray, _dragPivot, Axes[n], out var hit)) return _live;
+            var d = hit - _dragHit0;
+            var (u, v) = PlaneAxes(n);
+            var move = Vector3.zero;
+            move[u] = Along(u, d[u]);
+            move[v] = Along(v, d[v]);
+            return (Quaternion.identity, 1f, move);
+        }
+
+        /// <summary>A distance along one axis, on the grid and against the faces of other copies as the toolbar says.</summary>
+        private static float Along(int axis, float t)
+        {
+            if (Snap.Grid) t = Mathf.Round(t / Snap.GridStep) * Snap.GridStep;
+            if (Snap.Edges && _point == null) t += EdgeOffset(axis, t);
+            return t;
         }
 
         /// <summary>
@@ -323,28 +477,67 @@ namespace MapExpansions.Editor
         private static void Paint()
         {
             for (int i = 0; i < 3; i++)
-                Mats[i].SetColor("_Color", i == _drag || (_drag < 0 && i == _hover) ? Hot : AxisColors[i]);
+            {
+                bool hot = i == _drag || (_drag < 0 && i == _hover);
+                Mats[i].SetColor("_Color", hot ? Hot : AxisColors[i]);
+                int plane = FirstPlane + i;
+                bool planeHot = plane == _drag || (_drag < 0 && plane == _hover);
+                var pc = planeHot ? Hot : AxisColors[i];
+                pc.a = planeHot ? PlaneHotAlpha : PlaneAlpha;
+                PlaneMats[i].SetColor("_Color", pc);
+            }
             var c = _hover >= 0 || _drag >= 0 ? Hot : RingColor;
             _ringMat.SetColor("_Color", c);
             _ring.startColor = _ring.endColor = c;
         }
 
-        private static int HoveredAxis(Camera cam, Vector3 pivot, float size, bool flat)
+        /// <summary>The handle under the cursor: a plane square first, since it lies off the axes, else the nearest arrow.</summary>
+        private static int HoveredHandle(Camera cam, Vector3 pivot, float size, GizmoMode mode, bool flat)
         {
             var mouse = EditorInput.MousePosition;
             var a = cam.WorldToScreenPoint(pivot);
             if (a.z <= 0f) return -1;
+            for (int n = 0; n < 3; n++)
+            {
+                if (!Shown(FirstPlane + n, mode, flat)) continue;
+                var c = PlaneCorners(cam, pivot, size, n);
+                var s = new Vector2[4];
+                bool behind = false;
+                for (int k = 0; k < 4; k++)
+                {
+                    var p = cam.WorldToScreenPoint(c[k]);
+                    if (p.z <= 0f) behind = true;
+                    s[k] = p;
+                }
+                if (!behind && InQuad(mouse, s)) return FirstPlane + n;
+            }
             int best = -1;
             float bestD = HandlePixels;
             for (int i = 0; i < 3; i++)
             {
-                if (flat && i == 1) continue;
+                if (!Shown(i, mode, flat)) continue;
                 var b = cam.WorldToScreenPoint(pivot + Axes[i] * size);
                 if (b.z <= 0f) continue;
                 float d = DistanceToSegment(mouse, a, b);
                 if (d < bestD) { bestD = d; best = i; }
             }
             return best;
+        }
+
+        /// <summary>True when the point lies inside the convex quad, whichever way round its corners run.</summary>
+        private static bool InQuad(Vector2 p, Vector2[] q)
+        {
+            int sign = 0;
+            for (int k = 0; k < 4; k++)
+            {
+                var e = q[(k + 1) % 4] - q[k];
+                float cross = e.x * (p.y - q[k].y) - e.y * (p.x - q[k].x);
+                int s = cross > 0f ? 1 : cross < 0f ? -1 : 0;
+                if (s == 0) continue;
+                if (sign == 0) sign = s;
+                else if (s != sign) return false;
+            }
+            return true;
         }
 
         /// <summary>0 when the cursor is within a few pixels of the ring, else -1.</summary>
@@ -389,6 +582,18 @@ namespace MapExpansions.Editor
             // The ray runs along the axis; no point on the axis is nearer than another.
             if (denom < 1e-5f) return 0f;
             return (b * e - d) / denom;
+        }
+
+        /// <summary>Where the ray meets the plane through the origin; false when it runs nearly along the plane.</summary>
+        private static bool PlaneHit(Ray ray, Vector3 origin, Vector3 normal, out Vector3 hit)
+        {
+            hit = origin;
+            float along = Vector3.Dot(ray.direction, normal);
+            if (Mathf.Abs(along) < 0.02f) return false;
+            float t = Vector3.Dot(origin - ray.origin, normal) / along;
+            if (t < 0f) return false;
+            hit = ray.origin + ray.direction * t;
+            return true;
         }
 
         private static void RestoreStart()
@@ -473,7 +678,7 @@ namespace MapExpansions.Editor
             _live = (Quaternion.identity, 1f, Vector3.zero);
         }
 
-        /// <summary>Screen points on each handle, for scripted drags: three axis points and two ring points.</summary>
+        /// <summary>Screen points on each handle, for scripted drags: three axis points, two ring points, the plane squares.</summary>
         internal static string Describe(Camera cam)
         {
             if (cam == null || !Target(out var pivot, out var point, out _)) return "nothing is selected";
@@ -483,8 +688,14 @@ namespace MapExpansions.Editor
                 var s = cam.WorldToScreenPoint(w);
                 return s.z > 0f ? $"{s.x:0} {s.y:0}" : "behind";
             }
+            var planes = string.Join(", ", Enumerable.Range(0, 3).Select(n =>
+            {
+                var c = PlaneCorners(cam, pivot, size, n);
+                var (u, v) = PlaneAxes(n);
+                return $"{"xyz"[u]}{"xyz"[v]} {P((c[0] + c[2]) * 0.5f)}";
+            }));
             return $"pivot {P(pivot)}; x {P(pivot + Axes[0] * size * 0.7f)}; y {P(pivot + Axes[1] * size * 0.7f)}; z {P(pivot + Axes[2] * size * 0.7f)}; " +
-                   $"ring {P(pivot + Vector3.right * size)} / {P(pivot + Vector3.forward * size)}; mode {ModeFor(point)}; " +
+                   $"ring {P(pivot + Vector3.right * size)} / {P(pivot + Vector3.forward * size)}; planes {planes}; mode {ModeFor(point)}; " +
                    $"target {(point != null ? point.Key : "copies")}; screen {Screen.width}x{Screen.height}";
         }
 

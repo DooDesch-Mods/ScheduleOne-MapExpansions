@@ -137,12 +137,11 @@ namespace MapExpansions.Editor
 
     /// <summary>
     /// The selected box and its gizmo. Six square handles sit on the faces: a drag moves that face along its axis. Three
-    /// arrows from the centre move the whole box. Moves snap to <see cref="Step"/> while the grid is on. The box changes
+    /// arrows from the centre move the whole box. Moves snap to the grid step while the grid is on. The box changes
     /// in one step of the history on release.
     /// </summary>
     internal static class Areas
     {
-        internal const float Step = 0.1f;
         private const float MinSize = 0.05f;
         private const float HandlePixels = 12f;
 
@@ -158,6 +157,7 @@ namespace MapExpansions.Editor
         private static readonly GameObject[] Faces = new GameObject[6];
         private static readonly Material[] FaceMats = new Material[6];
         private static readonly GameObject[] Arrows = new GameObject[3];
+        private static readonly GameObject[] Tips = new GameObject[3];
         private static readonly Material[] ArrowMats = new Material[3];
 
         private static int _hover = -1;
@@ -219,7 +219,8 @@ namespace MapExpansions.Editor
             return true;
         }
 
-        private static Vector3[] Corners(Bounds b, Matrix4x4 m)
+        /// <summary>The eight corners of a box under a matrix; bit 0 of the index picks x, bit 1 y, bit 2 z.</summary>
+        internal static Vector3[] Corners(Bounds b, Matrix4x4 m)
         {
             var c = new Vector3[8];
             for (int i = 0; i < 8; i++)
@@ -246,6 +247,7 @@ namespace MapExpansions.Editor
             for (int i = 0; i < 3; i++)
             {
                 Arrows[i] = Primitive(PrimitiveType.Cylinder, "arrow" + "XYZ"[i], ArrowMats[i] = Gizmo.Material(AxisColors[i]));
+                Tips[i] = Gizmo.Part(_root.transform, "tip" + "XYZ"[i], ArrowMats[i], null);
             }
         }
 
@@ -345,7 +347,7 @@ namespace MapExpansions.Editor
         private static Bounds LiveBox(Camera cam)
         {
             float t = AxisParam(cam.ScreenPointToRay(EditorInput.MousePosition), _dragOrigin, _dragDir) - _dragT0;
-            if (Snap.Grid) t = Mathf.Round(t / Step) * Step;
+            if (Snap.Grid) t = Mathf.Round(t / Snap.GridStep) * Snap.GridStep;
             float d = t / _dragScale;
             var min = _start.min;
             var max = _start.max;
@@ -434,9 +436,11 @@ namespace MapExpansions.Editor
             {
                 var dir = WorldAxis(m, i);
                 var t = Arrows[i].transform;
-                t.position = centre + dir * (size * 0.5f);
+                // The shaft ends where the cone begins, as on the selection gizmo.
+                t.position = centre + dir * (size * 0.4f);
                 t.rotation = Quaternion.FromToRotation(Vector3.up, dir);
-                t.localScale = new Vector3(size * 0.035f, size * 0.5f, size * 0.035f);
+                t.localScale = new Vector3(size * 0.03f, size * 0.4f, size * 0.03f);
+                Gizmo.PlaceCone(Tips[i], centre + dir * (size * 0.8f), dir, size * 0.2f, size * 0.065f);
             }
         }
 

@@ -9,6 +9,8 @@ const ui = {
   filter: '',
   open: { copies: true, rules: false, boxes: true, points: true },
   pointMenu: false,
+  // The open snap step list: which one and where its button stood, or null.
+  menu: null,
   editing: false,
   last: null,
 };
@@ -39,38 +41,13 @@ const call = (name, arg) => render(parse(s1.call(name, arg === undefined ? '' : 
 const num = (v, digits) => Number(v).toFixed(digits).replace('.', ',');
 const size = (v) => v ? v.map((n) => num(n, 2)).join(' × ') + ' m' : '';
 
-/* Tooltips: one floating box, placed under or over the hovered control. */
+/* Tooltips: the mod draws them beside the cursor. A tooltip added to the page would rebuild the whole page on
+ * every hover and again when the pointer leaves, which made a sweep over the toolbar stutter. */
 
-let tipNode = null;
-let tipAnchor = null;
-function hideTip() { if (tipNode) { tipNode.remove(); tipNode = null; tipAnchor = null; } }
+const hideTip = () => s1.call('editor.tip', '');
 
 function tip(anchor, text, key) {
-  anchor.addEventListener('mouseenter', () => {
-    // Adding the tooltip rebuilds the page, and the rebuilt hit target raises mouseenter again on the same
-    // element. Building a second tooltip there would rebuild again on every frame, and a press and its release
-    // would land on two different targets, so the button would never be clicked.
-    if (tipNode && tipAnchor === anchor) return;
-    hideTip();
-    const r = anchor.rect ? anchor.rect() : anchor.getBoundingClientRect();
-    if (!r || !r.height) return;
-    const node = el('div', 'tip');
-    node.appendChild(el('div', '', text));
-    if (key) node.appendChild(el('div', 'key', key));
-    const w = Math.min(320, 22 + (text.length + (key ? key.length + 2 : 0)) * 6.6);
-    const page = document.getElementById('editor');
-    const pr = page.rect ? page.rect() : page.getBoundingClientRect();
-    let left = r.x + r.width / 2 - w / 2;
-    if (left < 6) left = 6;
-    if (pr && pr.width && left + w > pr.width - 6) left = pr.width - 6 - w;
-    const below = r.y < 80;
-    node.style.left = Math.round(left) + 'px';
-    node.style.top = Math.round(below ? r.y + r.height + 6 : r.y - 32) + 'px';
-    node.style.width = Math.round(w) + 'px';
-    document.body.appendChild(node);
-    tipNode = node;
-    tipAnchor = anchor;
-  });
+  anchor.addEventListener('mouseenter', () => s1.call('editor.tip', key ? text + '\t' + key : text));
   anchor.addEventListener('mouseleave', hideTip);
   anchor.addEventListener('click', hideTip);
 }
@@ -88,6 +65,26 @@ function btn(parent, o) {
   b.addEventListener('click', off ? () => {} : o.click);
   parent.appendChild(b);
   return b;
+}
+
+const gridText = (v) => String(v).replace('.', ',') + ' m';
+const turnText = (v) => v + '°';
+
+/* The value half of a snap button: shows the step and opens the list of steps under itself. */
+function stepDrop(parent, kind, text, tipText) {
+  const b = el('div', 'btn drop' + (ui.menu && ui.menu.kind === kind ? ' on' : ''));
+  b.appendChild(el('div', 'val', text));
+  b.appendChild(icon('down'));
+  tip(b, tipText);
+  b.addEventListener('click', () => {
+    if (ui.menu && ui.menu.kind === kind) ui.menu = null;
+    else {
+      const r = b.rect ? b.rect() : b.getBoundingClientRect();
+      ui.menu = { kind, x: r ? r.x : 0, y: r ? r.y + r.height + 4 : 50 };
+    }
+    render(ui.last);
+  });
+  parent.appendChild(b);
 }
 
 function fill(id) {
@@ -116,29 +113,27 @@ function renderToolbar(s) {
   for (const [m, ic, name, key] of [['Move', 'move', 'Verschieben', 'W'], ['Rotate', 'rotate', 'Drehen', 'E'], ['Scale', 'scale', 'Skalieren', 'R']])
     btn(mode, { icon: ic, cls: s.mode === m ? 'on' : '', tip: name, key, click: () => call('editor.mode', m) });
 
+  // As in Unity and Unreal: the symbol switches snapping on and off, the value beside it opens the step list.
   const snap = fill('snap-tools');
   const step = s.gridStep || 0.5;
-  btn(snap, { icon: 'grid', val: num(step, 1) + ' m', cls: s.grid ? 'on' : '', tip: 'In ' + num(step, 1) + '-m-Schritten bewegen', click: () => call('editor.snap', 'grid') });
+  btn(snap, { icon: 'grid', cls: s.grid ? 'on' : '', tip: s.grid ? 'Raster an, ' + gridText(step) : 'Raster aus', click: () => call('editor.snap', 'grid') });
+  stepDrop(snap, 'grid', gridText(step), 'Rasterschritt wählen');
   const turn = s.turnStep || 15;
-  btn(snap, { icon: 'turn', val: num(turn, 0) + '°', cls: s.turn ? 'on' : '', tip: 'In ' + num(turn, 0) + '°-Schritten drehen', click: () => call('editor.snap', 'turn') });
+  btn(snap, { icon: 'turn', cls: s.turn ? 'on' : '', tip: s.turn ? 'Drehschritt an, ' + turnText(turn) : 'Drehschritt aus', click: () => call('editor.snap', 'turn') });
+  stepDrop(snap, 'turn', turnText(turn), 'Drehschritt wählen');
   btn(snap, { icon: 'edges', cls: s.edges ? 'on' : '', tip: 'An Kanten anderer Objekte einrasten', click: () => call('editor.snap', 'edges') });
 
+  // Each tool waits for a click into the view; the button again or Esc ends it.
   const add = fill('add-tools');
-  btn(add, { icon: 'rule', label: 'Entfernen', tip: 'Regel, die Objekte im Bereich entfernt', click: () => call('editor.rule.new', 'Remove') });
-  const copy = !!s.selected;
   const hollow = !!(s.area && s.area.effect === 'Hollow');
-  btn(add, {
-    icon: 'block', label: 'Blocker', cls: copy ? '' : 'off', click: () => call('editor.box.new', 'Block'),
-    tip: copy ? 'Unsichtbare Wand vor der Fläche im Blick' : 'Braucht ein gewähltes Objekt',
+  const tool = (name, icon, label, tipText, off, offTip) => btn(add, {
+    icon, label, cls: s.pickTool === name ? 'on' : off ? 'off' : '', key: s.pickTool === name ? 'Esc' : '',
+    tip: off ? offTip : tipText, click: () => call('editor.pick', name),
   });
-  btn(add, {
-    icon: 'panel', label: 'Panel', cls: copy ? '' : 'off', click: () => call('editor.box.new', 'Panel'),
-    tip: copy ? 'Sichtbare Platte vor der Fläche im Blick' : 'Braucht ein gewähltes Objekt',
-  });
-  btn(add, {
-    icon: 'opening', label: 'Öffnung', cls: hollow ? '' : 'off', click: () => call('editor.opening.new'),
-    tip: hollow ? 'Durchgang ins ausgehöhlte Objekt im Blick' : 'Braucht eine gewählte Aushöhlen-Regel',
-  });
+  tool('Remove', 'rule', 'Entfernen', 'Regel, die das angeklickte Objekt entfernt');
+  tool('Block', 'block', 'Blocker', 'Unsichtbare Wand auf die angeklickte Fläche');
+  tool('Panel', 'panel', 'Panel', 'Sichtbare Platte auf die angeklickte Fläche');
+  tool('Opening', 'opening', 'Öffnung', 'Durchgang in die angeklickte Wand', !hollow, 'Braucht eine gewählte Aushöhlen-Regel');
   btn(add, {
     icon: 'apply', label: 'Anwenden', badge: s.pending > 0 ? s.pending : '', cls: s.pending > 0 ? 'primary' : 'off',
     tip: s.pending > 0 ? s.pending + ' Regeln neu bauen' : 'Keine Regel wartet', click: () => call('editor.apply'),
@@ -743,6 +738,45 @@ function renderOverlays(s) {
     shade.appendChild(card);
     document.body.appendChild(shade);
     overlayNodes.push(shade);
+  }
+  if (ui.menu) {
+    const shade = el('div', 'shade');
+    shade.style.left = '0px';
+    shade.style.top = '0px';
+    shade.style.width = Math.round(pr.width) + 'px';
+    shade.style.height = Math.round(pr.height) + 'px';
+    shade.addEventListener('click', () => { ui.menu = null; render(ui.last); });
+    document.body.appendChild(shade);
+    overlayNodes.push(shade);
+    const grid = ui.menu.kind === 'grid';
+    const steps = (grid ? s.gridSteps : s.turnSteps) || [];
+    const now = grid ? s.gridStep : s.turnStep;
+    const menu = el('div', 'menu');
+    menu.style.left = Math.round(ui.menu.x) + 'px';
+    menu.style.top = Math.round(ui.menu.y) + 'px';
+    menu.style.width = '84px';
+    for (const v of steps) {
+      const o = el('div', v === now ? 'opt on' : 'opt', grid ? gridText(v) : turnText(v));
+      o.addEventListener('click', () => { const kind = ui.menu.kind; ui.menu = null; call('editor.snap.step', kind + '=' + v); });
+      menu.appendChild(o);
+    }
+    document.body.appendChild(menu);
+    overlayNodes.push(menu);
+  }
+  if (s.picking) {
+    const w = 420;
+    const hint = el('div', 'placing');
+    hint.style.left = Math.round(pr.width / 2 - w / 2) + 'px';
+    hint.style.top = '58px';
+    hint.style.width = w + 'px';
+    hint.appendChild(icon({ Remove: 'rule', Block: 'block', Panel: 'panel', Opening: 'opening' }[s.pickTool] || 'rule'));
+    const text = el('div', 'text');
+    text.appendChild(el('div', 'name', s.picking));
+    text.appendChild(el('div', 'how', 'Klick setzt, Shift+Klick setzt weiter'));
+    hint.appendChild(text);
+    btn(hint, { icon: 'close', tip: 'Abbrechen', key: 'Esc', click: () => call('editor.pick.cancel') });
+    document.body.appendChild(hint);
+    overlayNodes.push(hint);
   }
   if (s.placing) {
     const w = 420;

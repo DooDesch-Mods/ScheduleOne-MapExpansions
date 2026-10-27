@@ -291,23 +291,26 @@ namespace MapExpansions.Editor
 
         // ---- new rules, openings and boxes
 
-        /// <summary>What lies at the middle of the view, for things that are set where the camera looks.</summary>
-        private static bool Aim(out RaycastHit hit, string why, Func<Transform, bool> accept = null)
+        /// <summary>
+        /// What the ray meets first, or the middle of the view without a ray. A filter skips what may not take the
+        /// new thing; <paramref name="quiet"/> leaves out the log, for the preview that asks every frame.
+        /// </summary>
+        private static bool Aim(Ray? ray, out RaycastHit hit, string why, Func<Transform, bool> accept = null, bool quiet = false)
         {
             hit = default;
             var cam = EditorMode.Camera?.Camera;
-            if (cam == null)
+            if (ray == null && cam == null)
             {
                 Core.Log.Warning($"aim ({why}): no camera");
                 return false;
             }
-            var ray = cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+            var r = ray ?? cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
             bool found = false;
-            if (accept == null) found = Physics.Raycast(ray, out hit, 300f, ~0, QueryTriggerInteraction.Ignore);
+            if (accept == null) found = Physics.Raycast(r, out hit, 300f, ~0, QueryTriggerInteraction.Ignore);
             else
             {
                 float best = float.MaxValue;
-                foreach (var h in Physics.RaycastAll(ray, 300f, ~0, QueryTriggerInteraction.Ignore))
+                foreach (var h in Physics.RaycastAll(r, 300f, ~0, QueryTriggerInteraction.Ignore))
                     if (h.distance < best && accept(h.collider.transform))
                     {
                         best = h.distance;
@@ -315,13 +318,15 @@ namespace MapExpansions.Editor
                         found = true;
                     }
             }
+            if (quiet) return found;
+            string where = ray == null ? "in the middle of the view" : "under the cursor";
             if (!found)
             {
-                Core.Log.Warning($"aim ({why}): nothing{(accept == null ? "" : " that fits")} within 300 m in the middle of the view");
-                Panel.Note("In der Bildmitte liegt nichts.");
+                Core.Log.Warning($"aim ({why}): nothing{(accept == null ? "" : " that fits")} within 300 m {where}");
+                Panel.Note(ray == null ? "In der Bildmitte liegt nichts." : "Unter dem Mauszeiger liegt nichts Passendes.");
                 return false;
             }
-            Core.Log.Msg($"aim ({why}): '{MeshCarver.Path(hit.transform)}' at {hit.point}, {hit.distance:0.0} m, normal {hit.normal}");
+            Core.Log.Msg($"aim ({why}): '{MeshCarver.Path(hit.transform)}' at {hit.point}, {hit.distance:0.0} m {where}, normal {hit.normal}");
             return true;
         }
 
@@ -346,11 +351,30 @@ namespace MapExpansions.Editor
             return slug.Length == 0 ? "object" : slug.Length > 30 ? slug.Substring(0, 30) : slug;
         }
 
-        /// <summary>A rule for the object at the middle of the view, its area the object's bounds.</summary>
-        internal static bool NewRule(ObjectEffect effect, string why)
+        /// <summary>The world box a rule for the hit object covers: its collider and renderer, with a little room.</summary>
+        private static Bounds RuleArea(RaycastHit hit)
         {
-            if (!Aim(out var hit, why)) return false;
             var t = hit.collider.transform;
+            var world = hit.collider.bounds;
+            var r = t.GetComponent<Renderer>();
+            if (r != null && r.enabled) world.Encapsulate(r.bounds);
+            world.Expand(0.1f);
+            return world;
+        }
+
+        /// <summary>A rule for the object the ray meets, or the middle of the view without a ray; its area the object's bounds.</summary>
+        internal static bool NewRule(ObjectEffect effect, string why, Ray? ray = null)
+        {
+            if (!Aim(ray, out var hit, why)) return false;
+            var t = hit.collider.transform;
+            // Rules act on the world and the expansion's own pieces, never on placed copies: a rule there matches nothing.
+            var copy = CopyOf(t);
+            if (copy != null)
+            {
+                Core.Log.Warning($"rule ({why}): '{Copies.Key(copy)}' is a placed copy; rules leave copies alone");
+                Panel.Note("Das ist eine eigene Kopie. Löschen mit Entf.");
+                return false;
+            }
             var target = ExpansionOf(t) ?? BuildPipeline.All.FirstOrDefault();
             if (target == null)
             {
@@ -358,12 +382,8 @@ namespace MapExpansions.Editor
                 return false;
             }
             bool expansionSide = ExpansionOf(t) != null;
-            var world = hit.collider.bounds;
-            var r = t.GetComponent<Renderer>();
-            if (r != null && r.enabled) world.Encapsulate(r.bounds);
-            world.Expand(0.1f);
             var rule = new ObjectRule { Side = expansionSide ? WorldSide.Expansion : WorldSide.Main, Name = t.name, Effect = effect };
-            rule.Area = ToLocal(AreaRef.RuleMatrix(target, rule), world);
+            rule.Area = ToLocal(AreaRef.RuleMatrix(target, rule), RuleArea(hit));
             var hide = target.Definition.Hide;
             var stem = $"{effect.ToString().ToLowerInvariant()}-{Slug(t.name)}";
             var key = stem;
@@ -374,29 +394,47 @@ namespace MapExpansions.Editor
             return true;
         }
 
-        /// <summary>A doorway in the selected hollow rule where the middle of the view meets a wall.</summary>
-        internal static bool NewOpening(string why)
+        /// <summary>The selected hollow rule, or null with the reason in the log and the status line.</summary>
+        internal static ObjectRule HollowRule(string why, bool quiet = false)
         {
             var a = Areas.Current;
             var r = a?.RuleDef;
-            if (r == null || r.Effect != ObjectEffect.Hollow)
+            if (r != null && r.Effect == ObjectEffect.Hollow) return r;
+            if (!quiet)
             {
                 Core.Log.Warning($"opening ({why}): select a hollow rule first; {(a == null ? "nothing" : a.ToString())} is selected");
-                Panel.Note("Erst eine Hollow-Regel auswählen.");
-                return false;
+                Panel.Note("Erst eine Aushöhlen-Regel auswählen.");
             }
-            // Only the hollowed object counts, so a chair in front of the wall does not take the doorway.
+            return null;
+        }
+
+        /// <summary>Only the hollowed object takes a doorway, so a chair in front of the wall does not.</summary>
+        private static Func<Transform, bool> HollowFilter(ObjectRule r)
+        {
             string shell = "MapExpansions.Shell " + r.Name;
-            if (!Aim(out var hit, why, t => t.name == r.Name || t.name == shell || (t.parent != null && t.parent.name == r.Name))) return false;
-            // Wide along the wall, deep across it so it cuts both faces of a thin wall, from the floor on the camera's side.
+            return t => t.name == r.Name || t.name == shell || (t.parent != null && t.parent.name == r.Name);
+        }
+
+        /// <summary>The world box of a doorway where the hit meets a wall: wide along it, deep across it, from the floor.</summary>
+        private static Bounds OpeningWorld(RaycastHit hit, string why, bool quiet)
+        {
             bool acrossX = Mathf.Abs(hit.normal.x) > Mathf.Abs(hit.normal.z);
             var size = acrossX ? new Vector3(1f, 2.2f, 1.2f) : new Vector3(1.2f, 2.2f, 1f);
             float bottom = hit.point.y - 0.6f;
             if (Physics.Raycast(hit.point + hit.normal * 0.3f, Vector3.down, out var floor, 3f, ~0, QueryTriggerInteraction.Ignore))
                 bottom = floor.point.y - 0.05f;
-            else Core.Log.Warning($"opening ({why}): no floor within 3 m below {hit.point}; the opening starts 0.6 m below the aimed point");
-            var world = new Bounds(new Vector3(hit.point.x, bottom + size.y * 0.5f, hit.point.z), size);
-            var local = ToLocal(AreaRef.RuleMatrix(a.Built, r), world);
+            else if (!quiet) Core.Log.Warning($"opening ({why}): no floor within 3 m below {hit.point}; the opening starts 0.6 m below the aimed point");
+            return new Bounds(new Vector3(hit.point.x, bottom + size.y * 0.5f, hit.point.z), size);
+        }
+
+        /// <summary>A doorway in the selected hollow rule where the ray, or the middle of the view, meets a wall.</summary>
+        internal static bool NewOpening(string why, Ray? ray = null)
+        {
+            var r = HollowRule(why);
+            if (r == null) return false;
+            var a = Areas.Current;
+            if (!Aim(ray, out var hit, why, HollowFilter(r))) return false;
+            var local = ToLocal(AreaRef.RuleMatrix(a.Built, r), OpeningWorld(hit, why, false));
             int index = r.Openings.Count;
             var rule = new AreaRef { Kind = AreaKind.Rule, Expansion = a.Expansion, Rule = a.Rule };
             if (!ChangeRule(rule, x => x.Openings.Add(local), $"Öffnung {index + 1} in {a.Rule}", why)) return false;
@@ -404,18 +442,31 @@ namespace MapExpansions.Editor
             return true;
         }
 
-        /// <summary>A panel or block on the selected copy, standing where the middle of the view meets a surface.</summary>
-        internal static bool NewBox(BoxKind kind, string why)
+        /// <summary>
+        /// The copy that gets a panel or block: the copy the hit lies on, else the selected copy or the copy of the
+        /// selected box. Null when there is none.
+        /// </summary>
+        /// <summary>The placed copy that holds the transform, or null.</summary>
+        private static MainCopies.Placed CopyOf(Transform t)
         {
+            if (t != null)
+                foreach (var c in Copies.All())
+                    if (c.Built?.Handle != null && t.IsChildOf(c.Built.Handle)) return c;
+            return null;
+        }
+
+        private static MainCopies.Placed BoxCopy(Transform hit)
+        {
+            var hitCopy = CopyOf(hit);
+            if (hitCopy != null) return hitCopy;
             var p = Selection.Current;
             if (p == null && Areas.Current?.Kind == AreaKind.Box) p = Areas.Current.Placed;
-            if (p?.Built?.Local == null)
-            {
-                Core.Log.Warning($"box ({why}): select the copy that gets the {kind} first");
-                Panel.Note("Erst eine Kopie auswählen.");
-                return false;
-            }
-            if (!Aim(out var hit, why)) return false;
+            return p?.Built?.Local == null ? null : p;
+        }
+
+        /// <summary>The box in the copy's own coordinates, in front of the hit surface rather than half inside it.</summary>
+        private static Bounds BoxLocal(BoxKind kind, MainCopies.Placed p, RaycastHit hit)
+        {
             var inv = p.Built.Move.inverse;
             var n = inv.MultiplyVector(hit.normal).normalized;
             float ax = Mathf.Abs(n.x), ay = Mathf.Abs(n.y), az = Mathf.Abs(n.z);
@@ -423,10 +474,31 @@ namespace MapExpansions.Editor
                 : ay >= ax && ay >= az ? new Vector3(1f, 0.1f, 2f)
                 : ax >= az ? new Vector3(0.1f, 2f, 1f)
                 : new Vector3(1f, 2f, 0.1f);
-            // In front of the surface, not half inside it.
             float half = 0.5f * (ax * size.x + ay * size.y + az * size.z) + 0.01f;
-            var centre = inv.MultiplyPoint3x4(hit.point) + n * half;
-            var local = new Bounds(centre, size);
+            return new Bounds(inv.MultiplyPoint3x4(hit.point) + n * half, size);
+        }
+
+        /// <summary>
+        /// A panel or block where the ray, or the middle of the view, meets a surface. It belongs to the copy that
+        /// surface is part of, else to the selected copy.
+        /// </summary>
+        internal static bool NewBox(BoxKind kind, string why, Ray? ray = null)
+        {
+            if (ray == null && BoxCopy(null) == null)
+            {
+                Core.Log.Warning($"box ({why}): select the copy that gets the {kind} first");
+                Panel.Note("Erst eine Kopie auswählen.");
+                return false;
+            }
+            if (!Aim(ray, out var hit, why)) return false;
+            var p = BoxCopy(hit.transform);
+            if (p == null)
+            {
+                Core.Log.Warning($"box ({why}): '{MeshCarver.Path(hit.transform)}' is part of no copy and no copy is selected; the {kind} has nothing to belong to");
+                Panel.Note("Auf eine Kopie klicken oder erst eine Kopie auswählen.");
+                return false;
+            }
+            var local = BoxLocal(kind, p, hit);
             string material = null;
             if (kind == BoxKind.Panel)
             {
@@ -443,6 +515,49 @@ namespace MapExpansions.Editor
             Areas.Select(a, why);
             return true;
         }
+
+        /// <summary>
+        /// The eight world corners of what a click with the tool would make where the ray points, for the preview.
+        /// False when the click would make nothing there.
+        /// </summary>
+        internal static bool Preview(PickTool tool, Ray ray, out Vector3[] corners)
+        {
+            corners = null;
+            switch (tool)
+            {
+                case PickTool.Remove:
+                {
+                    if (!Aim(ray, out var hit, "preview", null, true) || CopyOf(hit.transform) != null) return false;
+                    corners = Areas.Corners(RuleArea(hit), Matrix4x4.identity);
+                    return true;
+                }
+                case PickTool.Opening:
+                {
+                    var r = HollowRule("preview", true);
+                    if (r == null || !Aim(ray, out var hit, "preview", HollowFilter(r), true)) return false;
+                    corners = Areas.Corners(OpeningWorld(hit, "preview", true), Matrix4x4.identity);
+                    return true;
+                }
+                default:
+                {
+                    var kind = tool == PickTool.Block ? BoxKind.Block : BoxKind.Panel;
+                    if (!Aim(ray, out var hit, "preview", null, true)) return false;
+                    var p = BoxCopy(hit.transform);
+                    if (p == null) return false;
+                    corners = Areas.Corners(BoxLocal(kind, p, hit), p.Built.Move);
+                    return true;
+                }
+            }
+        }
+
+        /// <summary>Makes what the tool makes where the ray points; true when a step was written.</summary>
+        internal static bool Create(PickTool tool, Ray ray, string why) => tool switch
+        {
+            PickTool.Remove => NewRule(ObjectEffect.Remove, why, ray),
+            PickTool.Block => NewBox(BoxKind.Block, why, ray),
+            PickTool.Panel => NewBox(BoxKind.Panel, why, ray),
+            _ => NewOpening(why, ray),
+        };
 
         // ---- applying the expensive rules
 

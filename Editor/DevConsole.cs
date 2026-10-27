@@ -142,6 +142,19 @@ namespace MapExpansions.Editor
                     case "fly" when p.Length > 5: MelonLoader.MelonCoroutines.Start(Fly(new Vector3(F(p[2]), F(p[3]), F(p[4])), F(p[5]))); break;
                     case "hit" when p.Length > 3: Hit(Screen(p[2], p[3])); break;
                     case "uiclick" when p.Length > 3: MelonLoader.MelonCoroutines.Start(UiClick(Screen(p[2], p[3]), p.Length > 4 ? int.Parse(p[4], Ci) : 30)); break;
+                    case "uisweep" when p.Length > 5:
+                        MelonLoader.MelonCoroutines.Start(UiSweep(Screen(p[2], p[3]), Screen(p[4], p[5]), p.Length > 6 ? int.Parse(p[6], Ci) : 60));
+                        break;
+                    case "sweep" when p.Length > 5:
+                    {
+                        // The cursor glides over the world without a button, as the mouse does between clicks.
+                        var from = Screen(p[2], p[3]);
+                        var to = Screen(p[4], p[5]);
+                        int frames = p.Length > 6 ? int.Parse(p[6], Ci) : 60;
+                        EditorInput.Queue(Enumerable.Range(0, frames + 1).Select(i => new EditorInput.Step(Vector2.Lerp(from, to, i / (float)frames), false, null)));
+                        Core.Log.Msg($"[dev] sweep: {from} to {to} over {frames} frames");
+                        break;
+                    }
                     case "batch" when p.Length > 2: Batch(string.Join(" ", p.Skip(2))); break;
                     case "viewmodel": Viewmodel(); break;
                     case "hold" when p.Length > 2: Hold(int.Parse(p[2], Ci)); break;
@@ -171,6 +184,12 @@ namespace MapExpansions.Editor
                         else Core.Log.Warning($"[dev] newbox: '{p[2]}' is neither panel nor block");
                         break;
                     case "newopening": AreaEdits.NewOpening("console"); break;
+                    case "tool" when p.Length > 2 && p[2] == "off": Picking.Cancel("console"); break;
+                    case "tool" when p.Length == 3:
+                        if (Enum.TryParse(p[2], true, out PickTool tool)) Picking.Begin(tool, "console");
+                        else Core.Log.Warning($"[dev] tool: '{p[2]}' is not remove, block, panel, opening or off");
+                        break;
+                    case "snapstep" when p.Length > 3: Snap.SetStep(p[2], p[3], "console"); break;
                     case "point" when p.Length > 2: Point(p); break;
                     case "effect" when p.Length > 2:
                         if (Enum.TryParse(p[2], true, out MapExpansions.ObjectEffect fx))
@@ -394,6 +413,48 @@ namespace MapExpansions.Editor
             Core.Log.Msg($"[dev] uiclick {screen}: {hoverEnters} enters while resting {hoverFrames} frames, {enters - hoverEnters} more while pressed; " +
                          $"pressed '{pressedName}', released on {(released == null ? "nothing" : "'" + Path(released.gameObject) + "'")}, " +
                          (same ? "click sent" : "no click (press and release on different targets)"));
+        }
+
+        /// <summary>
+        /// Moves a pointer over the page in a straight line, leaving and entering each hit target on the way as the
+        /// event system does for a real mouse. The editor's own cursor follows the same line.
+        /// </summary>
+        private static System.Collections.IEnumerator UiSweep(Vector2 from, Vector2 to, int frames)
+        {
+            var es = UnityEngine.EventSystems.EventSystem.current;
+            if (es == null)
+            {
+                Core.Log.Warning("[dev] uisweep: there is no event system");
+                yield break;
+            }
+            frames = Math.Max(1, frames);
+            EditorInput.Queue(Enumerable.Range(0, frames + 1).Select(i => new EditorInput.Step(Vector2.Lerp(from, to, i / (float)frames), false, null)));
+            UnityEngine.EventSystems.EventTrigger entered = null;
+            int enters = 0;
+            for (int i = 0; i <= frames; i++)
+            {
+                var at = Vector2.Lerp(from, to, i / (float)frames);
+                var data = new UnityEngine.EventSystems.PointerEventData(es) { position = at };
+                UnityEngine.EventSystems.EventTrigger now = null;
+                var hits = Panel.HitsAt(at);
+                if (hits.Count > 0)
+                    for (var t = hits[0].transform; t != null && now == null; t = t.parent)
+                        now = t.GetComponent<UnityEngine.EventSystems.EventTrigger>();
+                bool same = now != null && entered != null && now.GetInstanceID() == entered.GetInstanceID();
+                if (!same)
+                {
+                    if (entered != null) entered.OnPointerExit(data);
+                    if (now != null)
+                    {
+                        now.OnPointerEnter(data);
+                        enters++;
+                    }
+                    entered = now;
+                }
+                yield return null;
+            }
+            if (entered != null) entered.OnPointerExit(new UnityEngine.EventSystems.PointerEventData(es) { position = to });
+            Core.Log.Msg($"[dev] uisweep {from} to {to}: {enters} targets entered over {frames} frames");
         }
 
         private static string Path(GameObject go)

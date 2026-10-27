@@ -211,6 +211,7 @@ namespace MapExpansions.Editor
                 Core.Log.Warning($"catalog place ({why}): no result {index} (there are {Results.Count})");
                 return;
             }
+            Picking.Cancel(why);
             _placing = Results[index];
             _placingTab = Current;
             PlaceYaw = 0f;

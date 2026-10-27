@@ -182,6 +182,7 @@ namespace MapExpansions.Editor
             }
             FlyCamera.SetTop(false, Camera?.Camera, why);
             Catalog.CancelPlace(why);
+            Picking.Cancel(why);
             Selection.Hover(null);
             IsOpen = false;
             Gizmo.Release();
@@ -226,6 +227,7 @@ namespace MapExpansions.Editor
             Camera = null;
             FlyCamera.ForgetTop();
             Catalog.CancelPlace("the world unloaded");
+            Picking.Cancel("the world unloaded");
             Selection.Hover(null);
             _equipWasOn = false;
             Gizmo.Release();
@@ -256,8 +258,9 @@ namespace MapExpansions.Editor
                 {
                     if (action == null || action.Type != ExitType.Primary || !IsOpen) return;
                     action.Use();
-                    // Escape steps back one level: placing, then the key overlay, then the editor.
+                    // Escape steps back one level: placing or a pick tool, then the key overlay, then the editor.
                     if (Catalog.Placing) Catalog.CancelPlace("escape");
+                    else if (Picking.Active) Picking.Cancel("escape");
                     else if (Panel.Help) Panel.ToggleHelp("escape");
                     else Close("escape");
                 }
@@ -304,9 +307,9 @@ namespace MapExpansions.Editor
             MapExpansions.World.MainCopies.Placed hovered = null;
             if (!camBusy)
             {
-                // Placing takes the click first, then the gizmos: a handle over another copy moves the selection, it
+                // Placing and the pick tools take the click first, then the gizmos: a handle over another copy moves the selection, it
                 // does not change it.
-                bool tookMouse = Catalog.TickPlace(Camera.Camera, overPanel)
+                bool tookMouse = Catalog.TickPlace(Camera.Camera, overPanel) || Picking.Tick(Camera.Camera, overPanel)
                     || Points.Tick(Camera.Camera, overPanel) || Areas.Tick(Camera.Camera, overPanel) || Gizmo.Tick(Camera.Camera, overPanel);
                 if (!tookMouse)
                 {
@@ -317,6 +320,7 @@ namespace MapExpansions.Editor
             else EndFrame();
             Selection.Hover(hovered);
             Panel.ShowReadout(Gizmo.Readout ?? Areas.Readout ?? Points.Readout, EditorInput.MousePosition);
+            Panel.TickTip(EditorInput.MousePosition, overPanel);
             Selection.Tick();
             Panel.Tick();
         }

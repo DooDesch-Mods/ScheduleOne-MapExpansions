@@ -466,8 +466,8 @@ namespace MapExpansions.Editor
             var to = _dragWorld;
             if (Snap.Grid)
             {
-                to.x = Mathf.Round(to.x / Areas.Step) * Areas.Step;
-                to.z = Mathf.Round(to.z / Areas.Step) * Areas.Step;
+                to.x = Mathf.Round(to.x / Snap.GridStep) * Snap.GridStep;
+                to.z = Mathf.Round(to.z / Snap.GridStep) * Snap.GridStep;
             }
             MoveTo(r, to, yaw, $"{Label(r)}: {SubLabel(r.Kind, r.Sub)} verschoben", "drag");
         }

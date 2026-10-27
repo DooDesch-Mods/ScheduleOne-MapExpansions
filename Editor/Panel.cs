@@ -26,6 +26,10 @@ namespace MapExpansions.Editor
         private static RectTransform _readout;
         private static TextMeshProUGUI _readoutText;
         private static string _readoutShown;
+        private static RectTransform _tip;
+        private static TextMeshProUGUI _tipText;
+        private static string _tipWanted;
+        private static string _tipShown;
 
         /// <summary>True while the key overlay is open; F1, its button and Escape close it.</summary>
         internal static bool Help { get; private set; }
@@ -87,20 +91,15 @@ namespace MapExpansions.Editor
                     else Core.Log.Warning($"panel: mode '{m}' is not Move, Rotate or Scale");
                     return State();
                 })
-                .OnCall("editor.snap", which =>
+                .OnCall("editor.snap", which => { Snap.Toggle(which, "toolbar"); return State(); })
+                .OnCall("editor.snap.step", wv =>
                 {
-                    switch (which)
-                    {
-                        case "grid": Snap.Grid = !Snap.Grid; break;
-                        case "turn": Snap.Turn = !Snap.Turn; break;
-                        case "edges": Snap.Edges = !Snap.Edges; break;
-                        default:
-                            Core.Log.Warning($"panel: snap '{which}' is not grid, turn or edges");
-                            return State();
-                    }
-                    Core.Log.Msg($"snap (toolbar): grid {Snap.Grid}, turn {Snap.Turn}, edges {Snap.Edges}");
+                    int eq = (wv ?? "").IndexOf('=');
+                    if (eq <= 0) Core.Log.Warning($"panel: snap step '{wv}' is not grid=value or turn=value");
+                    else Snap.SetStep(wv.Substring(0, eq), wv.Substring(eq + 1), "toolbar");
                     return State();
                 })
+                .OnCall("editor.tip", text => { ShowTip(text); return ""; })
                 .OnCall("editor.undo", _ => { Edits.Undo("toolbar"); return State(); })
                 .OnCall("editor.redo", _ => { Edits.Redo("toolbar"); return State(); })
                 .OnCall("editor.dup", _ => { Edits.Duplicate(Selection.All, "toolbar"); return State(); })
@@ -130,19 +129,13 @@ namespace MapExpansions.Editor
                     else Areas.Select(a, "hierarchy");
                     return State();
                 })
-                .OnCall("editor.rule.new", e =>
+                .OnCall("editor.pick", t =>
                 {
-                    if (Enum.TryParse(e, true, out MapExpansions.ObjectEffect effect)) AreaEdits.NewRule(effect, "toolbar");
-                    else Core.Log.Warning($"panel: '{e}' is no rule effect");
+                    if (Enum.TryParse(t, true, out PickTool tool)) Picking.Begin(tool, "toolbar");
+                    else Core.Log.Warning($"panel: '{t}' is not Remove, Block, Panel or Opening");
                     return State();
                 })
-                .OnCall("editor.box.new", k =>
-                {
-                    if (Enum.TryParse(k, true, out MapExpansions.BoxKind kind)) AreaEdits.NewBox(kind, "toolbar");
-                    else Core.Log.Warning($"panel: '{k}' is neither Panel nor Block");
-                    return State();
-                })
-                .OnCall("editor.opening.new", _ => { AreaEdits.NewOpening("toolbar"); return State(); })
+                .OnCall("editor.pick.cancel", _ => { Picking.Cancel("hint"); return State(); })
                 .OnCall("editor.apply", _ => { AreaEdits.Apply("toolbar"); return State(); })
                 .OnCall("editor.rule.effect", e =>
                 {
@@ -233,7 +226,10 @@ namespace MapExpansions.Editor
             edge.effectColor = new Color(1f, 0.75f, 0.1f, 0.9f);
             edge.effectDistance = new Vector2(1.5f, 1.5f);
             frame.SetActive(false);
-            BuildReadout();
+            _readout = Label("readout", out _readoutText);
+            _tip = Label("tip", out _tipText);
+            _tipWanted = null;
+            _tipShown = null;
             _pushed = "";
             Core.Log.Msg($"panel: surface '{SurfaceId}' mounted: {Surfaces.IsMounted(SurfaceId)}");
         }
@@ -248,6 +244,10 @@ namespace MapExpansions.Editor
             _readout = null;
             _readoutText = null;
             _readoutShown = null;
+            _tip = null;
+            _tipText = null;
+            _tipWanted = null;
+            _tipShown = null;
             Help = false;
             _surface = null;
             Core.Log.Msg("panel: surface unmounted");
@@ -280,40 +280,81 @@ namespace MapExpansions.Editor
             return false;
         }
 
-        /// <summary>The small label beside the cursor that shows the value of a drag.</summary>
-        private static void BuildReadout()
+        /// <summary>
+        /// A small label beside the cursor, drawn by the mod over the page: the value of a drag, or the tooltip of a
+        /// button. A tooltip built as a page element would rebuild the whole page on every hover, and once more when
+        /// the pointer leaves.
+        /// </summary>
+        private static RectTransform Label(string name, out TextMeshProUGUI text)
         {
+            text = null;
             var font = TMP_Settings.defaultFontAsset;
             if (font == null) font = Resources.FindObjectsOfTypeAll<TMP_FontAsset>().FirstOrDefault();
             if (font == null)
             {
-                Core.Log.Warning("panel: no TextMeshPro font is loaded; drags show no value at the cursor");
-                return;
+                Core.Log.Warning($"panel: no TextMeshPro font is loaded; the cursor {name} stays hidden");
+                return null;
             }
-            var go = new GameObject("readout");
-            _readout = go.AddComponent<RectTransform>();
-            _readout.SetParent(_root.transform, false);
-            _readout.anchorMin = _readout.anchorMax = Vector2.zero;
-            _readout.pivot = new Vector2(0f, 1f);
+            var go = new GameObject(name);
+            var rect = go.AddComponent<RectTransform>();
+            rect.SetParent(_root.transform, false);
+            rect.anchorMin = rect.anchorMax = Vector2.zero;
+            rect.pivot = new Vector2(0f, 1f);
             var bg = go.AddComponent<Image>();
             bg.color = new Color(0.07f, 0.08f, 0.1f, 0.92f);
             bg.raycastTarget = false;
             var label = new GameObject("text");
             var lr = label.AddComponent<RectTransform>();
-            lr.SetParent(_readout, false);
+            lr.SetParent(rect, false);
             lr.anchorMin = Vector2.zero;
             lr.anchorMax = Vector2.one;
             lr.offsetMin = new Vector2(8f, 2f);
             lr.offsetMax = new Vector2(-8f, -2f);
-            _readoutText = label.AddComponent<TextMeshProUGUI>();
-            _readoutText.font = font;
-            _readoutText.fontSize = 17f;
-            _readoutText.color = new Color(0.9f, 0.91f, 0.93f);
-            _readoutText.alignment = TextAlignmentOptions.MidlineLeft;
-            _readoutText.enableWordWrapping = false;
-            _readoutText.raycastTarget = false;
+            text = label.AddComponent<TextMeshProUGUI>();
+            text.font = font;
+            text.fontSize = 17f;
+            text.color = new Color(0.9f, 0.91f, 0.93f);
+            text.alignment = TextAlignmentOptions.MidlineLeft;
+            text.enableWordWrapping = false;
+            text.richText = true;
+            text.raycastTarget = false;
             go.SetActive(false);
-            Core.Log.Msg($"panel: cursor readout built with font '{font.name}'");
+            Core.Log.Msg($"panel: cursor {name} built with font '{font.name}'");
+            return rect;
+        }
+
+        /// <summary>The page names the tooltip of the control under the pointer: text, a tab, the key; empty hides it.</summary>
+        internal static void ShowTip(string raw) => _tipWanted = string.IsNullOrEmpty(raw) ? null : raw;
+
+        /// <summary>Keeps the tooltip beside the cursor while it is over a dock; off the docks it hides.</summary>
+        internal static void TickTip(Vector2 screen, bool overPanel)
+        {
+            if (_tip == null) return;
+            if (_tipWanted == null || !overPanel)
+            {
+                if (_tip.gameObject.activeSelf) _tip.gameObject.SetActive(false);
+                if (!overPanel) _tipWanted = null;
+                return;
+            }
+            float k = _root.GetComponent<Canvas>().scaleFactor;
+            if (k <= 0f) k = 1f;
+            if (_tipWanted != _tipShown)
+            {
+                _tipShown = _tipWanted;
+                int tab = _tipWanted.IndexOf('\t');
+                string text = tab < 0 ? _tipWanted : _tipWanted.Substring(0, tab);
+                string key = tab < 0 ? null : _tipWanted.Substring(tab + 1);
+                _tipText.text = key == null ? text : $"{text}   <color=#8b93a1>{key}</color>";
+                _tip.sizeDelta = new Vector2(_tipText.GetPreferredValues(_tipText.text).x + 18f, 28f);
+            }
+            // Below and right of the cursor, kept on the screen at the right and bottom edges.
+            float x = screen.x / k + 14f, y = screen.y / k - 22f;
+            float w = Screen.width / k;
+            if (x + _tip.sizeDelta.x > w - 4f) x = w - 4f - _tip.sizeDelta.x;
+            if (y - _tip.sizeDelta.y < 4f) y = screen.y / k + 12f + _tip.sizeDelta.y;
+            _tip.anchoredPosition = new Vector2(x, y);
+            _tip.SetAsLastSibling();
+            if (!_tip.gameObject.activeSelf) _tip.gameObject.SetActive(true);
         }
 
         /// <summary>Shows a value beside the cursor, or hides it when the text is null.</summary>
@@ -459,6 +500,12 @@ namespace MapExpansions.Editor
             }
             JsonNode area = null;
             var cur = Areas.Current;
+            // An undo can take out the rule or box that is selected; the selection goes with it.
+            if (cur != null && (cur.Kind == AreaKind.Box ? cur.BoxDef == null : cur.RuleDef == null))
+            {
+                Areas.Deselect("its rule or box is gone");
+                cur = null;
+            }
             if (cur != null)
             {
                 var o = new JsonObject { ["key"] = cur.Key, ["label"] = cur.Label, ["kind"] = cur.Kind.ToString(), ["expansion"] = cur.Expansion };
@@ -550,9 +597,12 @@ namespace MapExpansions.Editor
                 ["keys"] = keys,
                 ["mode"] = Gizmo.Mode.ToString(),
                 ["grid"] = Snap.Grid,
-                // Boxes and points snap finer than copies; the button shows the step of what is selected.
-                ["gridStep"] = Areas.Current != null || Points.Current != null ? Areas.Step : Snap.GridStep,
+                ["gridStep"] = Snap.GridStep,
                 ["turnStep"] = Snap.TurnStep,
+                ["gridSteps"] = new JsonArray(Snap.GridSteps.Select(v => (JsonNode)v).ToArray()),
+                ["turnSteps"] = new JsonArray(Snap.TurnSteps.Select(v => (JsonNode)v).ToArray()),
+                ["picking"] = Picking.Hint,
+                ["pickTool"] = Picking.Tool?.ToString(),
                 ["turn"] = Snap.Turn,
                 ["edges"] = Snap.Edges,
                 ["undo"] = Edits.UndoCount,
