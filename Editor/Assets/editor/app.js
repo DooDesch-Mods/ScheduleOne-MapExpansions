@@ -254,6 +254,11 @@ function renderInspector(s) {
   prop(box, 'Drehung', Number(x.yaw).toFixed(1) + '°');
   prop(box, 'Skalierung', Number(x.scale).toFixed(2));
   prop(box, 'Größe', fmt(x.size));
+  prop(box, 'NPCs', (x.obstacle ? 'gehen drumherum' : 'gehen durch') + (x.obstacleSet ? '' : ' (Standard)'));
+  const adds = el('div', 'adds');
+  button(adds, x.obstacle ? 'Hindernis aus' : 'Hindernis an', 'editor.obstacle', x.obstacle ? 'off' : 'on');
+  if (x.obstacleSet) button(adds, 'Standard', 'editor.obstacle', 'default');
+  box.appendChild(adds);
   prop(box, 'Status', x.dirty ? 'geändert' : 'gespeichert');
 }
 

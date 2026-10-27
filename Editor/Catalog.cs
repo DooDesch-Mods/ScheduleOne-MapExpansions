@@ -215,7 +215,7 @@ namespace MapExpansions.Editor
             if ((Current == Tab.Source || Current == Tab.Models) && MapExpansionsApi.ExpansionAt(hit.point) != b.Id)
                 Core.Log.Warning($"catalog place ({why}): '{item.Label}' belongs to '{b.Id}', the aimed point {hit.point} does not; it is placed there all the same");
 
-            var d = new CopyDefinition();
+            var d = new CopyDefinition { Added = true };
             Transform src, frame;
             switch (Current)
             {

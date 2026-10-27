@@ -92,6 +92,11 @@ namespace MapExpansions.Editor
                 .OnCall("editor.redo", _ => { Edits.Redo("toolbar"); return State(); })
                 .OnCall("editor.dup", _ => { Edits.Duplicate(Selection.All, "toolbar"); return State(); })
                 .OnCall("editor.del", _ => { Edits.Delete(Selection.All, "toolbar"); return State(); })
+                .OnCall("editor.obstacle", v =>
+                {
+                    Edits.Obstacle(Selection.All, v == "on" ? true : v == "off" ? false : null, "inspector");
+                    return State();
+                })
                 .OnCall("editor.drop", _ => { Edits.Drop(Selection.All, "toolbar"); return State(); })
                 .OnCall("editor.frame", _ => { EditorMode.FrameSelection("toolbar"); return State(); })
                 .OnCall("editor.play", _ => { EditorMode.Play("toolbar"); return ""; })
@@ -307,6 +312,8 @@ namespace MapExpansions.Editor
                     ["position"] = Vec(sel.Built.Handle.position),
                     ["yaw"] = Math.Round(sel.Built.Handle.eulerAngles.y, 1),
                     ["scale"] = Math.Round(d.Scale, 3),
+                    ["obstacle"] = Obstacles.Wanted(d),
+                    ["obstacleSet"] = d.Obstacle.HasValue,
                     ["size"] = Vec(Selection.CurrentBounds.size),
                     ["dirty"] = Saving.IsDirty(sel),
                 };

@@ -271,6 +271,62 @@ namespace MapExpansions.Editor
         private static string Name(IReadOnlyList<MainCopies.Placed> sel) =>
             sel.Count == 1 ? sel[0].Built.Def.Id : $"{sel.Count} Kopien";
 
+        // ---- NavMesh obstacle
+
+        internal sealed class ObstacleEdit : Edit
+        {
+            public readonly List<(CopyRef copy, bool? before, bool? after)> Items = new();
+
+            public override bool Do()
+            {
+                bool any = false;
+                foreach (var (c, _, after) in Items) any |= SetObstacle(c, after, "do");
+                return any;
+            }
+
+            public override void Undo()
+            {
+                foreach (var (c, before, _) in Items) SetObstacle(c, before, "undo");
+            }
+        }
+
+        private static bool SetObstacle(CopyRef r, bool? value, string why)
+        {
+            var d = r.Def;
+            if (d == null)
+            {
+                Core.Log.Error($"obstacle ({why}): copy {r} is not in a built expansion; it stays as it is");
+                return false;
+            }
+            d.Obstacle = value;
+            var p = r.Placed;
+            if (p == null) Core.Log.Warning($"obstacle ({why}): copy {r} is not built; only its definition changes");
+            else Obstacles.Apply(p.Built, $"copy {r} ({why})");
+            Saving.MarkDirty(r.Expansion, r.Owner, r.Id);
+            return true;
+        }
+
+        /// <summary>Sets whether the selected copies carve the NavMesh: true, false, or null for the default.</summary>
+        internal static bool Obstacle(IReadOnlyList<MainCopies.Placed> sel, bool? value, string why)
+        {
+            if (sel.Count == 0)
+            {
+                Core.Log.Msg($"obstacle ({why}): nothing is selected");
+                return false;
+            }
+            var e = new ObstacleEdit
+            {
+                What = $"{Name(sel)}: Hindernis {(value is bool v ? v ? "an" : "aus" : "nach Standard")}",
+            };
+            foreach (var p in sel)
+            {
+                var r = CopyRef.Of(p);
+                var d = r.Def;
+                if (d != null) e.Items.Add((r, d.Obstacle, value));
+            }
+            return Run(e, why);
+        }
+
         // ---- duplicate and delete
 
         /// <summary>What the layer state holds of one copy, to put back after a delete is undone.</summary>
@@ -409,6 +465,7 @@ namespace MapExpansions.Editor
                 // The copy stands where its original stands, selected, so the next drag moves the new one.
                 var d = src.Def.Clone();
                 d.Id = FreeId(list, src.Id, taken);
+                d.Added = true;
                 taken.Add(d.Id);
                 e.Items.Add((src, new CopyRef(src.Expansion, src.Owner, d.Id), d, list.IndexOf(src.Def) + 1));
             }

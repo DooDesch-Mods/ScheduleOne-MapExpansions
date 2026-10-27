@@ -345,6 +345,9 @@ namespace MapExpansions.Lifecycle
             if (e["file"] != null) d.Model = Str(e, "file");
             if (e["prefab"] != null) d.Prefab = Str(e, "prefab");
             if (Enum<ModelCollider>(e, "collider") is ModelCollider col) d.Collider = col;
+            // "obstacle": null goes back to the default.
+            if (e is JsonObject eo && eo.ContainsKey("obstacle"))
+                d.Obstacle = e["obstacle"] is JsonValue ov && ov.TryGetValue<bool>(out var ob) ? ob : null;
             if (e["exclude"] is JsonArray ex)
             {
                 d.Exclude.Clear();
@@ -355,7 +358,7 @@ namespace MapExpansions.Lifecycle
         /// <summary>A copy the layer adds; it needs at least an id and a template, a model file or a prefab.</summary>
         private static CopyDefinition NewCopy(JsonNode e)
         {
-            var d = new CopyDefinition { Id = Str(e, "id") };
+            var d = new CopyDefinition { Id = Str(e, "id"), Added = true };
             ReadCopy(e, d);
             bool made = !string.IsNullOrEmpty(d.Template) || !string.IsNullOrEmpty(d.Model) || !string.IsNullOrEmpty(d.Prefab);
             return string.IsNullOrEmpty(d.Id) || !made ? null : d;
@@ -432,6 +435,7 @@ namespace MapExpansions.Lifecycle
             }
             // Scales come as fractions like 1 / 0.9; three digits would shift a large model by millimetres.
             o["scale"] = MathF.Round(d.Scale, 5);
+            if (d.Obstacle is bool obstacle) o["obstacle"] = obstacle;
             return o;
         }
 

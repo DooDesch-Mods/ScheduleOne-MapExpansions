@@ -28,6 +28,8 @@ namespace MapExpansions.World
             public Quaternion Rotation;
             public Vector3 Scale;
             public NetworkObject Instance;
+            /// <summary>The part stands for its copy as a whole and carves the NavMesh once it arrives, see <see cref="Obstacles"/>.</summary>
+            public CopyDefinition ObstacleOf;
             /// <summary>From where the part stands to where its original stands in the main world.</summary>
             public Matrix4x4 ToMain;
             /// <summary>Holder of the expansion's probe anchors, see <see cref="AnchorProbes"/>.</summary>
@@ -90,6 +92,7 @@ namespace MapExpansions.World
                     var built = BuildOne(b, d, owner, found, zoneLights, templates, holder);
                     if (built != null)
                     {
+                        if (built.Local != null) Obstacles.Apply(built, $"'{b.Id}' {owner} '{d.Id}'");
                         result.Add(built);
                         All.Add(new Placed { Expansion = b, LayerOwner = layerOwner, Built = built });
                     }
@@ -160,6 +163,7 @@ namespace MapExpansions.World
                 return null;
             }
             if (built == null) return null;
+            if (built.Local != null) Obstacles.Apply(built, $"'{b.Id}' {owner} '{d.Id}'");
             var placed = new Placed { Expansion = b, LayerOwner = layerOwner, Built = built };
             All.Add(placed);
             if (built.Parts.Count > 0)
@@ -292,6 +296,7 @@ namespace MapExpansions.World
             {
                 // The template is a networked object itself; nothing is left to build locally.
                 Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}' is networked as a whole");
+                if (built.Parts.Count == 1) built.Parts[0].ObstacleOf = d;
                 return built;
             }
 
@@ -351,7 +356,7 @@ namespace MapExpansions.World
             var part = new Part
             {
                 Key = $"prefab:{b.Id}/{KeyOf(owner)}/{d.Id}", Template = template, Position = pose.GetColumn(3), Rotation = pose.rotation,
-                Scale = pose.lossyScale, ToMain = Matrix4x4.identity, Fresh = true,
+                Scale = pose.lossyScale, ToMain = Matrix4x4.identity, Fresh = true, ObstacleOf = d,
             };
             var built = new Built { Def = d, Move = move };
             built.Parts.Add(part);
@@ -659,6 +664,12 @@ namespace MapExpansions.World
         /// </summary>
         private static void SettlePart(Part p)
         {
+            if (p.ObstacleOf != null)
+            {
+                var what = $"networked part '{p.Key}'";
+                if (Obstacles.Wanted(p.ObstacleOf)) Obstacles.Fit(p.Instance.gameObject, what);
+                else Obstacles.Remove(p.Instance.gameObject, what);
+            }
             if (p.Fresh)
             {
                 Core.Log.Msg($"copies: prefab '{p.Key}' stands at {p.Instance.transform.position}");

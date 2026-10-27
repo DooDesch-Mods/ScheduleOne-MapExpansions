@@ -83,6 +83,16 @@ namespace MapExpansions
         /// </summary>
         public string Prefab { get; set; }
 
+        /// <summary>
+        /// Whether NPCs walk around the copy: a NavMesh obstacle carves its outline out of the walkable ground. Null
+        /// takes the default: on for models, game prefabs and copies a layer adds, off for the copies of the code
+        /// definition.
+        /// </summary>
+        public bool? Obstacle { get; set; }
+
+        /// <summary>Set for a copy a layer or the map editor adds; decides the default of <see cref="Obstacle"/>.</summary>
+        internal bool Added { get; set; }
+
         /// <summary>What the copy is made from, for log lines: a model, a game prefab or a template.</summary>
         internal string Source => !string.IsNullOrEmpty(Model) ? $"model '{Model}'" : !string.IsNullOrEmpty(Prefab) ? $"prefab '{Prefab}'" : $"'{Template}'";
 
