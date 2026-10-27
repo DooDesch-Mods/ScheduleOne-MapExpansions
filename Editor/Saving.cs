@@ -22,13 +22,14 @@ namespace MapExpansions.Editor
             DirtyCopies.TryGetValue(p.Expansion.Id, out var set) && set.Contains((p.LayerOwner, p.Built.Def.Id));
 
         /// <summary>A copy moved or changed: its entry goes into the layer.</summary>
-        internal static void MarkDirty(MainCopies.Placed p)
+        internal static void MarkDirty(MainCopies.Placed p) => MarkDirty(p.Expansion.Id, p.LayerOwner, p.Built.Def.Id);
+
+        internal static void MarkDirty(string expansionId, string owner, string copyId)
         {
-            var id = p.Expansion.Id;
-            Layers.StateOf(id).Copies.Add((p.LayerOwner, p.Built.Def.Id));
-            if (!DirtyCopies.TryGetValue(id, out var set)) DirtyCopies[id] = set = new HashSet<(string, string)>();
-            set.Add((p.LayerOwner, p.Built.Def.Id));
-            Dirty.Add(id);
+            Layers.StateOf(expansionId).Copies.Add((owner, copyId));
+            if (!DirtyCopies.TryGetValue(expansionId, out var set)) DirtyCopies[expansionId] = set = new HashSet<(string, string)>();
+            set.Add((owner, copyId));
+            Dirty.Add(expansionId);
         }
 
         /// <summary>Something else of the expansion's layer state changed (a rule, a box, a removal).</summary>
@@ -51,10 +52,10 @@ namespace MapExpansions.Editor
 
         private static bool Save(string expansionId, string why)
         {
-            var def = BuildPipeline.Get(expansionId)?.Definition;
+            var def = BuildPipeline.Get(expansionId)?.Definition ?? Registry.GetDefinition(expansionId);
             if (def == null)
             {
-                Core.Log.Error($"save ({why}): expansion '{expansionId}' is not built; its changes are not written");
+                Core.Log.Error($"save ({why}): expansion '{expansionId}' is not registered; its changes are not written");
                 Panel.Note($"Fehler: {expansionId} ist nicht gebaut.");
                 return false;
             }
@@ -79,6 +80,39 @@ namespace MapExpansions.Editor
             Core.Log.Msg($"saved ({why}): '{expansionId}' layer with {state.Count} entries to {path}, {json.Length} characters");
             Panel.Note($"Gespeichert: {expansionId}, {state.Count} Einträge.");
             return true;
+        }
+
+        internal static bool HasChanges => Dirty.Count > 0;
+
+        /// <summary>Folder of the drafts: unsaved layers, written in the background so a crash loses little.</summary>
+        internal static string DraftFolder => Path.Combine(MelonLoader.Utils.MelonEnvironment.UserDataDirectory, "MapExpansionsEditor", "drafts");
+
+        /// <summary>Writes the layer of every expansion with unsaved changes as a draft; the layer files stay as they are.</summary>
+        internal static int Draft(string why)
+        {
+            int written = 0;
+            foreach (var expansionId in Dirty.ToList())
+            {
+                var def = BuildPipeline.Get(expansionId)?.Definition ?? Registry.GetDefinition(expansionId);
+                if (def == null)
+                {
+                    Core.Log.Error($"draft ({why}): expansion '{expansionId}' is not registered; no draft is written");
+                    continue;
+                }
+                string path = Path.Combine(DraftFolder, expansionId + ".json");
+                try
+                {
+                    Directory.CreateDirectory(DraftFolder);
+                    File.WriteAllText(path, Layers.Write(def, Layers.StateOf(expansionId)));
+                    written++;
+                    Core.Log.Msg($"draft ({why}): '{expansionId}' written to {path}");
+                }
+                catch (Exception e)
+                {
+                    Core.Log.Error($"draft ({why}): writing '{expansionId}' to {path} failed: {e.Message}");
+                }
+            }
+            return written;
         }
 
         /// <summary>The world was rebuilt; changes that were not saved are gone with it.</summary>

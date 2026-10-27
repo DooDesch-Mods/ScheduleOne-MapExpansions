@@ -179,10 +179,15 @@ namespace MapExpansions.World
                 }
                 part.Instance = null;
             }
-            if (p.Built.Local != null) Object.Destroy(p.Built.Local);
+            int released = 0;
+            if (p.Built.Local != null)
+            {
+                released = StaticBatches.Release(p.Built.Local.transform);
+                Object.Destroy(p.Built.Local);
+            }
             p.Built.Local = null;
             All.Remove(p);
-            Core.Log.Msg($"copies: revert '{p.Expansion.Id}' {p.LayerOwner} '{d.Id}': taken out, {parts} networked parts removed");
+            Core.Log.Msg($"copies: revert '{p.Expansion.Id}' {p.LayerOwner} '{d.Id}': taken out, {parts} networked parts removed, {released} batch parts released");
         }
 
         private static Built BuildOne(BuiltExpansion b, CopyDefinition d, string owner, Dictionary<string, Transform> found,
@@ -636,6 +641,68 @@ namespace MapExpansions.World
                 part.Position += delta;
                 if (part.Instance != null) part.Instance.transform.position += delta;
             }
+        }
+
+        /// <summary>
+        /// Where the copy's frame stands in the world, as <see cref="BuildOne"/> places it: from <see cref="CopyDefinition.At"/>
+        /// or on <see cref="CopyDefinition.Onto"/>. False when the onto object is gone.
+        /// </summary>
+        internal static bool FramePose(BuiltExpansion b, CopyDefinition d, out Vector3 pos, out Quaternion rot)
+        {
+            if (string.IsNullOrEmpty(d.Onto))
+            {
+                pos = b.Root.transform.TransformPoint(d.At.Position);
+                rot = b.Root.transform.rotation * Quaternion.Euler(0f, d.At.Yaw, 0f);
+                return true;
+            }
+            var onto = FindInExpansion(b, d.Onto);
+            if (onto == null)
+            {
+                pos = Vector3.zero;
+                rot = Quaternion.identity;
+                return false;
+            }
+            pos = onto.position + onto.rotation * d.OntoOffset;
+            rot = onto.rotation * Quaternion.Euler(d.OntoRotation);
+            return true;
+        }
+
+        /// <summary>
+        /// Writes a world pose of the frame into the definition. A copy placed by <see cref="CopyDefinition.At"/> keeps
+        /// only the turn around the vertical axis, as <see cref="LocalPoint"/> holds no more.
+        /// </summary>
+        internal static bool SetFramePose(BuiltExpansion b, CopyDefinition d, Vector3 pos, Quaternion rot, float scale)
+        {
+            if (string.IsNullOrEmpty(d.Onto))
+            {
+                var local = Quaternion.Inverse(b.Root.transform.rotation) * rot;
+                d.At = new LocalPoint(b.Root.transform.InverseTransformPoint(pos), Mathf.Repeat(local.eulerAngles.y, 360f));
+            }
+            else
+            {
+                var onto = FindInExpansion(b, d.Onto);
+                if (onto == null)
+                {
+                    Core.Log.Error($"copies: '{b.Id}' '{d.Id}': '{d.Onto}' is gone; the pose is not written into the definition");
+                    return false;
+                }
+                d.OntoOffset = Quaternion.Inverse(onto.rotation) * (pos - onto.position);
+                d.OntoRotation = (Quaternion.Inverse(onto.rotation) * rot).eulerAngles;
+            }
+            d.Scale = scale;
+            return true;
+        }
+
+        /// <summary>Takes a copy out and builds it again from its definition, after a turn or a new scale.</summary>
+        internal static Placed Rebuild(Placed p, string why)
+        {
+            var b = p.Expansion;
+            var d = p.Built.Def;
+            string owner = p.LayerOwner == Lifecycle.Layers.ExpansionOwner ? "expansion" : $"shop '{p.LayerOwner.Substring(5)}'";
+            Revert(p);
+            var placed = ApplyOne(b, d, owner, p.LayerOwner);
+            if (placed == null) Core.Log.Error($"copies: rebuild ({why}) of '{b.Id}' '{d.Id}' failed; the copy is missing until the world is rebuilt");
+            return placed;
         }
 
         public static void Clear()

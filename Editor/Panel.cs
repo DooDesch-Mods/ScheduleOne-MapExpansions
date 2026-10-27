@@ -19,6 +19,7 @@ namespace MapExpansions.Editor
         private const string Bundle = "MapExpansions.Editor.Assets.editor";
 
         private static GameObject _root;
+        private static RectTransform _frame;
         private static SurfaceHandle _surface;
         private static string _pushed = "";
         private static float _sincePush;
@@ -59,12 +60,54 @@ namespace MapExpansions.Editor
                 .OnCall("editor.select", key =>
                 {
                     var p = Copies.Find(key);
+                    bool add = EditorInput.Key(KeyCode.LeftControl) || EditorInput.Key(KeyCode.RightControl);
                     if (p == null) Core.Log.Warning($"panel: select '{key}' names no placed copy");
-                    else Selection.Select(p, "hierarchy");
+                    else Selection.Select(p, add ? "hierarchy ctrl+click" : "hierarchy", add);
                     return State();
                 })
+                .OnCall("editor.mode", m =>
+                {
+                    if (Enum.TryParse(m, true, out GizmoMode mode)) Gizmo.SetMode(mode, "toolbar");
+                    else Core.Log.Warning($"panel: mode '{m}' is not Move, Rotate or Scale");
+                    return State();
+                })
+                .OnCall("editor.snap", which =>
+                {
+                    switch (which)
+                    {
+                        case "grid": Snap.Grid = !Snap.Grid; break;
+                        case "turn": Snap.Turn = !Snap.Turn; break;
+                        case "edges": Snap.Edges = !Snap.Edges; break;
+                        default:
+                            Core.Log.Warning($"panel: snap '{which}' is not grid, turn or edges");
+                            return State();
+                    }
+                    Core.Log.Msg($"snap (toolbar): grid {Snap.Grid}, turn {Snap.Turn}, edges {Snap.Edges}");
+                    return State();
+                })
+                .OnCall("editor.undo", _ => { Edits.Undo("toolbar"); return State(); })
+                .OnCall("editor.redo", _ => { Edits.Redo("toolbar"); return State(); })
+                .OnCall("editor.dup", _ => { Edits.Duplicate(Selection.All, "toolbar"); return State(); })
+                .OnCall("editor.del", _ => { Edits.Delete(Selection.All, "toolbar"); return State(); })
+                .OnCall("editor.drop", _ => { Edits.Drop(Selection.All, "toolbar"); return State(); })
+                .OnCall("editor.frame", _ => { EditorMode.FrameSelection("toolbar"); return State(); })
+                .OnCall("editor.play", _ => { EditorMode.Play("toolbar"); return ""; })
                 .OnCall("editor.save", _ => { Saving.SaveAll("toolbar"); return State(); })
                 .OnCall("editor.close", _ => { EditorMode.Close("toolbar"); return ""; });
+
+            // The selection frame: an outline over the page that takes no pointer.
+            var frame = new GameObject("frame");
+            _frame = frame.AddComponent<RectTransform>();
+            _frame.SetParent(_root.transform, false);
+            _frame.anchorMin = _frame.anchorMax = Vector2.zero;
+            _frame.pivot = Vector2.zero;
+            var fill = frame.AddComponent<Image>();
+            fill.color = new Color(1f, 0.75f, 0.1f, 0.12f);
+            fill.raycastTarget = false;
+            var edge = frame.AddComponent<Outline>();
+            edge.effectColor = new Color(1f, 0.75f, 0.1f, 0.9f);
+            edge.effectDistance = new Vector2(1.5f, 1.5f);
+            frame.SetActive(false);
             _pushed = "";
             Core.Log.Msg($"panel: surface '{SurfaceId}' mounted: {Surfaces.IsMounted(SurfaceId)}");
         }
@@ -75,6 +118,7 @@ namespace MapExpansions.Editor
             Surfaces.Unmount(SurfaceId);
             Object.Destroy(_root);
             _root = null;
+            _frame = null;
             _surface = null;
             Core.Log.Msg("panel: surface unmounted");
         }
@@ -106,6 +150,24 @@ namespace MapExpansions.Editor
             return false;
         }
 
+        /// <summary>Shows the selection frame over a screen rectangle in pixels, or hides it.</summary>
+        internal static void ShowFrame(Rect? screen)
+        {
+            if (_frame == null) return;
+            if (screen == null)
+            {
+                if (_frame.gameObject.activeSelf) _frame.gameObject.SetActive(false);
+                return;
+            }
+            float k = _root.GetComponent<Canvas>().scaleFactor;
+            if (k <= 0f) k = 1f;
+            var r = screen.Value;
+            _frame.anchoredPosition = new Vector2(r.xMin / k, r.yMin / k);
+            _frame.sizeDelta = new Vector2(r.width / k, r.height / k);
+            _frame.SetAsLastSibling();
+            if (!_frame.gameObject.activeSelf) _frame.gameObject.SetActive(true);
+        }
+
         /// <summary>A line for the console dock.</summary>
         internal static void Note(string line)
         {
@@ -130,6 +192,8 @@ namespace MapExpansions.Editor
         internal static string State()
         {
             var sel = Selection.Current;
+            var all = Selection.All;
+            var keys = new JsonArray(all.Select(p => (JsonNode)Copies.Key(p)).ToArray());
             var copies = new JsonArray();
             foreach (var p in Copies.All())
                 copies.Add(new JsonObject
@@ -153,6 +217,8 @@ namespace MapExpansions.Editor
                     ["template"] = d.Template,
                     ["onto"] = d.Onto,
                     ["position"] = Vec(sel.Built.Local.transform.position),
+                    ["yaw"] = Math.Round(sel.Built.Local.transform.eulerAngles.y, 1),
+                    ["scale"] = Math.Round(d.Scale, 3),
                     ["size"] = Vec(Selection.CurrentBounds.size),
                     ["dirty"] = Saving.IsDirty(sel),
                 };
@@ -161,6 +227,13 @@ namespace MapExpansions.Editor
             {
                 ["copies"] = copies,
                 ["selected"] = selected,
+                ["keys"] = keys,
+                ["mode"] = Gizmo.Mode.ToString(),
+                ["grid"] = Snap.Grid,
+                ["turn"] = Snap.Turn,
+                ["edges"] = Snap.Edges,
+                ["undo"] = Edits.UndoCount,
+                ["redo"] = Edits.RedoCount,
                 ["dirty"] = Saving.DirtyCount,
                 ["speed"] = Math.Round(FlyCamera.Speed, 1),
                 ["log"] = new JsonArray(Lines.Select(l => (JsonNode)l).ToArray()),

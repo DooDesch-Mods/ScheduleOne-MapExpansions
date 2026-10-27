@@ -15,22 +15,32 @@ function parse(raw) {
 
 const fmt = (v) => v ? v.map((n) => Number(n).toFixed(2)).join('  ') : '';
 
+const on = (id, active) => { document.getElementById(id).className = active ? 'tool active' : 'tool'; };
+
 function renderToolbar(s) {
   const status = document.getElementById('status');
   status.textContent = s.dirty > 0 ? s.dirty + ' ungespeichert' : 'Alles gespeichert';
   status.className = s.dirty > 0 ? 'status changed' : 'status';
   document.getElementById('save').className = s.dirty > 0 ? 'tool primary' : 'tool';
+  on('mode-move', s.mode === 'Move');
+  on('mode-rotate', s.mode === 'Rotate');
+  on('mode-scale', s.mode === 'Scale');
+  on('snap-grid', s.grid);
+  on('snap-turn', s.turn);
+  on('snap-edges', s.edges);
+  document.getElementById('undo').className = s.undo > 0 ? 'tool' : 'tool off';
+  document.getElementById('redo').className = s.redo > 0 ? 'tool' : 'tool off';
 }
 
 function renderHierarchy(s) {
   const list = document.getElementById('list');
   list.replaceChildren();
-  const selected = s.selected ? s.selected.key : null;
+  const selected = new Set(s.keys || []);
   let group = null;
   for (const c of s.copies) {
     const g = c.expansion + ' / ' + c.owner;
     if (g !== group) { group = g; list.appendChild(el('div', 'group', g)); }
-    const row = el('div', c.key === selected ? 'item selected' : 'item');
+    const row = el('div', selected.has(c.key) ? 'item selected' : 'item');
     row.appendChild(el('div', 'name', c.id));
     if (c.dirty) row.appendChild(el('div', 'mark', 'geändert'));
     row.addEventListener('click', () => {
@@ -54,12 +64,16 @@ function renderInspector(s) {
   box.replaceChildren();
   const x = s.selected;
   if (!x) { box.appendChild(el('div', 'empty', 'Nichts ausgewählt.')); return; }
+  const n = (s.keys || []).length;
+  if (n > 1) prop(box, 'Auswahl', n + ' Kopien');
   prop(box, 'Id', x.id);
   prop(box, 'Erweiterung', x.expansion);
   prop(box, 'Ebene', x.owner);
   prop(box, 'Vorlage', x.template);
   if (x.onto) prop(box, 'Auf', x.onto);
   prop(box, 'Position', fmt(x.position));
+  prop(box, 'Drehung', Number(x.yaw).toFixed(1) + '°');
+  prop(box, 'Skalierung', Number(x.scale).toFixed(2));
   prop(box, 'Größe', fmt(x.size));
   prop(box, 'Status', x.dirty ? 'geändert' : 'gespeichert');
 }
@@ -82,6 +96,16 @@ function render(s) {
 
 document.getElementById('save').addEventListener('click', () => render(parse(s1.call('editor.save', ''))));
 document.getElementById('close').addEventListener('click', () => s1.call('editor.close', ''));
+const act = (id, name, arg) => document.getElementById(id).addEventListener('click', () => render(parse(s1.call(name, arg))));
+act('mode-move', 'editor.mode', 'Move');
+act('mode-rotate', 'editor.mode', 'Rotate');
+act('mode-scale', 'editor.mode', 'Scale');
+act('snap-grid', 'editor.snap', 'grid');
+act('snap-turn', 'editor.snap', 'turn');
+act('snap-edges', 'editor.snap', 'edges');
+act('undo', 'editor.undo', '');
+act('redo', 'editor.redo', '');
+document.getElementById('play').addEventListener('click', () => s1.call('editor.play', ''));
 
 // A dock is a hit target only when the script listens to it; without this a click on an empty dock area would
 // fall through to the world behind it.

@@ -19,6 +19,11 @@ namespace MapExpansions.Editor
         private static MelonPreferences_Entry<string> _layerFiles;
         private static KeyCode _key = KeyCode.F4;
 
+        /// <summary>Seconds between two drafts of unsaved changes.</summary>
+        private const float DraftEvery = 60f;
+
+        private static float _sinceDraft;
+
         public override void OnInitializeMelon()
         {
             Log = LoggerInstance;
@@ -68,15 +73,29 @@ namespace MapExpansions.Editor
 
         public override void OnUpdate()
         {
-            if (Input.GetKeyDown(_key)) EditorMode.Toggle($"key {_key}");
+            EditorInput.BeginFrame();
+            if (EditorInput.KeyDown(_key)) EditorMode.Toggle($"key {_key}");
+            // While the player walks after Tab, Tab brings the editor back; in the editor Tab is its own key.
+            else if (EditorMode.Playing && !EditorMode.IsOpen && EditorInput.KeyDown(KeyCode.Tab) && !Il2CppScheduleOne.GameInput.IsTyping)
+                EditorMode.Resume("tab");
             EditorMode.Tick();
+            EditorInput.EndFrame();
+
+            _sinceDraft += Time.unscaledDeltaTime;
+            if (_sinceDraft >= DraftEvery)
+            {
+                _sinceDraft = 0f;
+                if (Saving.HasChanges) Saving.Draft("every minute");
+            }
         }
 
         public override void OnSceneWasUnloaded(int buildIndex, string sceneName)
         {
             if (sceneName != Lifecycle.BuildPipeline.MainScene) return;
             EditorMode.SceneGone();
+            if (Saving.HasChanges) Saving.Draft("leaving the world");
             Saving.Forget("the world unloaded");
+            Edits.Forget("the world unloaded");
         }
     }
 }

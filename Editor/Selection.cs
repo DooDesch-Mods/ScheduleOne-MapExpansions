@@ -5,19 +5,31 @@ using Object = UnityEngine.Object;
 namespace MapExpansions.Editor
 {
     /// <summary>
-    /// The selected copy and its outline. A click picks the copy whose collider the ray hits first; a copy without
-    /// a collider under the cursor is found by its renderer bounds, nearest first.
+    /// The selected copies and their outlines. A click picks the copy whose collider the ray hits first; a copy without
+    /// a collider under the cursor is found by its renderer bounds, nearest first. Ctrl adds to the selection or takes
+    /// a copy out of it, a frame drawn with the mouse selects every copy whose centre lies inside. Copies are held by
+    /// key, so a copy that is built anew stays selected.
     /// </summary>
     internal static class Selection
     {
-        internal static MainCopies.Placed Current { get; private set; }
+        private static readonly List<string> Keys = new();
+        private static readonly List<LineRenderer> Lines = new();
 
+        /// <summary>The selected copies that stand in the world, in selection order.</summary>
+        internal static IReadOnlyList<MainCopies.Placed> All =>
+            Keys.Select(Copies.Find).Where(p => p?.Built?.Local != null).ToList();
+
+        /// <summary>The first selected copy; the inspector shows it.</summary>
+        internal static MainCopies.Placed Current => All.FirstOrDefault();
+
+        /// <summary>Bounds around every selected copy.</summary>
         internal static Bounds CurrentBounds { get; private set; }
 
-        private static GameObject _outline;
-        private static LineRenderer _line;
+        internal static int Count => Keys.Count;
 
-        internal static void Pick(Camera cam, Vector3 screen, string why)
+        internal static bool Contains(string key) => Keys.Contains(key);
+
+        internal static void Pick(Camera cam, Vector3 screen, bool add, string why)
         {
             if (cam == null)
             {
@@ -52,62 +64,124 @@ namespace MapExpansions.Editor
 
             if (best == null)
             {
+                if (add)
+                {
+                    Core.Log.Msg($"pick ({why}): no copy under the cursor at {screen}; the selection stays");
+                    return;
+                }
                 Core.Log.Msg($"pick ({why}): no copy under the cursor at {screen}; selection cleared");
                 Clear();
                 return;
             }
-            Select(best, $"{why}, {how} at {bestDist:0.0} m");
+            Select(best, $"{why}, {how} at {bestDist:0.0} m", add);
         }
 
-        internal static void Select(MainCopies.Placed p, string why)
+        /// <summary>Selects every copy whose bounds centre lies inside a screen rectangle.</summary>
+        internal static void Frame(Camera cam, Rect screen, bool add, string why)
+        {
+            var found = new List<string>();
+            foreach (var p in Copies.All())
+            {
+                var s = cam.WorldToScreenPoint(Copies.Bounds(p).center);
+                if (s.z > 0f && screen.Contains(new Vector2(s.x, s.y))) found.Add(Copies.Key(p));
+            }
+            if (!add) Keys.Clear();
+            foreach (var k in found)
+                if (!Keys.Contains(k)) Keys.Add(k);
+            Refresh();
+            Core.Log.Msg($"select ({why}): frame {screen.xMin:0},{screen.yMin:0} to {screen.xMax:0},{screen.yMax:0} holds {found.Count} copies; {Keys.Count} selected");
+            Panel.Note($"{Keys.Count} ausgewählt");
+        }
+
+        /// <summary>Selects a copy; with <paramref name="add"/> a selected copy goes out and another one comes in.</summary>
+        internal static void Select(MainCopies.Placed p, string why, bool add = false)
         {
             if (p?.Built?.Local == null)
             {
                 Core.Log.Warning($"select ({why}): the copy has no local object; nothing selected");
                 return;
             }
-            Current = p;
-            CurrentBounds = Copies.Bounds(p);
-            Core.Log.Msg($"select ({why}): {Copies.Key(p)} at {p.Built.Local.transform.position}, bounds {CurrentBounds.size}");
-            Panel.Note($"Ausgewählt: {p.Built.Def.Id}");
+            var key = Copies.Key(p);
+            if (add && Keys.Remove(key))
+            {
+                Refresh();
+                Core.Log.Msg($"select ({why}): {key} taken out; {Keys.Count} selected");
+                Panel.Note($"Abgewählt: {p.Built.Def.Id}");
+                return;
+            }
+            if (!add) Keys.Clear();
+            Keys.Add(key);
+            Refresh();
+            Core.Log.Msg($"select ({why}): {key} at {p.Built.Local.transform.position}, bounds {Copies.Bounds(p).size}; {Keys.Count} selected");
+            Panel.Note(Keys.Count == 1 ? $"Ausgewählt: {p.Built.Def.Id}" : $"{Keys.Count} ausgewählt");
+        }
+
+        /// <summary>Replaces the selection by keys, for a step that made or brought back copies.</summary>
+        internal static void Set(IEnumerable<string> keys, string why)
+        {
+            Keys.Clear();
+            Keys.AddRange(keys.Distinct());
+            Refresh();
+            Core.Log.Msg($"select ({why}): {Keys.Count} copies: {string.Join(", ", Keys)}");
+        }
+
+        /// <summary>A copy was built anew under the same key; nothing changes but the bounds.</summary>
+        internal static void Replace(string key)
+        {
+            if (Keys.Contains(key)) Refresh();
+        }
+
+        internal static void Remove(string key)
+        {
+            if (Keys.Remove(key)) Refresh();
         }
 
         internal static void Clear()
         {
-            Current = null;
-            if (_outline != null) _outline.SetActive(false);
+            Keys.Clear();
+            foreach (var l in Lines) l.gameObject.SetActive(false);
+        }
+
+        private static void Refresh()
+        {
+            var all = All;
+            if (all.Count == 0) return;
+            var b = Copies.Bounds(all[0]);
+            foreach (var p in all.Skip(1)) b.Encapsulate(Copies.Bounds(p));
+            CurrentBounds = b;
         }
 
         internal static void Tick()
         {
-            if (Current?.Built?.Local == null)
+            var all = All;
+            if (all.Count < Keys.Count)
             {
-                if (Current != null)
-                {
-                    Core.Log.Warning("the selected copy is gone; selection cleared");
-                    Clear();
-                }
-                return;
+                var gone = Keys.Where(k => Copies.Find(k)?.Built?.Local == null).ToList();
+                foreach (var k in gone) Keys.Remove(k);
+                Core.Log.Warning($"selected copies are gone: {string.Join(", ", gone)}; they leave the selection");
             }
-            CurrentBounds = Copies.Bounds(Current);
-            DrawOutline(CurrentBounds);
+            Refresh();
+            for (int i = 0; i < all.Count; i++) DrawOutline(i, Copies.Bounds(all[i]));
+            for (int i = all.Count; i < Lines.Count; i++) Lines[i].gameObject.SetActive(false);
         }
 
-        private static void DrawOutline(Bounds b)
+        private static void DrawOutline(int i, Bounds b)
         {
-            if (_outline == null)
+            while (Lines.Count <= i)
             {
-                _outline = new GameObject("MapExpansionsEditor_Outline");
-                Object.DontDestroyOnLoad(_outline);
-                _line = _outline.AddComponent<LineRenderer>();
-                _line.useWorldSpace = true;
-                _line.loop = false;
-                _line.material = Gizmo.Material(new Color(1f, 0.75f, 0.1f));
-                _line.startColor = _line.endColor = new Color(1f, 0.75f, 0.1f);
-                _line.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                _line.receiveShadows = false;
+                var go = new GameObject("MapExpansionsEditor_Outline" + Lines.Count);
+                Object.DontDestroyOnLoad(go);
+                var line = go.AddComponent<LineRenderer>();
+                line.useWorldSpace = true;
+                line.loop = false;
+                line.material = Gizmo.Material(new Color(1f, 0.75f, 0.1f));
+                line.startColor = line.endColor = new Color(1f, 0.75f, 0.1f);
+                line.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                line.receiveShadows = false;
+                Lines.Add(line);
             }
-            _outline.SetActive(true);
+            var l = Lines[i];
+            l.gameObject.SetActive(true);
             var c = b.center;
             var e = b.extents;
             Vector3 P(float x, float y, float z) => c + new Vector3(e.x * x, e.y * y, e.z * z);
@@ -118,10 +192,10 @@ namespace MapExpansions.Editor
                 P(-1, 1, -1), P(1, 1, -1), P(1, 1, 1), P(-1, 1, 1), P(-1, 1, -1),
                 P(1, 1, -1), P(1, -1, -1), P(1, -1, 1), P(1, 1, 1), P(-1, 1, 1), P(-1, -1, 1),
             };
-            _line.positionCount = pts.Length;
-            for (int i = 0; i < pts.Length; i++) _line.SetPosition(i, pts[i]);
+            l.positionCount = pts.Length;
+            for (int k = 0; k < pts.Length; k++) l.SetPosition(k, pts[k]);
             float dist = EditorMode.Camera != null ? Vector3.Distance(EditorMode.Camera.transform.position, c) : 10f;
-            _line.startWidth = _line.endWidth = Mathf.Max(0.01f, dist * 0.002f);
+            l.startWidth = l.endWidth = Mathf.Max(0.01f, dist * 0.002f);
         }
     }
 }

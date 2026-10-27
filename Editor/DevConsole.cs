@@ -51,16 +51,62 @@ namespace MapExpansions.Editor
                     case "close": EditorMode.Close("console"); break;
                     case "state": Core.Log.Msg($"[dev] state: {Panel.State()}"); break;
                     case "select" when p.Length > 2:
-                        var c = Copies.Find(p[2]);
-                        if (c == null) Core.Log.Warning($"[dev] select: no placed copy '{p[2]}'; placed: {string.Join(", ", Copies.All().Select(Copies.Key))}");
-                        else Selection.Select(c, "console");
+                        var keys = new List<string>();
+                        foreach (var id in p.Skip(2))
+                        {
+                            var c = Copies.Find(id);
+                            if (c == null) Core.Log.Warning($"[dev] select: no placed copy '{id}'; placed: {string.Join(", ", Copies.All().Select(Copies.Key))}");
+                            else keys.Add(Copies.Key(c));
+                        }
+                        Selection.Set(keys, "console");
                         break;
                     case "pick" when p.Length > 3:
-                        Selection.Pick(EditorMode.Camera?.Camera, Screen(p[2], p[3]), "console");
+                        Selection.Pick(EditorMode.Camera?.Camera, Screen(p[2], p[3]), p.Length > 4 && p[4] == "add", "console");
+                        break;
+                    case "frame" when p.Length > 5:
+                        var a = Screen(p[2], p[3]);
+                        var b = Screen(p[4], p[5]);
+                        Selection.Frame(EditorMode.Camera?.Camera, Rect.MinMaxRect(Mathf.Min(a.x, b.x), Mathf.Min(a.y, b.y), Mathf.Max(a.x, b.x), Mathf.Max(a.y, b.y)), false, "console");
                         break;
                     case "move" when p.Length > 4:
-                        if (Selection.Current == null) Core.Log.Warning("[dev] move: nothing is selected");
-                        else Gizmo.Move(Selection.Current, new Vector3(F(p[2]), F(p[3]), F(p[4])), "console");
+                        Edits.MoveBy(Selection.All, new Vector3(F(p[2]), F(p[3]), F(p[4])), "console");
+                        break;
+                    case "turn" when p.Length > 2:
+                        Edits.Transform(Selection.All, Selection.CurrentBounds.center, Quaternion.Euler(0f, F(p[2]), 0f), 1f, Vector3.zero, $"um {p[2]}° gedreht", "console");
+                        break;
+                    case "scale" when p.Length > 2:
+                        Edits.Transform(Selection.All, Selection.CurrentBounds.center, Quaternion.identity, F(p[2]), Vector3.zero, $"auf {p[2]} skaliert", "console");
+                        break;
+                    case "undo": Edits.Undo("console"); break;
+                    case "redo": Edits.Redo("console"); break;
+                    case "dup": Edits.Duplicate(Selection.All, "console"); break;
+                    case "del": Edits.Delete(Selection.All, "console"); break;
+                    case "drop": Edits.Drop(Selection.All, "console"); break;
+                    case "focus": EditorMode.FrameSelection("console"); break;
+                    case "play": EditorMode.Play("console"); break;
+                    case "resume": EditorMode.Resume("console"); break;
+                    case "draft": Core.Log.Msg($"[dev] draft: {Saving.Draft("console")} layers written to {Saving.DraftFolder}"); break;
+                    case "mode" when p.Length > 2:
+                        if (Enum.TryParse(p[2], true, out GizmoMode mode)) Gizmo.SetMode(mode, "console");
+                        else Core.Log.Warning($"[dev] mode: '{p[2]}' is not move, rotate or scale");
+                        break;
+                    case "snap" when p.Length > 3:
+                        bool on = p[3] == "on";
+                        if (p[2] == "grid") Snap.Grid = on;
+                        else if (p[2] == "turn") Snap.Turn = on;
+                        else if (p[2] == "edges") Snap.Edges = on;
+                        Core.Log.Msg($"[dev] snap: grid {Snap.Grid}, turn {Snap.Turn}, edges {Snap.Edges}");
+                        break;
+                    case "key" when p.Length > 2: Key(p[2]); break;
+                    case "click" when p.Length > 3:
+                        Script(Screen(p[2], p[3]), Screen(p[2], p[3]), 0, p.Length > 4 ? p[4] : null);
+                        break;
+                    case "drag" when p.Length > 5:
+                        Script(Screen(p[2], p[3]), Screen(p[4], p[5]), p.Length > 6 ? int.Parse(p[6], Ci) : 20, p.Length > 7 ? p[7] : null);
+                        break;
+                    case "handles": Core.Log.Msg($"[dev] handles: {Gizmo.Describe(EditorMode.Camera?.Camera)}"); break;
+                    case "sel":
+                        Core.Log.Msg($"[dev] sel: {Selection.Count} selected: {string.Join(", ", Selection.All.Select(x => $"{Copies.Key(x)} at {x.Built.Local.transform.position} yaw {x.Built.Local.transform.eulerAngles.y:0.#} scale {x.Built.Def.Scale:0.###}"))}; undo {Edits.UndoCount}, redo {Edits.RedoCount}, playing {EditorMode.Playing}");
                         break;
                     case "save": Saving.SaveAll("console"); break;
                     case "target" when p.Length > 3: Core.SetLayerFile(p[2], string.Join(" ", p.Skip(3))); break;
@@ -79,7 +125,7 @@ namespace MapExpansions.Editor
                     case "rule" when p.Length > 3: Rule(p[2].ToLowerInvariant(), string.Join(" ", p.Skip(3))); break;
                     case "copy" when p.Length > 3: Copy(p[2].ToLowerInvariant(), p[3]); break;
                     default:
-                        Core.Log.Warning($"[dev] unknown or incomplete: '{sig}'. Use mapedit open|close|state|select <id>|pick x y|move dx dy dz|save|target <expansion> <file>|cam x y z yaw pitch|look <id> [m]|fly dx dy dz s|hit x y|batch <name>|viewmodel|hold <slot>|count|rules [text]|rule apply|revert <key>|copy apply|revert <expansion/owner/id>");
+                        Core.Log.Warning($"[dev] unknown or incomplete: '{sig}'. Use mapedit open|close|state|select <id>...|pick x y [add]|frame x0 y0 x1 y1|move dx dy dz|turn deg|scale s|undo|redo|dup|del|drop|focus|play|resume|draft|mode m|snap grid|turn|edges on|off|sel|save|target <expansion> <file>|cam x y z yaw pitch|look <id> [m]|fly dx dy dz s|hit x y|batch <name>|viewmodel|hold <slot>|count|rules [text]|rule apply|revert <key>|copy apply|revert <expansion/owner/id>");
                         break;
                 }
             }
@@ -88,6 +134,50 @@ namespace MapExpansions.Editor
                 Core.Log.Error($"[dev] '{sig}' failed: {e}");
             }
             return true;
+        }
+
+        private static KeyCode KeyName(string name) => name.ToLowerInvariant() switch
+        {
+            "ctrl" => KeyCode.LeftControl,
+            "alt" => KeyCode.LeftAlt,
+            "shift" => KeyCode.LeftShift,
+            "del" => KeyCode.Delete,
+            _ => Enum.TryParse(name, true, out KeyCode k) ? k : KeyCode.None,
+        };
+
+        private static KeyCode[] Mods(string chord) =>
+            string.IsNullOrEmpty(chord) ? Array.Empty<KeyCode>() : chord.Split('+').Select(KeyName).Where(k => k != KeyCode.None).ToArray();
+
+        /// <summary>Queues one press of a key, with modifiers held: "ctrl+z", "tab", "f4".</summary>
+        private static void Key(string chord)
+        {
+            var parts = chord.Split('+');
+            var down = KeyName(parts[^1]);
+            if (down == KeyCode.None)
+            {
+                Core.Log.Warning($"[dev] key: '{parts[^1]}' is no key name");
+                return;
+            }
+            var held = parts.Take(parts.Length - 1).Select(KeyName).ToArray();
+            EditorInput.Queue(new[] { new EditorInput.Step(null, false, held, down) });
+            Core.Log.Msg($"[dev] key: {chord} queued as {down} with {string.Join("+", held)} held");
+        }
+
+        /// <summary>
+        /// Queues a left-button gesture: hover at the start, press, move to the end over the given frames, release.
+        /// Zero frames is a click.
+        /// </summary>
+        private static void Script(Vector2 from, Vector2 to, int frames, string mods)
+        {
+            var held = Mods(mods);
+            var steps = new List<EditorInput.Step>();
+            for (int i = 0; i < 3; i++) steps.Add(new EditorInput.Step(from, false, held));
+            steps.Add(new EditorInput.Step(from, true, held));
+            for (int i = 1; i <= frames; i++) steps.Add(new EditorInput.Step(Vector2.Lerp(from, to, i / (float)frames), true, held));
+            steps.Add(new EditorInput.Step(to, true, held));
+            steps.Add(new EditorInput.Step(to, false, held));
+            EditorInput.Queue(steps);
+            Core.Log.Msg($"[dev] {(frames == 0 ? "click" : "drag")}: {from} to {to} over {steps.Count} frames, held {string.Join("+", held)}");
         }
 
         /// <summary>Pixels, or fractions of the screen when both values are at most 1.</summary>
@@ -235,7 +325,7 @@ namespace MapExpansions.Editor
                     Core.Log.Warning($"[dev] copy revert: no placed copy '{key}'");
                     return;
                 }
-                if (Selection.Current == placed) Selection.Clear();
+                Selection.Remove(Copies.Key(placed));
                 World.MainCopies.Revert(placed);
                 return;
             }
