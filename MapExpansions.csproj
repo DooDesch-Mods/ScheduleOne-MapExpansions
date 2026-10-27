@@ -1,4 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The license notice in the DLL: decompiling not permitted (see Workspace/build/SourceNotice.props).
+       The repository is private, so the notice points to support instead of the source. -->
+  <Import Project="$(MSBuildThisFileDirectory)../Workspace/build/SourceNotice.props" Condition="Exists('$(MSBuildThisFileDirectory)../Workspace/build/SourceNotice.props')" />
+  <Import Project="$(MSBuildThisFileDirectory)Workspace/build/SourceNotice.props" Condition="Exists('$(MSBuildThisFileDirectory)Workspace/build/SourceNotice.props')" />
+  <PropertyGroup>
+    <SourceNoticePrivate>true</SourceNoticePrivate>
+  </PropertyGroup>
   <!-- Where a build is allowed to install: the slot of this session's lease, never a real installation
        without saying so. See Workspace/build/Deploy.props. -->
   <Import Project="$(MSBuildThisFileDirectory)../Workspace/build/Deploy.props" Condition="Exists('$(MSBuildThisFileDirectory)../Workspace/build/Deploy.props')" />
