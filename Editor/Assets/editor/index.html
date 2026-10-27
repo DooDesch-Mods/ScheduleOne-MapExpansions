@@ -1,55 +1,52 @@
 <link rel="stylesheet" href="app.css">
 
 <div class="editor" id="editor">
-  <div class="toolbar dock" id="toolbar">
-    <div class="title">Karteneditor</div>
-    <button class="tool" id="save">Speichern</button>
-    <div class="status" id="status"></div>
-    <div class="sep"></div>
-    <button class="tool" id="mode-move">Verschieben W</button>
-    <button class="tool" id="mode-rotate">Drehen E</button>
-    <button class="tool" id="mode-scale">Skalieren R</button>
-    <div class="sep"></div>
-    <button class="tool" id="snap-grid">Raster 0,5 m</button>
-    <button class="tool" id="snap-turn">15°</button>
-    <button class="tool" id="snap-edges">Kanten</button>
-    <div class="sep"></div>
-    <button class="tool" id="undo">Rückgängig</button>
-    <button class="tool" id="redo">Wiederholen</button>
-    <button class="tool" id="play">Spielen Tab</button>
-    <div class="sep"></div>
-    <button class="tool" id="new-rule">Entfernen</button>
-    <button class="tool" id="new-block">Blocker</button>
-    <button class="tool" id="new-panel">Panel</button>
-    <button class="tool" id="new-opening">Öffnung</button>
-    <button class="tool" id="apply">Anwenden</button>
-    <div class="spacer"></div>
-    <button class="tool" id="close">Schließen</button>
-  </div>
-  <div class="middle">
-    <div class="side dock" id="hierarchy">
-      <div class="head">Hierarchie</div>
-      <div class="list" id="list"></div>
+  <div class="bar dock" id="toolbar">
+    <div class="brand">
+      <img class="ico brand-ico" src="i-map.png">
+      <div class="brand-name">Karteneditor</div>
     </div>
+    <div class="group" id="file-tools"></div>
+    <div class="group" id="mode-tools"></div>
+    <div class="group" id="snap-tools"></div>
+    <div class="group" id="add-tools"></div>
+    <div class="spacer"></div>
+    <div class="group" id="end-tools"></div>
+  </div>
+
+  <div class="middle">
+    <div class="side dock" id="left">
+      <div class="tabs" id="left-tabs"></div>
+      <div class="pane" id="scene">
+        <div class="searchbox">
+          <img class="ico muted" src="i-search.png">
+          <input class="search" id="filter" placeholder="Szene filtern">
+        </div>
+        <div class="tree" id="tree"></div>
+      </div>
+      <div class="pane" id="catalog">
+        <div class="sources" id="sources"></div>
+        <div class="searchbox">
+          <img class="ico muted" src="i-search.png">
+          <input class="search" id="cat-search" placeholder="Objekt suchen, Enter">
+        </div>
+        <div class="hint" id="cat-hint"></div>
+        <div class="results" id="results"></div>
+      </div>
+    </div>
+    <div class="collapsed dock" id="left-collapsed"></div>
     <div class="viewport"></div>
     <div class="side dock" id="inspector">
-      <div class="head">Inspektor</div>
-      <div class="props" id="props"></div>
+      <div class="inspect" id="props"></div>
     </div>
   </div>
-  <div class="bottom dock" id="bottom">
-    <div class="catalog" id="catalog">
-      <div class="head row">
-        <div class="tabs" id="tabs"></div>
-        <input class="field search" id="search" placeholder="Suchen">
-        <div class="hint" id="cat-hint"></div>
-      </div>
-      <div class="results" id="results"></div>
-    </div>
-    <div class="console" id="console">
-      <div class="head">Konsole</div>
-      <div class="lines" id="lines"></div>
-    </div>
+
+  <div class="logpane dock" id="logpane">
+    <div class="lines" id="lines"></div>
+  </div>
+  <div class="status dock" id="statusbar">
+    <div class="status-log" id="status-log"></div>
+    <div class="status-right" id="status-right"></div>
   </div>
 </div>
 

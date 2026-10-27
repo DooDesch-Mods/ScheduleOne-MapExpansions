@@ -97,6 +97,14 @@ namespace MapExpansions.Editor
                     Edits.Obstacle(Selection.All, v == "on" ? true : v == "off" ? false : null, "inspector");
                     return State();
                 })
+                .OnCall("editor.set", fv =>
+                {
+                    int eq = (fv ?? "").IndexOf('=');
+                    if (eq <= 0 || !float.TryParse(fv.Substring(eq + 1), NumberStyles.Float, CultureInfo.InvariantCulture, out float v))
+                        Core.Log.Warning($"panel: '{fv}' is not field=number");
+                    else Edits.SetValue(Selection.Current, fv.Substring(0, eq), v, "inspector");
+                    return State();
+                })
                 .OnCall("editor.drop", _ => { Edits.Drop(Selection.All, "toolbar"); return State(); })
                 .OnCall("editor.frame", _ => { EditorMode.FrameSelection("toolbar"); return State(); })
                 .OnCall("editor.play", _ => { EditorMode.Play("toolbar"); return ""; })
@@ -296,6 +304,7 @@ namespace MapExpansions.Editor
                     ["owner"] = p.LayerOwner,
                     ["expansion"] = p.Expansion.Id,
                     ["dirty"] = Saving.IsDirty(p),
+                    ["kind"] = !string.IsNullOrEmpty(p.Built.Def.Model) ? "model" : !string.IsNullOrEmpty(p.Built.Def.Prefab) ? "prefab" : "copy",
                 });
             JsonNode selected = null;
             if (sel?.Built?.Handle != null)
@@ -330,6 +339,10 @@ namespace MapExpansions.Editor
                         ["id"] = r.Key,
                         ["expansion"] = b.Id,
                         ["effect"] = r.Effect.ToString(),
+                        ["name"] = r.Name ?? "",
+                        ["parent"] = r.Parent ?? "",
+                        ["side"] = r.Side.ToString(),
+                        ["bounded"] = r.Area.size != Vector3.zero,
                         ["layer"] = state.Rules.Contains(r.Key),
                         ["pending"] = AreaEdits.IsPending(b.Id, r.Key),
                         ["stale"] = AreaEdits.IsStale(b.Id, r.Key),
@@ -350,7 +363,7 @@ namespace MapExpansions.Editor
             var cur = Areas.Current;
             if (cur != null)
             {
-                var o = new JsonObject { ["key"] = cur.Key, ["label"] = cur.Label, ["kind"] = cur.Kind.ToString() };
+                var o = new JsonObject { ["key"] = cur.Key, ["label"] = cur.Label, ["kind"] = cur.Kind.ToString(), ["expansion"] = cur.Expansion };
                 if (cur.Get(out var local, out _))
                 {
                     o["min"] = Vec(local.min);

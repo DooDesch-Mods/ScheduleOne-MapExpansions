@@ -235,6 +235,49 @@ namespace MapExpansions.Editor
                 $"{Name(sel)} um {delta.magnitude:0.00} m verschoben", why);
         }
 
+        /// <summary>Sets one value of a copy as typed in the inspector: x, y, z, yaw or scale. One undo step.</summary>
+        internal static bool SetValue(MainCopies.Placed p, string field, float value, string why)
+        {
+            var h = p?.Built?.Handle;
+            if (h == null)
+            {
+                Core.Log.Warning($"set ({why}): no placed copy is selected; {field} stays");
+                return false;
+            }
+            var one = new[] { p };
+            var pos = h.position;
+            switch (field)
+            {
+                case "x": return MoveBy(one, new Vector3(value - pos.x, 0f, 0f), why);
+                case "y": return MoveBy(one, new Vector3(0f, value - pos.y, 0f), why);
+                case "z": return MoveBy(one, new Vector3(0f, 0f, value - pos.z), why);
+                case "yaw":
+                    float turn = Mathf.DeltaAngle(h.eulerAngles.y, value);
+                    if (Mathf.Abs(turn) < 0.01f)
+                    {
+                        Core.Log.Msg($"set ({why}): {p.Built.Def.Id} already faces {value:0.#}°");
+                        return false;
+                    }
+                    return Transform(one, pos, Quaternion.Euler(0f, turn, 0f), 1f, Vector3.zero, $"{p.Built.Def.Id} auf {value:0.#}° gedreht", why);
+                case "scale":
+                    float now = p.Built.Def.Scale;
+                    if (value < 0.01f || now < 0.0001f)
+                    {
+                        Core.Log.Warning($"set ({why}): scale {value} of {p.Built.Def.Id} (now {now}) is too small; the size stays");
+                        return false;
+                    }
+                    if (Mathf.Abs(value - now) < 0.0001f)
+                    {
+                        Core.Log.Msg($"set ({why}): {p.Built.Def.Id} already has scale {value:0.###}");
+                        return false;
+                    }
+                    return Transform(one, pos, Quaternion.identity, value / now, Vector3.zero, $"{p.Built.Def.Id} auf {value:0.###} skaliert", why);
+                default:
+                    Core.Log.Warning($"set ({why}): '{field}' is not x, y, z, yaw or scale");
+                    return false;
+            }
+        }
+
         /// <summary>Lets every selected copy fall onto what lies below its bounds.</summary>
         internal static bool Drop(IReadOnlyList<MainCopies.Placed> sel, string why)
         {

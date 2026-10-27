@@ -77,6 +77,9 @@ namespace MapExpansions.Editor
                     case "scale" when p.Length > 2:
                         Edits.Transform(Selection.All, Selection.CurrentBounds.center, Quaternion.identity, F(p[2]), Vector3.zero, $"auf {p[2]} skaliert", "console");
                         break;
+                    case "set" when p.Length > 3:
+                        Edits.SetValue(Selection.Current, p[2], F(p[3]), "console");
+                        break;
                     case "obstacle" when p.Length > 2:
                         Edits.Obstacle(Selection.All, p[2] == "on" ? true : p[2] == "off" ? false : null, "console");
                         break;
