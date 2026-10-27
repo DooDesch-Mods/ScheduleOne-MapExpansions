@@ -95,6 +95,28 @@ namespace MapExpansions
 
         /// <summary>Main-world objects drawn on both sides with everything under them, by name prefix; the sea lies under both worlds.</summary>
         public List<string> SharedViewObjects { get; } = new() { "StylizedWater2_Ocean" };
+
+        /// <summary>
+        /// The JSON layer a map editor wrote for this expansion, laid over this definition each time the world is built.
+        /// A file <c>Mods/&lt;Id&gt;/map.json</c> wins over it. Null means no layer.
+        /// </summary>
+        public LayerSource Layer { get; set; }
+
+        /// <summary>Sets <see cref="Layer"/> to an embedded resource of the given assembly.</summary>
+        public ExpansionDefinition UseLayer(System.Reflection.Assembly assembly, string resourceName)
+        {
+            Layer = new LayerSource { Assembly = assembly, ResourceName = resourceName };
+            return this;
+        }
+    }
+
+    /// <summary>Where the JSON layer of an expansion is embedded.</summary>
+    public sealed class LayerSource
+    {
+        public System.Reflection.Assembly Assembly { get; set; }
+
+        /// <summary>The manifest resource name, such as "SerenaFlats.map.json".</summary>
+        public string ResourceName { get; set; }
     }
 
     /// <summary>Where the expansion's original content comes from.</summary>

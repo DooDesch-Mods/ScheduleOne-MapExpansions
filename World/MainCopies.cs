@@ -47,12 +47,24 @@ namespace MapExpansions.World
             public readonly List<ToggleableLight> ZoneLights = new();
         }
 
+        /// <summary>A built copy with what a map editor needs to find it and write it back.</summary>
+        internal sealed class Placed
+        {
+            public BuiltExpansion Expansion;
+            /// <summary>Owner name in the expansion's layer: "expansion" or "shop:&lt;id&gt;".</summary>
+            public string LayerOwner;
+            public Built Built;
+        }
+
+        /// <summary>Every copy built in the loaded world, in build order.</summary>
+        internal static readonly List<Placed> All = new();
+
         private static readonly List<Part> Parts = new();
         private static object _spawnRoutine;
         private static float _nextFind;
 
         /// <summary>Builds the copies under the expansion's root. Failed copies are logged and left out.</summary>
-        public static List<Built> Build(BuiltExpansion b, IReadOnlyList<CopyDefinition> defs, string owner)
+        public static List<Built> Build(BuiltExpansion b, IReadOnlyList<CopyDefinition> defs, string owner, string layerOwner)
         {
             var result = new List<Built>();
             if (defs.Count == 0) return result;
@@ -84,7 +96,11 @@ namespace MapExpansions.World
                 try
                 {
                     var built = BuildOne(b, d, owner, found, zoneLights, templates.transform, holder.transform);
-                    if (built != null) result.Add(built);
+                    if (built != null)
+                    {
+                        result.Add(built);
+                        All.Add(new Placed { Expansion = b, LayerOwner = layerOwner, Built = built });
+                    }
                 }
                 catch (Exception e)
                 {
@@ -509,8 +525,38 @@ namespace MapExpansions.World
             Core.Log.Msg($"copies: networked part '{p.Key}': {anchored} renderers take their light probes at {points} points of the main world");
         }
 
+        /// <summary>
+        /// Moves a built copy by a world offset and writes the move into its definition, so the next build puts it
+        /// there too. Networked parts that exist on this peer move along.
+        /// </summary>
+        internal static void Shift(Placed p, Vector3 delta)
+        {
+            var d = p.Built.Def;
+            var b = p.Expansion;
+            if (string.IsNullOrEmpty(d.Onto))
+                d.At = new LocalPoint(d.At.Position + b.Root.transform.InverseTransformVector(delta), d.At.Yaw);
+            else
+            {
+                var onto = FindInExpansion(b, d.Onto);
+                if (onto == null)
+                {
+                    Core.Log.Error($"copies: '{b.Id}' {p.LayerOwner} '{d.Id}': '{d.Onto}' is gone; the move is not written into the definition");
+                    return;
+                }
+                // The frame stands on the onto object's position and rotation, without its scale.
+                d.OntoOffset += Quaternion.Inverse(onto.rotation) * delta;
+            }
+            if (p.Built.Local != null) p.Built.Local.transform.position += delta;
+            foreach (var part in p.Built.Parts)
+            {
+                part.Position += delta;
+                if (part.Instance != null) part.Instance.transform.position += delta;
+            }
+        }
+
         public static void Clear()
         {
+            All.Clear();
             Parts.Clear();
             AnchorCells.Clear();
             _nextFind = 0f;

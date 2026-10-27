@@ -63,6 +63,14 @@ namespace MapExpansions.Lifecycle
                     Registry.SetState(def.Id, ExpansionState.BuildFailed);
                     continue;
                 }
+                try
+                {
+                    Layers.Apply(def);
+                }
+                catch (Exception e)
+                {
+                    Core.Log.Error($"build: '{def.Id}' laying its layer over the definition failed: {e}");
+                }
                 var b = new BuiltExpansion(def, src);
                 if (!Placement.Place(b, main))
                 {
@@ -92,7 +100,7 @@ namespace MapExpansions.Lifecycle
                     SeparateViews.Add(b, index);
                     Properties.Build(b);
                     PoliceStations.Build(b);
-                    MainCopies.Build(b, b.Definition.Copies, "expansion");
+                    MainCopies.Build(b, b.Definition.Copies, "expansion", Layers.ExpansionOwner);
                     Shops.Build(b);
                     Registry.SetState(b.Id, ExpansionState.Placed);
                 }

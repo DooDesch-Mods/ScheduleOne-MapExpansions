@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Where a build is allowed to install: the slot of this session's lease, never a real installation
+       without saying so. See Workspace/build/Deploy.props. -->
+  <Import Project="$(MSBuildThisFileDirectory)../../Workspace/build/Deploy.props" Condition="Exists('$(MSBuildThisFileDirectory)../../Workspace/build/Deploy.props')" />
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>MapExpansions.Editor</AssemblyName>
+    <RootNamespace>MapExpansions.Editor</RootNamespace>
+    <Version Condition="'$(Version)' == ''">0.0.0-dev</Version>
+    <NoWarn>$(NoWarn);MSB3277;MSB3245</NoWarn>
+    <WorkspaceLibPath>$(MSBuildThisFileDirectory)../../Workspace/lib/il2cpp</WorkspaceLibPath>
+    <!-- The framework DLL this editor binds against. MapExpansions.csproj passes its own TargetPath; a build of this
+         project alone takes the framework's output of the same configuration. No ProjectReference: the framework
+         builds this project after itself, and a reference back would be a cycle. -->
+    <FrameworkDll Condition="'$(FrameworkDll)' == ''">$(MSBuildThisFileDirectory)../bin/$(Configuration)/net6.0/MapExpansions.dll</FrameworkDll>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="MapExpansions"><HintPath>$(FrameworkDll)</HintPath><Private>false</Private></Reference>
+    <Reference Include="MelonLoader"><HintPath>$(WorkspaceLibPath)/melonloader/MelonLoader.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(WorkspaceLibPath)/melonloader/0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppInterop.Runtime"><HintPath>$(WorkspaceLibPath)/melonloader/Il2CppInterop.Runtime.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppInterop.Common"><HintPath>$(WorkspaceLibPath)/melonloader/Il2CppInterop.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2Cppmscorlib"><HintPath>$(WorkspaceLibPath)/game/Il2Cppmscorlib.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppSystem"><HintPath>$(WorkspaceLibPath)/game/Il2CppSystem.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp"><HintPath>$(WorkspaceLibPath)/game/Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppScheduleOne.Core"><HintPath>$(WorkspaceLibPath)/game/Il2CppScheduleOne.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppFishNet.Runtime"><HintPath>$(WorkspaceLibPath)/game/Il2CppFishNet.Runtime.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.PhysicsModule"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.PhysicsModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.InputLegacyModule"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.InputLegacyModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UIModule"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.UIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UI"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.ScreenCaptureModule" Condition="Exists('$(WorkspaceLibPath)/game/UnityEngine.ScreenCaptureModule.dll')"><HintPath>$(WorkspaceLibPath)/game/UnityEngine.ScreenCaptureModule.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <!-- The Sideload.Api shim as source: no second DLL, every call is a no-op when Sideload is absent. -->
+  <PropertyGroup>
+    <SideloadShimPath Condition="Exists('$(MSBuildThisFileDirectory)../../Sideload/Sideload.Api/Sideload.cs')">$(MSBuildThisFileDirectory)../../Sideload/Sideload.Api/Sideload.cs</SideloadShimPath>
+    <SideloadShimPath Condition="'$(SideloadShimPath)' == '' And Exists('$(MSBuildThisFileDirectory)../../Workspace/lib/sideload-api/Sideload.cs')">$(MSBuildThisFileDirectory)../../Workspace/lib/sideload-api/Sideload.cs</SideloadShimPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Condition="'$(SideloadShimPath)' != ''" Include="$(SideloadShimPath)" Link="Sideload.Api.cs" />
+  </ItemGroup>
+  <Target Name="FailWithoutSideloadShim" BeforeTargets="CoreCompile" Condition="'$(SideloadShimPath)' == ''">
+    <Error Text="Sideload.Api/Sideload.cs was not found next to this repo or under Workspace/lib/sideload-api/. The editor UI cannot compile without it." />
+  </Target>
+
+  <!-- The editor's web page. The LogicalName prefix is the bundlePrefix passed to Surfaces.Mount. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets/editor/*">
+      <LogicalName>MapExpansions.Editor.Assets.editor.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <Target Name="PostBuild" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
+    <Exec Condition="Exists('$(ModsDirectory)')"
+          Command="cmd /c copy /Y &quot;$(TargetPath)&quot; &quot;$(ModsDirectory)&quot;" />
+  </Target>
+</Project>

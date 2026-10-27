@@ -90,7 +90,7 @@ namespace MapExpansions.World
                     var facing = b.Root.transform.rotation * Quaternion.Euler(0f, d.Counter.Yaw, 0f) * Vector3.forward;
                     facing.y = 0f;
                     s.Facing = facing.normalized;
-                    foreach (var c in MainCopies.Build(b, d.Copies, $"shop '{d.Id}'"))
+                    foreach (var c in MainCopies.Build(b, d.Copies, $"shop '{d.Id}'", Lifecycle.Layers.ShopOwner(d.Id)))
                     {
                         s.Parts.AddRange(c.Parts);
                         s.Lights.AddRange(c.ZoneLights);

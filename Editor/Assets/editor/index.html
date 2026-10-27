@@ -1,0 +1,29 @@
+<link rel="stylesheet" href="app.css">
+
+<div class="editor" id="editor">
+  <div class="toolbar dock" id="toolbar">
+    <div class="title">Karteneditor</div>
+    <button class="tool" id="save">Speichern</button>
+    <div class="status" id="status"></div>
+    <div class="spacer"></div>
+    <div class="hint">Rechte Maustaste + WASD fliegen, Q/E runter/hoch, Mausrad Tempo</div>
+    <button class="tool" id="close">Schließen</button>
+  </div>
+  <div class="middle">
+    <div class="side dock" id="hierarchy">
+      <div class="head">Hierarchie</div>
+      <div class="list" id="list"></div>
+    </div>
+    <div class="viewport"></div>
+    <div class="side dock" id="inspector">
+      <div class="head">Inspektor</div>
+      <div class="props" id="props"></div>
+    </div>
+  </div>
+  <div class="bottom dock" id="console">
+    <div class="head">Konsole</div>
+    <div class="lines" id="lines"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
