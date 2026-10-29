@@ -52,6 +52,26 @@
     <Reference Include="Unity.AI.Navigation"><HintPath>$(WorkspaceLibPath)/game/Unity.AI.Navigation.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 
+  <!-- The map editor is its own mod in Editor/. It is not part of this assembly, but sees its internals. -->
+  <ItemGroup>
+    <Compile Remove="Editor/**" />
+    <Compile Remove="Tests/**" />
+    <None Remove="Tests/**" />
+    <EmbeddedResource Remove="Editor/**" />
+    <None Remove="Editor/**" />
+    <InternalsVisibleTo Include="MapExpansions.Editor" />
+  </ItemGroup>
+
+  <!-- Builds the editor after the framework, into the same Mods folder, so every build of MapExpansions (stack,
+       slot, CI) carries both DLLs. BuildEditor=false skips it. -->
+  <Target Name="BuildEditor" AfterTargets="PostBuild" Condition="'$(BuildEditor)' != 'false' And Exists('$(MSBuildThisFileDirectory)Editor/MapExpansions.Editor.csproj')">
+    <!-- Restore runs in its own evaluation (a fresh session id), so the build after it sees the restored assets. -->
+    <MSBuild Projects="$(MSBuildThisFileDirectory)Editor/MapExpansions.Editor.csproj" Targets="Restore"
+             Properties="Configuration=$(Configuration);MSBuildRestoreSessionId=$([System.Guid]::NewGuid())" />
+    <MSBuild Projects="$(MSBuildThisFileDirectory)Editor/MapExpansions.Editor.csproj" Targets="Build"
+             Properties="Configuration=$(Configuration);ModsDirectory=$(ModsDirectory);FrameworkDll=$(TargetPath)" />
+  </Target>
+
   <Target Name="PostBuild" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
     <Exec Condition="Exists('$(ModsDirectory)')"
           Command="cmd /c copy /Y &quot;$(TargetPath)&quot; &quot;$(ModsDirectory)&quot;" />

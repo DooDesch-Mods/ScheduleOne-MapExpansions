@@ -1,0 +1,53 @@
+<link rel="stylesheet" href="app.css">
+
+<div class="editor" id="editor">
+  <div class="bar dock" id="toolbar">
+    <div class="brand">
+      <img class="ico brand-ico" src="i-map.png">
+      <div class="brand-name">Karteneditor</div>
+    </div>
+    <div class="group" id="file-tools"></div>
+    <div class="group" id="mode-tools"></div>
+    <div class="group" id="snap-tools"></div>
+    <div class="group" id="add-tools"></div>
+    <div class="spacer"></div>
+    <div class="group" id="end-tools"></div>
+  </div>
+
+  <div class="middle">
+    <div class="side dock" id="left">
+      <div class="tabs" id="left-tabs"></div>
+      <div class="pane" id="scene">
+        <div class="searchbox">
+          <img class="ico muted" src="i-search.png">
+          <input class="search" id="filter" placeholder="Szene filtern">
+        </div>
+        <div class="tree" id="tree"></div>
+      </div>
+      <div class="pane" id="catalog">
+        <div class="sources" id="sources"></div>
+        <div class="searchbox">
+          <img class="ico muted" src="i-search.png">
+          <input class="search" id="cat-search" placeholder="Objekt suchen, Enter">
+        </div>
+        <div class="hint" id="cat-hint"></div>
+        <div class="results" id="results"></div>
+      </div>
+    </div>
+    <div class="collapsed dock" id="left-collapsed"></div>
+    <div class="viewport"></div>
+    <div class="side dock" id="inspector">
+      <div class="inspect" id="props"></div>
+    </div>
+  </div>
+
+  <div class="logpane dock" id="logpane">
+    <div class="lines" id="lines"></div>
+  </div>
+  <div class="status dock" id="statusbar">
+    <div class="status-log" id="status-log"></div>
+    <div class="status-right" id="status-right"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>

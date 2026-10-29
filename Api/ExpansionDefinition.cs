@@ -21,7 +21,13 @@ namespace MapExpansions
         /// <summary>Content version of the consumer, compared between host and clients.</summary>
         public string Version { get; set; } = "1.0.0";
 
+        /// <summary>
+        /// The scene the expansion's own world comes from. Null makes the expansion an edit layer over the main world:
+        /// nothing is captured, it has no terrain, connections or separate views, and its offset is zero.
+        /// </summary>
         public WorldSource Source { get; set; }
+
+        internal bool HasSource => Source != null && !string.IsNullOrEmpty(Source.SceneName);
 
         /// <summary>World position of the source scene's origin.</summary>
         public Vector3 Offset { get; set; }
@@ -95,6 +101,28 @@ namespace MapExpansions
 
         /// <summary>Main-world objects drawn on both sides with everything under them, by name prefix; the sea lies under both worlds.</summary>
         public List<string> SharedViewObjects { get; } = new() { "StylizedWater2_Ocean" };
+
+        /// <summary>
+        /// The JSON layer a map editor wrote for this expansion, laid over this definition each time the world is built.
+        /// A file <c>Mods/&lt;Id&gt;/map.json</c> wins over it. Null means no layer.
+        /// </summary>
+        public LayerSource Layer { get; set; }
+
+        /// <summary>Sets <see cref="Layer"/> to an embedded resource of the given assembly.</summary>
+        public ExpansionDefinition UseLayer(System.Reflection.Assembly assembly, string resourceName)
+        {
+            Layer = new LayerSource { Assembly = assembly, ResourceName = resourceName };
+            return this;
+        }
+    }
+
+    /// <summary>Where the JSON layer of an expansion is embedded.</summary>
+    public sealed class LayerSource
+    {
+        public System.Reflection.Assembly Assembly { get; set; }
+
+        /// <summary>The manifest resource name, such as "SerenaFlats.map.json".</summary>
+        public string ResourceName { get; set; }
     }
 
     /// <summary>Where the expansion's original content comes from.</summary>
@@ -230,6 +258,19 @@ namespace MapExpansions
     /// <summary>Selects objects by name in one world, optionally limited to an area.</summary>
     public sealed class ObjectRule
     {
+        /// <summary>
+        /// Stable id inside the expansion, which a map layer uses to replace or remove the rule. Empty takes one made of
+        /// side, names, area and effect.
+        /// </summary>
+        public string Id { get; set; }
+
+        /// <summary>The id the framework uses: <see cref="Id"/>, or the made one, numbered when two rules make the same.</summary>
+        internal string Key { get; set; }
+
+        internal string MadeId() => Lifecycle.LayerMerge.RuleId(Side.ToString(), Name, Parent,
+            Area.size == Vector3.zero ? null : new[] { Area.min.x, Area.min.y, Area.min.z },
+            Area.size == Vector3.zero ? null : new[] { Area.max.x, Area.max.y, Area.max.z }, Effect.ToString());
+
         public WorldSide Side { get; set; }
 
         /// <summary>The object's name starts with this (case-insensitive).</summary>
@@ -253,13 +294,13 @@ namespace MapExpansions
         public float TopShift { get; set; }
 
         /// <summary>For <see cref="ObjectEffect.Hollow"/>: doorways left open in the shell, in the same coordinates as <see cref="Area"/>.</summary>
-        public List<Bounds> Openings { get; } = new();
+        public List<Bounds> Openings { get; private set; } = new();
 
         /// <summary>
         /// For <see cref="ObjectEffect.Hollow"/>: wall bands of the inside lining, each from a height above the floor
         /// in metres up to the next band or the ceiling, with the name of a loaded material.
         /// </summary>
-        public List<(float From, string Material)> Bands { get; } = new();
+        public List<(float From, string Material)> Bands { get; private set; } = new();
 
         /// <summary>For <see cref="ObjectEffect.Hollow"/>: the name of a loaded material for the lining's ceiling.</summary>
         public string CeilingMaterial { get; set; }
@@ -271,7 +312,7 @@ namespace MapExpansions
         public string FloorMaterial { get; set; }
 
         /// <summary>For <see cref="ObjectEffect.Hollow"/>: boxes left open in the lining only, such as windows, in the same coordinates as <see cref="Area"/>.</summary>
-        public List<Bounds> Windows { get; } = new();
+        public List<Bounds> Windows { get; private set; } = new();
 
         /// <summary>
         /// For <see cref="ObjectEffect.Hollow"/>: the name of a loaded material for a frame around every hole in the lining's
@@ -288,6 +329,16 @@ namespace MapExpansions
         /// default keeps sills and frames the outer model draws inward behind the lining.
         /// </summary>
         public float LiningInset { get; set; } = 0.01f;
+
+        /// <summary>A copy of this rule with its own lists, for a layer to change.</summary>
+        internal ObjectRule Clone()
+        {
+            var r = (ObjectRule)MemberwiseClone();
+            r.Openings = new List<Bounds>(Openings);
+            r.Bands = new List<(float From, string Material)>(Bands);
+            r.Windows = new List<Bounds>(Windows);
+            return r;
+        }
 
         public static ObjectRule In(WorldSide side, string name, ObjectEffect effect, string parent = null) =>
             new() { Side = side, Name = name, Parent = parent, Effect = effect };

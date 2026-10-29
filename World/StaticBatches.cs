@@ -51,6 +51,18 @@ namespace MapExpansions.World
             return (batched, roots.Count, own);
         }
 
+        /// <summary>
+        /// Gives up the parts a copy draws. A copy that is taken out is destroyed at the end of the frame, so without
+        /// this a copy built anew in the same frame would find its own parts still held.
+        /// </summary>
+        internal static int Release(Transform copy)
+        {
+            if (copy == null) return 0;
+            var mine = Drawn.Where(x => x.Value.Copy != null && x.Value.Copy.Pointer == copy.Pointer).Select(x => x.Key).ToList();
+            foreach (var k in mine) Drawn.Remove(k);
+            return mine.Count;
+        }
+
         private static void Claim(Transform copy, string name, MeshRenderer mr)
         {
             var mesh = mr.GetComponent<MeshFilter>()?.sharedMesh;

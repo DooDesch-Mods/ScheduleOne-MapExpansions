@@ -37,6 +37,11 @@ namespace MapExpansions.World
             public string Expansion;
             public ShopDefinition Def;
             public Vector3 Counter;
+            /// <summary>Where the code definition has the counter, when a layer moved it; the seller's walks there are led to <see cref="Counter"/>.</summary>
+            public Vector3? CodeCounter;
+            /// <summary>The seller's walks were looked at once their schedule existed; see <see cref="RouteSeller"/>.</summary>
+            public bool SellerRouted;
+            public bool RouteWaitLogged;
             /// <summary>Where the seller looks while serving, flat in world space.</summary>
             public Vector3 Facing;
             public readonly List<MainCopies.Part> Parts = new();
@@ -90,7 +95,12 @@ namespace MapExpansions.World
                     var facing = b.Root.transform.rotation * Quaternion.Euler(0f, d.Counter.Yaw, 0f) * Vector3.forward;
                     facing.y = 0f;
                     s.Facing = facing.normalized;
-                    foreach (var c in MainCopies.Build(b, d.Copies, $"shop '{d.Id}'"))
+                    if (Layers.CodeCounter(b.Id, d.Id) is LocalPoint code)
+                    {
+                        var codeWorld = b.Root.transform.TransformPoint(code.Position);
+                        if ((codeWorld - s.Counter).sqrMagnitude > 0.01f) s.CodeCounter = codeWorld;
+                    }
+                    foreach (var c in MainCopies.Build(b, d.Copies, $"shop '{d.Id}'", Lifecycle.Layers.ShopOwner(d.Id)))
                     {
                         s.Parts.AddRange(c.Parts);
                         s.Lights.AddRange(c.ZoneLights);
@@ -106,6 +116,45 @@ namespace MapExpansions.World
                     Core.Log.Error($"shops: '{b.Id}' shop '{d.Id}' failed: {e}");
                 }
             }
+        }
+
+        /// <summary>
+        /// A layer moved the counter, while the seller's schedule still walks to where the code has it. Every walk of
+        /// the seller that ends at the code's counter ends at the layer's counter instead.
+        /// </summary>
+        /// <returns>Whether the seller's schedule was there to look at; until then it is asked again.</returns>
+        private static bool RouteSeller(Shop s, Vector3 codeCounter)
+        {
+            var manager = s.Seller.GetComponentInChildren<NPCScheduleManager>(true);
+            var actions = manager != null ? manager.ActionList : null;
+            if (actions == null || actions.Count == 0)
+            {
+                if (!s.RouteWaitLogged)
+                    Core.Log.Msg($"shops: '{s.Expansion}' shop '{s.Def.Id}': the schedule of '{s.Def.Seller}' is not built yet; " +
+                                 $"its walks are led to the moved counter at {s.Counter} once it is");
+                s.RouteWaitLogged = true;
+                return false;
+            }
+            var target = s.Counter;
+            if (NavMesh.SamplePosition(target, out var hit, 5f, NavMesh.AllAreas)) target.y = hit.position.y;
+            var turn = s.Facing.sqrMagnitude > 0.001f ? Quaternion.LookRotation(s.Facing) : Quaternion.identity;
+            int walks = 0, moved = 0;
+            for (int i = 0; i < actions.Count; i++)
+            {
+                var walk = actions[i]?.TryCast<Il2CppScheduleOne.NPCs.Schedules.NPCSignal_WalkToLocation>();
+                if (walk == null || walk.Destination == null) continue;
+                walks++;
+                var d = walk.Destination.position;
+                if (new Vector2(d.x - codeCounter.x, d.z - codeCounter.z).magnitude > s.Def.CounterReach) continue;
+                walk.Destination.SetPositionAndRotation(target, turn);
+                moved++;
+            }
+            if (moved == 0)
+                Core.Log.Warning($"shops: '{s.Expansion}' shop '{s.Def.Id}': none of the {walks} walks among the {actions.Count} actions of '{s.Def.Seller}' ends at the code's counter {codeCounter}; " +
+                                 $"they may never reach the moved counter at {s.Counter}");
+            else
+                Core.Log.Msg($"shops: '{s.Expansion}' shop '{s.Def.Id}': {moved} of the {walks} walks of '{s.Def.Seller}' now end at the moved counter {target} instead of {codeCounter}");
+            return true;
         }
 
         private static Matrix4x4? StageOf(BuiltExpansion b, ShopDefinition d)
@@ -172,6 +221,7 @@ namespace MapExpansions.World
                 s.Choice = AddChoice(s);
                 if (s.Choice == null) return;
             }
+            if (s.CodeCounter is Vector3 codeCounter && !s.SellerRouted) s.SellerRouted = RouteSeller(s, codeCounter);
 
             foreach (var p in s.Parts)
             {

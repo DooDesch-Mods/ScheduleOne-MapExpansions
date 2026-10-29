@@ -56,6 +56,15 @@ namespace MapExpansions.Regions
                     Core.Log.Msg($"regions: '{def.Id}' is {Registry.GetState(def.Id)}, its {def.Regions.Count} regions are not added");
                     continue;
                 }
+                // Regions are numbered before the world is built; the layer has to lie over them already.
+                try
+                {
+                    Lifecycle.Layers.Apply(def);
+                }
+                catch (Exception e)
+                {
+                    Core.Log.Error($"regions: '{def.Id}' laying its layer over the definition failed, the code regions are used: {e}");
+                }
                 var frame = Frame.Of(def);
                 foreach (var r in def.Regions)
                 {
@@ -82,6 +91,14 @@ namespace MapExpansions.Regions
             foreach (var e in Entries)
                 if (Inside(e.World, p)) return e.ExpansionId;
             return null;
+        }
+
+        private static float Area(Vector2[] poly)
+        {
+            float twice = 0f;
+            for (int i = 0, j = poly.Length - 1; i < poly.Length; j = i++)
+                twice += poly[j].x * poly[i].y - poly[i].x * poly[j].y;
+            return Mathf.Abs(twice) * 0.5f;
         }
 
         private static bool Inside(Vector2[] poly, Vector2 p)
@@ -111,7 +128,8 @@ namespace MapExpansions.Regions
             var arr = new Il2CppReferenceArray<MapRegionData>(old.Length + Entries.Count);
             for (int i = 0; i < old.Length; i++) arr[i] = old[i];
             int n = old.Length;
-            foreach (var e in Entries)
+            // The game takes the first region whose polygon holds a point, so a region inside another one comes first.
+            foreach (var e in Entries.OrderBy(x => Area(x.World)))
             {
                 var go = new GameObject($"MapExpansions.{e.ExpansionId}.Region.{e.Definition.Name}");
                 go.SetActive(false);

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Headless tests for the parts of MapExpansions that need no game: laying a map layer over the code entries, and the
+    ids of rules and boxes. It links those files alone, so a Unity type creeping into them breaks this run.
+      Run from this folder:  dotnet run    (exit code 0 = all pass)
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>MapExpansions.Tests</AssemblyName>
+    <RootNamespace>MapExpansions.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Lifecycle\LayerMerge.cs" Link="modsrc\Lifecycle\LayerMerge.cs" />
+  </ItemGroup>
+
+</Project>
