@@ -20,7 +20,7 @@ namespace MapExpansions.Lifecycle
 
         internal static string Of(CopyDefinition c) => Join(new[]
         {
-            c.Id, c.Template, c.Resource, c.ResourceRoot, c.VisualOnly.ToString(), c.LightsOn?.ToString(), c.LightSwitch, c.Frame, P(c.At), c.Onto,
+            c.Id, c.Template, c.Resource, c.ResourceRoot, c.VisualOnly.ToString(), c.LightsOn?.ToString(), c.LightRange?.ToString("R", CultureInfo.InvariantCulture), c.LightIntensity?.ToString("R", CultureInfo.InvariantCulture), c.LightSwitch, c.Frame, P(c.At), c.Onto,
             V(c.OntoOffset), V(c.OntoRotation), N(c.Scale), c.OwnMesh.ToString(), c.IndependentMesh.ToString(), c.TemplateSide.ToString(),
             c.Model, c.Collider.ToString(), c.Prefab, c.Obstacle?.ToString(), c.Added.ToString(), Join(c.Exclude),
             Join(c.Boxes.Select(b => Join(new[] { b.Id, b.Kind.ToString(), B(b.Box), b.Material, N(b.TileMetres) }))),

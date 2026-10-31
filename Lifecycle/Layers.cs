@@ -349,6 +349,8 @@ namespace MapExpansions.Lifecycle
             if (e["visualOnly"] != null) d.VisualOnly = Bool(e, "visualOnly");
             if (e is JsonObject lightEntry && lightEntry.ContainsKey("lightsOn"))
                 d.LightsOn = e["lightsOn"] is JsonValue lightValue && lightValue.TryGetValue<bool>(out var on) ? on : null;
+            if (e is JsonObject rangeEntry && rangeEntry.ContainsKey("lightRange")) d.LightRange = Num(e, "lightRange");
+            if (e is JsonObject intensityEntry && intensityEntry.ContainsKey("lightIntensity")) d.LightIntensity = Num(e, "lightIntensity");
             if (e["lightSwitch"] != null) d.LightSwitch = Str(e, "lightSwitch");
             if (e["file"] != null) d.Model = Str(e, "file");
             if (e["prefab"] != null) d.Prefab = Str(e, "prefab");
@@ -437,6 +439,8 @@ namespace MapExpansions.Lifecycle
                 if (!string.IsNullOrEmpty(d.ResourceRoot)) o["resourceRoot"] = d.ResourceRoot;
                 if (d.VisualOnly) o["visualOnly"] = true;
                 if (d.LightsOn.HasValue) o["lightsOn"] = d.LightsOn.Value;
+                if (d.LightRange.HasValue) o["lightRange"] = d.LightRange.Value;
+                if (d.LightIntensity.HasValue) o["lightIntensity"] = d.LightIntensity.Value;
                 if (!string.IsNullOrEmpty(d.LightSwitch)) o["lightSwitch"] = d.LightSwitch;
                 if (d.Exclude.Count > 0) o["exclude"] = new JsonArray(d.Exclude.Select(x => (JsonNode)x).ToArray());
             }
