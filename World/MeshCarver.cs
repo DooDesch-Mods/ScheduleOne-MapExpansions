@@ -35,7 +35,7 @@ namespace MapExpansions.World
         /// Cuts a renderer's triangles that intersect any of the boxes. A static batch keeps its combined mesh: only the
         /// renderer's own index range is rewritten. A mesh that other renderers share is cloned first.
         /// </summary>
-        public static Outcome CarveRenderer(MeshRenderer mr, IReadOnlyList<OrientedBox> boxes, SceneIndex index, BuiltExpansion owner, out int cut)
+        public static Outcome CarveRenderer(MeshRenderer mr, IReadOnlyList<OrientedBox> boxes, SceneIndex index, BuiltExpansion owner, out int cut, Transform patchParent = null)
         {
             cut = 0;
             var mf = mr.GetComponent<MeshFilter>();
@@ -88,7 +88,7 @@ namespace MapExpansions.World
                 if (cut == 0) return Outcome.Untouched;
                 if (patch.Capped)
                     Core.Log.Warning($"carve: '{Path(mr.transform)}' patch stopped at {patch.Pieces} pieces; part of the hole stays open");
-                if (patch.Build(mr, materials, owner, $"MapExpansions patch {mr.name}") != null)
+                if (patch.Build(mr, materials, owner, $"MapExpansions patch {mr.name}", patchParent) != null)
                     Core.Log.Msg($"carve: '{Path(mr.transform)}' {patch.Cut} cut triangles drawn again outside the connection in {patch.Pieces} pieces");
                 return Outcome.Carved;
             }
@@ -158,6 +158,23 @@ namespace MapExpansions.World
         }
 
         /// <summary>
+        /// A readable copy of a renderer's mesh in the renderer's own space with the original winding and UVs, so it
+        /// draws the faces the original draws without the static batch. One submesh per material of the renderer; null
+        /// when the renderer has no mesh or no selected submesh.
+        /// </summary>
+        internal static Mesh BuildForward(MeshRenderer mr, string name)
+        {
+            var mesh = mr.GetComponent<MeshFilter>()?.sharedMesh;
+            if (mesh == null) return null;
+            bool batched = mr.isPartOfStaticBatch;
+            var toWorld = batched ? (mr.staticBatchRootTransform != null ? mr.staticBatchRootTransform.localToWorldMatrix : Matrix4x4.identity) : mr.transform.localToWorldMatrix;
+            int first = batched ? mr.subMeshStartIndex : 0;
+            int count = batched ? Mathf.Min(mr.sharedMaterials.Length, mesh.subMeshCount - first) : mesh.subMeshCount;
+            if (first < 0 || count <= 0) return null;
+            return Copy(mesh, first, count, mr.transform.worldToLocalMatrix * toWorld, false, name, true);
+        }
+
+        /// <summary>
         /// A readable copy of a renderer's mesh in the renderer's own space with the winding reversed, so it draws the
         /// faces the original culls. Normals are recalculated for the reversed faces. One submesh per material of the
         /// renderer; null when the renderer has no mesh or no triangles.
@@ -184,7 +201,7 @@ namespace MapExpansions.World
         internal static Mesh ReadableCopy(Mesh mesh, string name) =>
             Copy(mesh, 0, mesh.subMeshCount, Matrix4x4.identity, false, name);
 
-        private static Mesh Copy(Mesh mesh, int first, int count, Matrix4x4 toLocal, bool reverse, string name)
+        private static Mesh Copy(Mesh mesh, int first, int count, Matrix4x4 toLocal, bool reverse, string name, bool textured = false)
         {
             bool wide = mesh.indexFormat == IndexFormat.UInt32;
 
@@ -228,7 +245,7 @@ namespace MapExpansions.World
             if (local.Length > 65535) back.indexFormat = IndexFormat.UInt32;
             back.vertices = local;
             // Without texture coordinates every vertex samples one texel, and the face draws as one flat colour.
-            var uv = reverse ? ReadUv(mesh, minV, local.Length, name) : null;
+            var uv = reverse || textured ? ReadUv(mesh, minV, local.Length, name) : null;
             if (uv != null) back.uv = uv;
             back.subMeshCount = subs.Count;
             for (int s = 0; s < subs.Count; s++)

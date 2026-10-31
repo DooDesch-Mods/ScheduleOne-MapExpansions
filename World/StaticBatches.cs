@@ -17,14 +17,18 @@ namespace MapExpansions.World
 
         /// <param name="copy">The copy's root; the new batch roots hang under it.</param>
         /// <param name="move">Takes a point of the original to the same point of the copy, in world space.</param>
+        /// <param name="skipDisabled">
+        /// Leaves disabled renderers alone, for a copy whose batched renderers were replaced by independent meshes and
+        /// are off for good, so they claim no part of the batch.
+        /// </param>
         /// <returns>Batched renderers moved, batch roots made, and renderers whose batch root is part of the copy already.</returns>
-        public static (int batched, int roots, int own) Follow(Transform copy, Matrix4x4 move, string name)
+        public static (int batched, int roots, int own) Follow(Transform copy, Matrix4x4 move, string name, bool skipDisabled = false)
         {
             var roots = new Dictionary<IntPtr, Transform>();
             int batched = 0, own = 0;
             foreach (var mr in copy.GetComponentsInChildren<MeshRenderer>(true))
             {
-                if (!mr.isPartOfStaticBatch) continue;
+                if ((skipDisabled && !mr.enabled) || !mr.isPartOfStaticBatch) continue;
                 var orig = mr.staticBatchRootTransform;
                 if (orig != null && orig.IsChildOf(copy))
                 {

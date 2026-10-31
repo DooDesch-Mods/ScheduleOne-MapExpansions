@@ -65,6 +65,46 @@ namespace MapExpansions.Source
                 Core.Log.Warning($"nav link {a} -> {b}: no NavMesh within {SnapRadius} m of the {string.Join(", ", unsnapped)}; that end may not connect");
         }
 
+        internal sealed class Lease : IDisposable
+        {
+            internal readonly List<NavMeshLinkInstance> Links = new();
+            internal (Vector3 a, Vector3 b, float width) End;
+            public void Dispose()
+            {
+                foreach (var link in Links) { link.Remove(); Instances.Remove(link); }
+                Links.Clear();
+                Ends.Remove(End);
+            }
+        }
+
+        internal static Lease AddOwned(Vector3 a, Vector3 b, float width, IEnumerable<int> agents)
+        {
+            var lease = new Lease { End = (a, b, width) };
+            try
+            {
+                foreach (int agent in agents)
+                {
+                    var filter = new NavMeshQueryFilter { agentTypeID = agent, areaMask = NavMesh.AllAreas };
+                    if (!NavMesh.SamplePosition(a, out NavMeshHit start, 0.6f, filter) ||
+                        !NavMesh.SamplePosition(b, out NavMeshHit end, 0.6f, filter))
+                        throw new InvalidOperationException($"state nav seam {a} -> {b}: missing endpoint for agent {agent}");
+                    var link = NavMesh.AddLink(new NavMeshLinkData { startPosition = start.position, endPosition = end.position,
+                        width = width, costModifier = -1f, bidirectional = true, area = 0, agentTypeID = agent });
+                    if (!link.valid) throw new InvalidOperationException($"state nav seam {a} -> {b}: AddLink failed for agent {agent}");
+                    lease.Links.Add(link);
+                    Instances.Add(link);
+                }
+                Ends.Add(lease.End);
+                return lease;
+            }
+            catch (Exception original)
+            {
+                try { lease.Dispose(); }
+                catch (Exception cleanup) { throw new AggregateException("state seam and cleanup failed", original, cleanup); }
+                throw;
+            }
+        }
+
         public static void Clear()
         {
             foreach (var inst in Instances) inst.Remove();

@@ -31,6 +31,7 @@ namespace MapExpansions.Lifecycle
 
         private static readonly List<Build> Builds = new();
         private static object _navRoutine;
+        private static bool _worldInitialized;
 
         public static BuiltExpansion Get(string id) => Builds.FirstOrDefault(x => x.Expansion.Id == id)?.Expansion;
 
@@ -41,6 +42,7 @@ namespace MapExpansions.Lifecycle
 
         public static void OnMainInitialized()
         {
+            if (_worldInitialized) return;
             if (Builds.Count > 0)
             {
                 Core.Log.Warning($"build: main world initialized while {Builds.Count} expansions are still built; tearing them down first");
@@ -53,6 +55,7 @@ namespace MapExpansions.Lifecycle
                 return;
             }
 
+            _worldInitialized = true;
             foreach (var def in Registry.Usable())
             {
                 var state = Registry.GetState(def.Id);
@@ -117,6 +120,7 @@ namespace MapExpansions.Lifecycle
                 }
             }
             PhysicsBounds.Extend(built);
+            if (!WorldStates.ApplyPending()) Core.Log.Error("build: required world states failed; saved property objects and saving remain guarded");
             _saveDataLoaded = false;
             _navRoutine = MelonCoroutines.Start(JoinNavigation());
         }
@@ -299,14 +303,16 @@ namespace MapExpansions.Lifecycle
 
         public static void OnMainUnloaded()
         {
-            if (Builds.Count == 0 && RegionRegistry.All.Count == 0) return;
+            if (!_worldInitialized && Builds.Count == 0 && RegionRegistry.All.Count == 0) return;
             Teardown();
         }
 
         private static void Teardown()
         {
+            _worldInitialized = false;
             if (_navRoutine != null) MelonCoroutines.Stop(_navRoutine);
             _navRoutine = null;
+            WorldStates.Teardown();
             NavLinks.Clear();
             ObjectRules.Clear();
             Index = null;

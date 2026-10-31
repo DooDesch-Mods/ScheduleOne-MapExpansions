@@ -63,6 +63,9 @@ namespace MapExpansions
         /// <summary>Properties the player can buy, copied from main-world properties.</summary>
         public List<PropertyDefinition> Properties { get; } = new();
 
+        /// <summary>Named local states, initially dormant. One expansion per independent upgrade retains completed effects.</summary>
+        public List<WorldStateDefinition> WorldStates { get; } = new();
+
         /// <summary>
         /// The expansion's own police station. A player arrested in the expansion is set free there instead of at the
         /// main world's station, and the car taken from them is parked there. Null leaves arrests to the main world.

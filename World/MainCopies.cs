@@ -53,6 +53,12 @@ namespace MapExpansions.World
             public readonly List<ToggleableLight> ZoneLights = new();
 
             /// <summary>
+            /// Assets made for this copy alone, such as extracted and tiled meshes. They leave the expansion's owned
+            /// assets when the copy is taken out, so repeated state switches do not pile them up.
+            /// </summary>
+            public readonly List<Object> Assets = new();
+
+            /// <summary>
             /// What stands for the copy in the world: its local object, or for a copy networked as a whole its first
             /// spawned part. Null while nothing of it exists on this peer.
             /// </summary>
@@ -67,7 +73,33 @@ namespace MapExpansions.World
             /// <summary>Owner name in the expansion's layer: "expansion" or "shop:&lt;id&gt;".</summary>
             public string LayerOwner;
             public Built Built;
+            /// <summary>For a world state's copy: the definition it was built from, see <see cref="Lifecycle.WorldStateSignatures"/>.</summary>
+            public string StateSignature;
         }
+
+        /// <summary>
+        /// Scene lookups for a batch of copies, made once for the whole batch: the walk over the main scene and the search
+        /// for access zones cost far more than building one copy. Valid only while the caller applies that batch.
+        /// </summary>
+        internal sealed class MainLookup
+        {
+            public Dictionary<string, Transform> Found;
+            public HashSet<int> ZoneLights;
+            private readonly Dictionary<string, GameObject> _resources = new(StringComparer.Ordinal);
+
+            public GameObject Resource(string path)
+            {
+                if (!_resources.TryGetValue(path, out var prefab)) _resources[path] = prefab = Resources.Load<GameObject>(path);
+                return prefab;
+            }
+        }
+
+        /// <summary>The lookups the given copies need. Visual-only copies follow no opening hours, so they skip the zone search.</summary>
+        internal static MainLookup LookupFor(IReadOnlyCollection<CopyDefinition> defs) => new()
+        {
+            Found = FindInMain(MainNames(defs)),
+            ZoneLights = defs.All(d => d.VisualOnly) ? new HashSet<int>() : ZoneLightsOfMain(),
+        };
 
         /// <summary>Every copy built in the loaded world, in build order.</summary>
         internal static readonly List<Placed> All = new();
@@ -81,15 +113,14 @@ namespace MapExpansions.World
         {
             var result = new List<Built>();
             if (defs.Count == 0) return result;
-            var found = FindInMain(MainNames(defs));
-            var zoneLights = ZoneLightsOfMain();
+            var lookup = LookupFor(defs.ToList());
             var (templates, holder) = Holders(b);
 
             foreach (var d in defs)
             {
                 try
                 {
-                    var built = BuildOne(b, d, owner, found, zoneLights, templates, holder);
+                    var built = BuildOne(b, d, owner, lookup, templates, holder);
                     if (built != null)
                     {
                         if (built.Local != null) Obstacles.Apply(built, $"'{b.Id}' {owner} '{d.Id}'");
@@ -144,7 +175,8 @@ namespace MapExpansions.World
         /// Builds one copy into a world that is already built, as a map editor adds or rebuilds it. Its networked parts
         /// are spawned at once when this peer is the host.
         /// </summary>
-        internal static Placed ApplyOne(BuiltExpansion b, CopyDefinition d, string owner, string layerOwner)
+        /// <param name="lookup">Lookups shared by a batch of copies, from <see cref="LookupFor"/>. Null makes them for this copy alone.</param>
+        internal static Placed ApplyOne(BuiltExpansion b, CopyDefinition d, string owner, string layerOwner, MainLookup lookup = null)
         {
             if (b?.Root == null)
             {
@@ -155,7 +187,7 @@ namespace MapExpansions.World
             Built built;
             try
             {
-                built = BuildOne(b, d, owner, FindInMain(MainNames(new[] { d })), ZoneLightsOfMain(), templates, holder);
+                built = BuildOne(b, d, owner, lookup ?? LookupFor(new[] { d }), templates, holder);
             }
             catch (Exception e)
             {
@@ -165,6 +197,20 @@ namespace MapExpansions.World
             if (built == null) return null;
             if (built.Local != null) Obstacles.Apply(built, $"'{b.Id}' {owner} '{d.Id}'");
             var placed = new Placed { Expansion = b, LayerOwner = layerOwner, Built = built };
+            if (layerOwner.StartsWith("state:", StringComparison.Ordinal))
+            {
+                foreach (var box in d.Boxes)
+                {
+                    var child = built.Local?.transform.Find(BoxName(box));
+                    bool present = child != null && (box.Kind == BoxKind.Panel
+                        ? child.GetComponent<MeshRenderer>()?.sharedMaterial != null
+                        : child.GetComponent<BoxCollider>() != null);
+                    if (present) continue;
+                    Core.Log.Error($"copies: apply '{b.Id}' {owner} '{d.Id}' required {box.Kind} '{box.Id}' was not built; state copy rejected, see original box error above");
+                    Revert(placed);
+                    return null;
+                }
+            }
             All.Add(placed);
             if (built.Parts.Count > 0)
             {
@@ -202,33 +248,69 @@ namespace MapExpansions.World
             if (p.Built.Local != null)
             {
                 released = StaticBatches.Release(p.Built.Local.transform);
+                p.Built.Local.SetActive(false);
                 Object.Destroy(p.Built.Local);
             }
             p.Built.Local = null;
             All.Remove(p);
-            Core.Log.Msg($"copies: revert '{p.Expansion.Id}' {p.LayerOwner} '{d.Id}': taken out, {parts} networked parts removed, {released} batch parts released");
+            int assets = p.Built.Assets.Count;
+            if (p.Built.Parts.Count == 0) ReleaseAssets(p.Expansion, p.Built.Assets);
+            else if (assets > 0) Core.Log.Msg($"copies: revert '{p.Expansion.Id}' {p.LayerOwner} '{d.Id}': {assets} assets stay until teardown; the registered part templates may still draw them");
+            Core.Log.Msg($"copies: revert '{p.Expansion.Id}' {p.LayerOwner} '{d.Id}': taken out, {parts} networked parts removed, {released} batch parts released, {assets - p.Built.Assets.Count} assets released");
         }
 
-        private static Built BuildOne(BuiltExpansion b, CopyDefinition d, string owner, Dictionary<string, Transform> found,
-            HashSet<int> zoneLights, Transform templates, Transform holder)
+        private static void ReleaseAssets(BuiltExpansion b, List<Object> assets)
         {
-            bool model = !string.IsNullOrEmpty(d.Model), prefab = !string.IsNullOrEmpty(d.Prefab);
-            if (string.IsNullOrEmpty(d.Id) || (!model && !prefab && string.IsNullOrEmpty(d.Template)))
+            foreach (var asset in assets)
+            {
+                b.Owned.Remove(asset);
+                if (asset != null) Object.Destroy(asset);
+            }
+            assets.Clear();
+        }
+
+        private static Built BuildOne(BuiltExpansion b, CopyDefinition d, string owner, MainLookup lookup, Transform templates, Transform holder)
+        {
+            var assets = new List<Object>();
+            int partsBefore = Parts.Count;
+            try
+            {
+                var built = BuildCopy(b, d, owner, lookup, templates, holder, assets);
+                if (built != null) built.Assets.AddRange(assets);
+                else ReleaseAssets(b, assets);
+                return built;
+            }
+            catch
+            {
+                // A part registered before the failure may draw these meshes from its template.
+                if (Parts.Count == partsBefore) ReleaseAssets(b, assets);
+                else Core.Log.Warning($"copies: '{b.Id}' {owner} '{d.Id}' failed after registering networked parts; its {assets.Count} assets stay until teardown");
+                throw;
+            }
+        }
+
+        private static Built BuildCopy(BuiltExpansion b, CopyDefinition d, string owner, MainLookup lookup, Transform templates, Transform holder, List<Object> assets)
+        {
+            bool model = !string.IsNullOrEmpty(d.Model), prefab = !string.IsNullOrEmpty(d.Prefab), resource = !string.IsNullOrEmpty(d.Resource);
+            if (string.IsNullOrEmpty(d.Id) || (!model && !prefab && !resource && string.IsNullOrEmpty(d.Template)))
             {
                 Core.Log.Error($"copies: '{b.Id}' {owner} has a copy without id or template ('{d.Id}', '{d.Template}'); it is not built");
                 return null;
             }
             if (prefab) return BuildPrefab(b, d, owner);
-            bool fromMain = !model && d.TemplateSide == WorldSide.Main;
+            if (resource && !d.VisualOnly) throw new InvalidOperationException("resource copies require VisualOnly=true");
+            bool fromMain = !model && !resource && d.TemplateSide == WorldSide.Main;
             string world = model ? "the expansion's models" : fromMain ? "the main world" : "the expansion";
-            var src = model ? Models.Template(b, d.Model, d.Collider, templates)
-                : fromMain ? Resolve(found, d.Template) : FindInExpansion(b, d.Template);
+            var resourcePrefab = resource ? lookup.Resource(d.Resource) : null;
+            var resourceTransform = resourcePrefab == null ? null : string.IsNullOrEmpty(d.ResourceRoot) ? resourcePrefab.transform : resourcePrefab.transform.Find(d.ResourceRoot);
+            var src = resource ? resourceTransform : model ? Models.Template(b, d.Model, d.Collider, templates)
+                : fromMain ? Resolve(lookup.Found, d.Template) : FindInExpansion(b, d.Template);
             if (src == null)
             {
                 Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': {d.Source} is not in {world}; it is not built");
                 return null;
             }
-            var frame = string.IsNullOrEmpty(d.Frame) || model ? src : fromMain ? Resolve(found, d.Frame) : FindInExpansion(b, d.Frame);
+            var frame = string.IsNullOrEmpty(d.Frame) || model ? src : resource ? src.Find(d.Frame) : fromMain ? Resolve(lookup.Found, d.Frame) : FindInExpansion(b, d.Frame);
             if (frame == null)
             {
                 Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': frame '{d.Frame}' is not in {world}; it is not built");
@@ -253,22 +335,42 @@ namespace MapExpansions.World
             // Built inactive, so nothing of the copy wakes before its networked parts are out and it stands in place.
             var go = Object.Instantiate(src.gameObject, templates);
             go.name = src.name;
+            try
+            {
+                // The lamp's own switch also sets its glowing material, which stripping would freeze at the original's current state.
+                if (d.LightsOn.HasValue)
+                    foreach (var lamp in go.GetComponentsInChildren<ToggleableLight>(true)) lamp.isOn = d.LightsOn.Value;
+                // Stripping takes the lamp scripts along, and with them the list of what glows.
+                var surfaces = string.IsNullOrEmpty(d.LightSwitch) ? null : SwitchedLamps.Capture(go);
+                if (d.VisualOnly) Source.SourceCapture.StripVisual(go);
+                if (d.LightsOn.HasValue)
+                {
+                    var lights = go.GetComponentsInChildren<Light>(true);
+                    if (d.LightsOn.Value && lights.Length == 0)
+                        throw new InvalidOperationException($"copy '{d.Id}' requests lighting but contains no native Light");
+                    foreach (var light in lights) light.enabled = d.LightsOn.Value;
+                    Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {lights.Length} native lights {(d.LightsOn.Value ? "on" : "off")}");
+                }
+                if (d.IndependentMesh) IndependentCopies.Extract(b, src, go, d.OwnMesh, assets);
+                if (surfaces != null) SwitchedLamps.Follow($"'{b.Id}' {owner} '{d.Id}'", go, d.LightSwitch, surfaces);
+            }
+            catch { Object.DestroyImmediate(go); throw; }
             go.transform.SetPositionAndRotation(pose.GetColumn(3), pose.rotation);
             go.transform.localScale = pose.lossyScale;
             var built = new Built { Def = d, Move = move };
             // A fresh copy has the original's hierarchy, so its lamps pair up with the original's in order.
             var srcLights = src.GetComponentsInChildren<ToggleableLight>(true);
             var copyLights = go.GetComponentsInChildren<ToggleableLight>(true);
-            if (srcLights.Length == copyLights.Length)
+            if (!d.VisualOnly && srcLights.Length == copyLights.Length)
             {
                 for (int i = 0; i < srcLights.Length; i++)
-                    if (srcLights[i] != null && zoneLights.Contains(srcLights[i].GetInstanceID())) built.ZoneLights.Add(copyLights[i]);
+                    if (srcLights[i] != null && lookup.ZoneLights.Contains(srcLights[i].GetInstanceID())) built.ZoneLights.Add(copyLights[i]);
             }
-            else
+            else if (!d.VisualOnly)
                 Core.Log.Error($"copies: '{b.Id}' {owner} '{d.Id}': {copyLights.Length} lamps in the copy against {srcLights.Length} in {d.Source}; " +
                                "no lamp of it follows opening hours");
             Trim(b, d, owner, go);
-            AddPanels(b, d, owner, go, move);
+            AddPanels(b, d, owner, go, move, assets);
             built.ZoneLights.RemoveAll(l => l == null);
             var nobs = go.GetComponentsInChildren<NetworkObject>(true);
             // Outermost first; a networked object inside another one goes along with it.
@@ -303,7 +405,7 @@ namespace MapExpansions.World
 
             go.transform.SetParent(holder, true);
             go.SetActive(true);
-            var (batched, batchRoots, _) = StaticBatches.Follow(go.transform, move, $"{owner} {d.Id}");
+            var (batched, batchRoots, _) = StaticBatches.Follow(go.transform, move, $"{owner} {d.Id}", d.IndependentMesh);
             var (anchored, points) = anchors != null ? AnchorProbes(anchors, go, toMain) : (0, 0);
             built.Local = go;
             Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}' from {d.Source} stands at {go.transform.position}, " +
@@ -367,15 +469,16 @@ namespace MapExpansions.World
         }
 
         /// <summary>The definition's panels and blocks as boxes below the copy, moved from the main world like it.</summary>
-        private static void AddPanels(BuiltExpansion b, CopyDefinition d, string owner, GameObject go, Matrix4x4 move)
+        private static void AddPanels(BuiltExpansion b, CopyDefinition d, string owner, GameObject go, Matrix4x4 move, List<Object> assets)
         {
-            foreach (var box in d.Boxes) AddBox(b, d, owner, go.transform, move, box);
+            foreach (var box in d.Boxes) AddBox(b, d, owner, go.transform, move, box, assets);
         }
 
         /// <summary>Name of a box's object below its copy; a map editor finds the box by it.</summary>
         internal static string BoxName(BoxDefinition box) => $"MapExpansions.{box.Kind}.{box.Id}";
 
-        internal static GameObject AddBox(BuiltExpansion b, CopyDefinition d, string owner, Transform copy, Matrix4x4 move, BoxDefinition box)
+        /// <param name="assets">Gets the box's own mesh, which goes with the copy.</param>
+        internal static GameObject AddBox(BuiltExpansion b, CopyDefinition d, string owner, Transform copy, Matrix4x4 move, BoxDefinition box, List<Object> assets)
         {
             var bounds = box.Box;
             GameObject go;
@@ -392,6 +495,13 @@ namespace MapExpansions.World
                 Object.Destroy(go.GetComponent<Collider>());
                 go.layer = copy.gameObject.layer;
                 go.GetComponent<MeshRenderer>().sharedMaterial = mat;
+                if (box.TileMetres > 0f)
+                {
+                    var filter = go.GetComponent<MeshFilter>();
+                    var tiled = TiledCube(b, filter.sharedMesh, bounds, box.TileMetres, box.Id);
+                    filter.sharedMesh = tiled;
+                    assets.Add(tiled);
+                }
             }
             else
             {
@@ -405,6 +515,35 @@ namespace MapExpansions.World
             Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {box.Kind.ToString().ToLowerInvariant()} '{box.Id}' of {bounds.size}" +
                          $"{(box.Kind == BoxKind.Panel ? $" in '{box.Material}'" : "")} stands at {go.transform.position}");
             return go;
+        }
+
+        /// <summary>
+        /// A copy of the unit cube whose UVs follow the box's main-world position: each face projects along its normal,
+        /// one UV unit per <paramref name="tile"/> metres, so a pattern keeps its size and runs across neighbouring boxes.
+        /// </summary>
+        private static Mesh TiledCube(BuiltExpansion b, Mesh cube, Bounds bounds, float tile, string id)
+        {
+            var vertices = cube.vertices;
+            var normals = cube.normals;
+            var uv = new Vector2[vertices.Length];
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                var world = Vector3.Scale(vertices[i], bounds.size) + bounds.center;
+                var n = normals[i];
+                float ax = Mathf.Abs(n.x), ay = Mathf.Abs(n.y), az = Mathf.Abs(n.z);
+                uv[i] = (ax >= ay && ax >= az ? new Vector2(world.z, world.y)
+                    : ay >= az ? new Vector2(world.x, world.z)
+                    : new Vector2(world.x, world.y)) / tile;
+            }
+            var mesh = new Mesh { name = "MapExpansions.Panel." + id };
+            mesh.vertices = vertices;
+            mesh.normals = normals;
+            mesh.tangents = cube.tangents;
+            mesh.uv = uv;
+            mesh.triangles = cube.triangles;
+            mesh.RecalculateBounds();
+            b.Own(mesh);
+            return mesh;
         }
 
         /// <summary>Side of the cells in which renderers share one probe anchor, in metres.</summary>

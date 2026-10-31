@@ -17,8 +17,20 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <!-- The cases run under the project's own runner, which VSTest cannot see. Without this, dotnet test runs nothing and exits 0. -->
+  <Target Name="RunMiniTests" AfterTargets="VSTest">
+    <Exec Command="&quot;$(TargetPath)&quot;" Condition="'$(OS)' != 'Windows_NT'" />
+    <Exec Command="&quot;$(TargetDir)$(AssemblyName).exe&quot;" Condition="'$(OS)' == 'Windows_NT'" />
+  </Target>
+
   <ItemGroup>
     <Compile Include="..\Lifecycle\LayerMerge.cs" Link="modsrc\Lifecycle\LayerMerge.cs" />
+    <Compile Include="..\Lifecycle\BoxDifference.cs" Link="modsrc\Lifecycle\BoxDifference.cs" />
+    <Compile Include="..\Lifecycle\PeerWorldStateAck.cs" Link="modsrc\Lifecycle\PeerWorldStateAck.cs" />
+    <Compile Include="..\Lifecycle\NavigationAgentSelection.cs" Link="modsrc\Lifecycle\NavigationAgentSelection.cs" />
+    <Compile Include="..\Lifecycle\DockIndexPolicy.cs" Link="modsrc\Lifecycle\DockIndexPolicy.cs" />
+    <Compile Include="..\Lifecycle\WorldStatePlan.cs" Link="modsrc\Lifecycle\WorldStatePlan.cs" />
+    <Compile Include="..\Lifecycle\ColliderDetachLedger.cs" Link="modsrc\Lifecycle\ColliderDetachLedger.cs" />
   </ItemGroup>
 
 </Project>

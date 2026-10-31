@@ -19,6 +19,40 @@ namespace MapExpansions.World
             public readonly List<Light> Lights = new();
         }
 
+        /// <summary>
+        /// Bounds of every renderer and collider of one part, read once while a state applies its rules. A rule with an
+        /// area only selects objects whose own bounds touch it, so it can skip the name walk for all the others.
+        /// </summary>
+        public sealed class AreaSnapshot
+        {
+            private readonly Part _part;
+            private readonly List<(Renderer Item, IntPtr Owner, Bounds Bounds)> _renderers = new();
+            private readonly List<(Collider Item, IntPtr Owner, Bounds Bounds)> _colliders = new();
+            private readonly List<(Light Item, IntPtr Owner, Vector3 Position)> _lights = new();
+
+            public AreaSnapshot(Part part)
+            {
+                _part = part;
+                foreach (var r in part.Renderers) if (r != null) _renderers.Add((r, r.transform.Pointer, r.bounds));
+                foreach (var c in part.Colliders) if (c != null) _colliders.Add((c, c.transform.Pointer, c.bounds));
+                foreach (var l in part.Lights) if (l != null) _lights.Add((l, l.transform.Pointer, l.transform.position));
+            }
+
+            /// <summary>The part's objects a rule with this area can select; terrains are few and stay in.</summary>
+            public Part Near(Bounds area)
+            {
+                var owners = new HashSet<IntPtr>();
+                foreach (var (_, owner, bounds) in _renderers) if (bounds.Intersects(area)) owners.Add(owner);
+                foreach (var (_, owner, bounds) in _colliders) if (bounds.Intersects(area)) owners.Add(owner);
+                var near = new Part();
+                foreach (var (item, owner, _) in _renderers) if (owners.Contains(owner)) near.Renderers.Add(item);
+                foreach (var (item, owner, _) in _colliders) if (owners.Contains(owner)) near.Colliders.Add(item);
+                foreach (var (item, owner, position) in _lights) if (owners.Contains(owner) || area.Contains(position)) near.Lights.Add(item);
+                near.Terrains.AddRange(_part.Terrains);
+                return near;
+            }
+        }
+
         public readonly Part Main = new();
         private readonly Dictionary<string, Part> _expansions = new(StringComparer.Ordinal);
 

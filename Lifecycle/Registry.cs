@@ -42,8 +42,14 @@ namespace MapExpansions.Lifecycle
             Entries.Add(entry);
             Core.Log.Msg($"register: '{def.Id}' ({def.DisplayName}) version {def.Version} from {System.Reflection.Assembly.GetCallingAssembly().GetName().Name}");
             Validate(entry);
-            return true;
+            _hasWorldStates = null;
+            return entry.State != ExpansionState.Rejected;
         }
+
+        private static bool? _hasWorldStates;
+
+        /// <summary>Whether a usable definition has world states. Cached, since replication asks every frame.</summary>
+        public static bool HasWorldStates => _hasWorldStates ??= Usable().Any(d => d.WorldStates.Count > 0);
 
         public static ExpansionState GetState(string id) =>
             Entries.FirstOrDefault(e => e.Definition.Id == id)?.State ?? ExpansionState.Rejected;
@@ -61,6 +67,7 @@ namespace MapExpansions.Lifecycle
             if (e.State == state) return;
             Core.Log.Msg($"state: '{id}' {e.State} -> {state}");
             e.State = state;
+            _hasWorldStates = null;
         }
 
         /// <summary>Definitions that passed the check, in registration order.</summary>
@@ -135,6 +142,7 @@ namespace MapExpansions.Lifecycle
                 foreach (var id in c.Boxes.GroupBy(x => x.Id).Where(g => g.Count() > 1).Select(g => g.Key))
                     problems.Add($"copy '{c.Id}' has two boxes with the id '{id}'");
 
+            problems.AddRange(WorldStates.Validate(def));
             if (problems.Count > 0)
             {
                 foreach (var p in problems) Core.Log.Error($"validate: '{def.Id}': {p}");
@@ -159,6 +167,7 @@ namespace MapExpansions.Lifecycle
                 if (Application.CanStreamedLevelBeLoaded(scene)) continue;
                 Core.Log.Error($"validate: '{e.Definition.Id}': source scene '{scene}' is not in the game build; the expansion is rejected");
                 e.State = ExpansionState.Rejected;
+                _hasWorldStates = null;
             }
         }
     }
