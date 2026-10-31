@@ -8,6 +8,7 @@ using MapExpansions.Source;
 using MapExpansions.World;
 using MelonLoader;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.SceneManagement;
 
 namespace MapExpansions.Lifecycle
@@ -25,6 +26,7 @@ namespace MapExpansions.Lifecycle
             public BuiltExpansion Expansion;
             public NpcNavigation Npc;
             public VehicleNavigation Vehicles;
+            public bool NavigationFailed;
         }
 
         private static readonly List<Build> Builds = new();
@@ -115,6 +117,7 @@ namespace MapExpansions.Lifecycle
                 }
             }
             PhysicsBounds.Extend(built);
+            _saveDataLoaded = false;
             _navRoutine = MelonCoroutines.Start(JoinNavigation());
         }
 
@@ -157,14 +160,38 @@ namespace MapExpansions.Lifecycle
                          $"{offColliders.Count} colliders off ({detached} taken out of collider groups), {cells} terrain cells cut");
         }
 
-        /// <summary>Navigation joins the vanilla graphs, which exist only once the save has loaded.</summary>
+        /// <summary>
+        /// Game time between onLoadComplete and the vehicle scan. Mods place their buildings and props, which the scan must
+        /// see as obstacles, within the first second of game time after the save has loaded. The host's loading screen
+        /// waits two seconds of game time, and a long frame counts for little of that wait, so the scan still runs under it.
+        /// </summary>
+        private const float WorldSettleSeconds = 1.5f;
+
+        private static bool _saveDataLoaded, _listensToLoad;
+
+        /// <summary>
+        /// The vanilla graphs exist only once the save has loaded, and the vehicle scan holds the main thread for seconds
+        /// while it gathers its input, so it runs under the loading screen, where no player sees it stop the game.
+        /// NPC navigation bakes over many frames once the game has loaded; then the vehicles get the scanned graphs and
+        /// the expansion turns Ready, so a car waiting for its roads starts with everything else in place.
+        /// </summary>
         private static IEnumerator JoinNavigation()
         {
             var wait = System.Diagnostics.Stopwatch.StartNew();
             while (true)
             {
                 var lm = Singleton<LoadManager>.Instance;
-                if (lm != null && lm.IsGameLoaded && !lm.IsLoading) break;
+                if (lm != null && !_listensToLoad)
+                {
+                    lm.onLoadComplete.AddListener((UnityAction)new Action(() => _saveDataLoaded = true));
+                    _listensToLoad = true;
+                }
+                if (_saveDataLoaded) break;
+                if (lm != null && lm.IsGameLoaded && !lm.IsLoading)
+                {
+                    Core.Log.Warning("build: the game loaded with no load-complete event");
+                    break;
+                }
                 if (wait.Elapsed.TotalMinutes > 5)
                 {
                     Core.Log.Error("build: the game did not finish loading within 5 minutes; navigation is not joined");
@@ -173,8 +200,32 @@ namespace MapExpansions.Lifecycle
                 }
                 yield return null;
             }
+            yield return new WaitForSeconds(WorldSettleSeconds);
+            var loading = Singleton<LoadManager>.Instance;
+            if (loading != null && loading.IsGameLoaded && !loading.IsLoading)
+                Core.Log.Warning("build: the loading screen closed before the vehicle scan; the player sees its long frame");
+            Core.Log.Msg($"build: save data loaded after {wait.ElapsedMilliseconds} ms; scanning the vehicle graphs");
+            foreach (var x in Builds.ToList())
+            {
+                var b = x.Expansion;
+                if (Registry.GetState(b.Id) != ExpansionState.Placed || !b.Definition.HasSource) continue;
+                yield return Guard(x.Vehicles.Build(b), $"'{b.Id}' vehicle navigation", () => x.NavigationFailed = true);
+            }
+
+            while (true)
+            {
+                var lm = Singleton<LoadManager>.Instance;
+                if (lm != null && lm.IsGameLoaded && !lm.IsLoading) break;
+                if (wait.Elapsed.TotalMinutes > 5)
+                {
+                    Core.Log.Error("build: the game did not finish loading within 5 minutes; NPC navigation is not joined");
+                    foreach (var x in Builds) Registry.SetState(x.Expansion.Id, ExpansionState.BuildFailed);
+                    yield break;
+                }
+                yield return null;
+            }
             for (int i = 0; i < 3; i++) yield return null;
-            Core.Log.Msg($"build: game loaded after {wait.ElapsedMilliseconds} ms; joining navigation");
+            Core.Log.Msg($"build: game loaded after {wait.ElapsedMilliseconds} ms; joining NPC navigation");
 
             foreach (var x in Builds.ToList())
             {
@@ -192,7 +243,6 @@ namespace MapExpansions.Lifecycle
                     MapExpansionsApi.RaiseReady(b.Id);
                     continue;
                 }
-                bool failed = false;
                 try
                 {
                     x.Npc.AddSourceData(b);
@@ -200,13 +250,22 @@ namespace MapExpansions.Lifecycle
                 catch (Exception e)
                 {
                     Core.Log.Error($"build: '{b.Id}' adding the NPC navigation data failed: {e}");
-                    failed = true;
+                    x.NavigationFailed = true;
                 }
                 foreach (var conn in b.Connections)
-                    yield return Guard(x.Npc.BakeConnection(b, conn), $"'{b.Id}' {conn.Name} NPC bake", () => failed = true);
-                yield return Guard(x.Vehicles.Build(b), $"'{b.Id}' vehicle navigation", () => failed = true);
+                    yield return Guard(x.Npc.BakeConnection(b, conn), $"'{b.Id}' {conn.Name} NPC bake", () => x.NavigationFailed = true);
 
-                if (failed)
+                try
+                {
+                    x.Vehicles.Open(b);
+                }
+                catch (Exception e)
+                {
+                    Core.Log.Error($"build: '{b.Id}' opening the vehicle navigation failed: {e}");
+                    x.NavigationFailed = true;
+                }
+
+                if (x.NavigationFailed)
                 {
                     Registry.SetState(b.Id, ExpansionState.BuildFailed);
                     continue;
