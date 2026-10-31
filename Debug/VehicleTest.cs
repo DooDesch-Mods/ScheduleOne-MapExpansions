@@ -81,7 +81,9 @@ namespace MapExpansions.Debug
                 var g = a.data.graphs[i];
                 if (g == null) { Core.Log.Msg($"[dev]   graph {i}: null"); continue; }
                 int nodes = g.CountNodes();
-                Core.Log.Msg($"[dev]   graph {i}: '{g.name}' {g.GetIl2CppType().Name} nodes={nodes}");
+                var recast = g.TryCast<RecastGraph>();
+                string layers = recast == null ? "" : ", layers " + string.Join(" ", Enumerable.Range(0, 32).Where(l => (recast.mask.value >> l & 1) != 0).Select(LayerMask.LayerToName));
+                Core.Log.Msg($"[dev]   graph {i}: '{g.name}' {g.GetIl2CppType().Name} nodes={nodes}{layers}");
             }
             if (Il2CppScheduleOne.PlayerScripts.Player.Local != null) Near(Il2CppScheduleOne.PlayerScripts.Player.Local.transform.position);
         }

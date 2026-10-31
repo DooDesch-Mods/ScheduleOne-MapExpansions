@@ -2,6 +2,7 @@ using System.Collections;
 using HarmonyLib;
 using Il2CppInterop.Runtime;
 using Il2CppPathfinding;
+using Il2CppScheduleOne.Misc;
 using Il2CppScheduleOne.Vehicles.AI;
 using MapExpansions.Connections;
 using MapExpansions.Lifecycle;
@@ -269,9 +270,10 @@ namespace MapExpansions.Navigation
 
         /// <summary>
         /// Scans a graph. For the corridor, every collider in its bounds that the framework did not build is switched
-        /// off for the duration of the scan, which runs in one frame, so no physics step sees the gap. With
-        /// <paramref name="readable"/>, every mesh collider whose mesh the scan cannot read gets a readable twin for the
-        /// duration of the scan; the vanilla ramps are such colliders.
+        /// off for the duration of the scan, which runs in one frame, so no physics step sees the gap. In the other
+        /// graphs, what moves out of a car's way is switched off the same way. With <paramref name="readable"/>, every
+        /// mesh collider whose mesh the scan cannot read gets a readable twin for the duration of the scan; the vanilla
+        /// ramps are such colliders.
         /// </summary>
         private static void Scan(AstarPath a, RecastGraph g, string what, BuiltExpansion corridorOf, bool readable)
         {
@@ -287,6 +289,7 @@ namespace MapExpansions.Navigation
                     off.Add(c);
                 }
             }
+            else SwitchOffPassable(bounds, g.mask, what, off);
             var twinNames = new List<string>();
             var twins = readable ? AddReadableTwins(bounds, g.mask, what, twinNames) : new List<GameObject>();
             try
@@ -316,6 +319,31 @@ namespace MapExpansions.Navigation
                 string names = string.Join(", ", twinNames.GroupBy(x => x).Select(x => x.Count() > 1 ? $"{x.Key} x{x.Count()}" : x.Key));
                 Core.Log.Msg($"vehicle nav: {twins.Count} readable collider twins were in the {what} scan and are gone: {names}");
             }
+        }
+
+        /// <summary>
+        /// A checkpoint's car stoppers and anything that lies loose give way to a car, so they are no walls in a graph
+        /// that stays as it was scanned. A cone in the middle of a road would close it for good: the scan keeps a
+        /// vehicle's radius away from it on every side. A closed stopper holds cars back through its vehicle obstacle.
+        /// </summary>
+        private static void SwitchOffPassable(Bounds bounds, LayerMask mask, string what, List<Collider> off)
+        {
+            int stopperParts = 0, looseParts = 0;
+            void TakeOut(Component root, ref int count)
+            {
+                foreach (var c in root.GetComponentsInChildren<Collider>(false))
+                {
+                    if (c == null || !c.enabled || c.isTrigger || (mask.value >> c.gameObject.layer & 1) == 0 || !bounds.Intersects(c.bounds)) continue;
+                    c.enabled = false;
+                    off.Add(c);
+                    count++;
+                }
+            }
+            foreach (var stopper in Object.FindObjectsOfType<CarStopper>(false))
+                if (stopper != null) TakeOut(stopper, ref stopperParts);
+            foreach (var body in Object.FindObjectsOfType<Rigidbody>(false))
+                if (body != null && !body.isKinematic) TakeOut(body, ref looseParts);
+            if (off.Count > 0) Core.Log.Msg($"vehicle nav: the {what} scan leaves out {stopperParts} car stopper colliders and {looseParts} loose colliders");
         }
 
         private static List<GameObject> AddReadableTwins(Bounds bounds, LayerMask mask, string what, List<string> names)
