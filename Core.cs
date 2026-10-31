@@ -2,7 +2,7 @@ using MapExpansions.Lifecycle;
 using MapExpansions.Source;
 using MelonLoader;
 
-[assembly: MelonInfo(typeof(MapExpansions.Core), "MapExpansions", "0.0.0-dev", "DooDesch")]
+[assembly: MelonInfo(typeof(MapExpansions.Core), "MapExpansions", DooDesch.ModVersion.Current, "DooDesch", "https://github.com/DooDesch-Mods/ScheduleOne-MapExpansions")]
 [assembly: MelonGame("TVGS", "Schedule I")]
 
 namespace MapExpansions

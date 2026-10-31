@@ -124,7 +124,7 @@ namespace MapExpansions
     {
         public System.Reflection.Assembly Assembly { get; set; }
 
-        /// <summary>The manifest resource name, such as "SerenaFlats.map.json".</summary>
+        /// <summary>The manifest resource name, such as "MyMap.map.json".</summary>
         public string ResourceName { get; set; }
     }
 

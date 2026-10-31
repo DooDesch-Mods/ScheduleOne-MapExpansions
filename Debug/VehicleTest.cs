@@ -28,7 +28,7 @@ namespace MapExpansions.Debug
     /// mxveh push vx vy vz                     give the last spawned vehicle this velocity and log where it goes for 2 s
     /// mxveh gas throttle [seconds]            hold the last spawned vehicle's throttle and log speed and pitch each second
     /// mxveh wall box|blocker|mesh x y z yaw   a 0.5 x 2 x 6 m test wall made at runtime: box on Default, box on VehicleBlocker, mesh on Default
-    /// mxveh roads [x0 z0 x1 z1]               road links in a rectangle (default Serena Flats) with the ground gap at each end
+    /// mxveh roads [x0 z0 x1 z1]               road links in a rectangle (default test area) with the ground gap at each end
     /// mxveh lanes [x0 z0 x1 z1]               road links in a rectangle against the road surface: off the road, wrong side, near the edge, sharp bends
     /// mxveh traffic [x0 z0 x1 z1]             every vehicle agent in a rectangle: mode, ground gap, nearest road link and side
     /// mxveh clear                             destroy the vehicles and test walls these commands made
@@ -269,7 +269,7 @@ namespace MapExpansions.Debug
                          $"scene {go.scene.name}, colliders {string.Join(", ", cols.Select(c => $"{c.GetIl2CppType().Name}@{LayerMask.LayerToName(c.gameObject.layer)} {c.bounds.size}"))}");
         }
 
-        /// <summary>Serena Flats in world space, unless the command names a rectangle.</summary>
+        /// <summary>The default test area in world space, unless the command names a rectangle.</summary>
         private static Rect Area(string[] parts) =>
             parts.Length > 5 ? Rect.MinMaxRect(F(parts[2]), F(parts[3]), F(parts[4]), F(parts[5])) : Rect.MinMaxRect(-135f, -935f, 495f, -335f);
 
