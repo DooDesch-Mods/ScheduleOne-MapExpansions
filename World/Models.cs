@@ -90,7 +90,7 @@ namespace MapExpansions.World
             if (asm != null)
                 foreach (var n in asm.GetManifestResourceNames().Where(n => n.EndsWith(".glb", StringComparison.OrdinalIgnoreCase)))
                 {
-                    // "SerenaFlats.models.kiosk.glb" offers "kiosk.glb".
+                    // "MyMap.models.kiosk.glb" offers "kiosk.glb".
                     var stem = n.Substring(0, n.Length - 4);
                     files.Add(stem.Substring(stem.LastIndexOf('.') + 1) + ".glb");
                 }
