@@ -351,6 +351,18 @@ namespace MapExpansions.World
                     foreach (var light in lights) light.enabled = d.LightsOn.Value;
                     Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {lights.Length} native lights {(d.LightsOn.Value ? "on" : "off")}");
                 }
+                if (d.LightRange.HasValue || d.LightIntensity.HasValue)
+                {
+                    var lights = go.GetComponentsInChildren<Light>(true);
+                    if (lights.Length == 0)
+                        throw new InvalidOperationException($"copy '{d.Id}' sets light range or intensity but contains no native Light");
+                    foreach (var light in lights)
+                    {
+                        if (d.LightRange.HasValue) light.range = d.LightRange.Value;
+                        if (d.LightIntensity.HasValue) light.intensity = d.LightIntensity.Value;
+                    }
+                    Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {lights.Length} native lights, range {d.LightRange?.ToString() ?? "kept"}, intensity {d.LightIntensity?.ToString() ?? "kept"}");
+                }
                 if (d.IndependentMesh) IndependentCopies.Extract(b, src, go, d.OwnMesh, assets);
                 if (surfaces != null) SwitchedLamps.Follow($"'{b.Id}' {owner} '{d.Id}'", go, d.LightSwitch, surfaces);
             }

@@ -30,6 +30,12 @@ namespace MapExpansions
         /// <summary>Overrides the native lights after stripping visual-only copies; null keeps their source state.</summary>
         public bool? LightsOn { get; set; }
 
+        /// <summary>Overrides the reach of the copy's native lights in metres; null keeps their source range. A lamp copied close to an outer wall needs less than the room it came from.</summary>
+        public float? LightRange { get; set; }
+
+        /// <summary>Overrides the brightness of the copy's native lights; null keeps their source value. A shorter reach also dims what the lamp still reaches.</summary>
+        public float? LightIntensity { get; set; }
+
         /// <summary>
         /// Path of a main-world ModularSwitch. The copy's lamps and their glowing surfaces then follow that switch on
         /// every peer, starting from its current state; a visual-only copy has no lamp script the switch could reach.
