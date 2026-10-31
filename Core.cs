@@ -48,6 +48,7 @@ namespace MapExpansions
             World.SeparateViews.Tick();
             World.Properties.Tick();
             World.MainCopies.Tick();
+            World.SwitchedLamps.Tick();
             World.Shops.Tick();
         }
 

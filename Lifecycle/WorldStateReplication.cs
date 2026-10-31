@@ -11,23 +11,36 @@ namespace MapExpansions.Lifecycle
         {
             internal NetworkConnection Connection;
             internal PeerWorldStateAck Ack;
-            internal bool Requested;
+            /// <summary>
+            /// Native tasks of this peer, in their original order. They stay out of the queue until the acknowledgement;
+            /// requestsByConnection keeps them counted, so vanilla cannot signal replication complete.
+            /// </summary>
+            internal readonly List<ReplicationQueue.ReplicationRequest> Held = new();
+            internal int Requests;
+            internal string LastFailure;
         }
         private static readonly System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
         private static readonly Dictionary<int, Gate> Gates = new();
-        private static bool Enabled => Registry.Usable().Any(d => d.WorldStates.Count > 0);
+        // Requests of connections that are gone. Vanilla drops an invalid request and cleans its bookkeeping.
+        private static readonly List<ReplicationQueue.ReplicationRequest> Orphaned = new();
+        // Reused between frames, so an update with nothing to do allocates nothing.
+        private static readonly List<ReplicationQueue.ReplicationRequest> Released = new();
+        private static readonly List<int> Dead = new();
+        private static readonly List<int> Expired = new();
+        private static readonly List<int> Due = new();
         private static double Now => Clock.Elapsed.TotalSeconds;
 
         private static Gate For(NetworkConnection connection)
         {
             int peer = connection.ClientId;
-            if (!Gates.TryGetValue(peer, out var gate) || gate.Connection.Pointer != connection.Pointer)
-                Gates[peer] = gate = new Gate { Connection = connection, Ack = new PeerWorldStateAck(Now) };
+            if (Gates.TryGetValue(peer, out var gate) && gate.Connection.Pointer == connection.Pointer) return gate;
+            if (gate != null) Orphaned.AddRange(gate.Held);
+            Gates[peer] = gate = new Gate { Connection = connection, Ack = new PeerWorldStateAck(Now) };
             return gate;
         }
         internal static bool Require(int peerId, long revision)
         {
-            if (!Enabled || !InstanceFinder.IsServer || revision < 0 ||
+            if (!Registry.HasWorldStates || !InstanceFinder.IsServer || revision < 0 ||
                 !InstanceFinder.ServerManager.Clients.TryGetValue(peerId, out var connection) || connection.IsHost)
             { Core.Log.Error($"world state replication: cannot require revision {revision} for remote peer {peerId}"); return false; }
             var gate = For(connection);
@@ -42,77 +55,106 @@ namespace MapExpansions.Lifecycle
             Core.Log.Msg($"world state replication: peer {peerId} confirmed revision {revision}; native replication released");
             return true;
         }
-        internal static void Reset() => Gates.Clear();
-
-        private sealed class Held
+        internal static void Reset()
         {
-            internal readonly List<ReplicationQueue.ReplicationRequest> Requests = new();
-            internal bool Restored;
-            internal void Restore(ReplicationQueue queue)
+            int held = Gates.Values.Sum(g => g.Held.Count) + Orphaned.Count + Released.Count;
+            if (held > 0) Core.Log.Msg($"world state replication: {held} held native tasks dropped with the session");
+            Gates.Clear();
+            Orphaned.Clear();
+            Released.Clear();
+        }
+
+        private static void Sweep(ReplicationQueue native)
+        {
+            var queue = native.queue;
+            double now = Now;
+            Dead.Clear();
+            Expired.Clear();
+            Due.Clear();
+            foreach (var pair in Gates)
             {
-                if (Restored) return;
-                // Withheld requests go before any new requests, retaining their original order for each peer.
-                while (Requests.Count > 0)
+                var gate = pair.Value;
+                if (!gate.Connection.IsValid)
                 {
-                    int i = Requests.Count - 1;
-                    var request = Requests[i];
-                    if (!queue.queue.Contains(request)) queue.queue.Insert(0, request);
-                    Requests.RemoveAt(i);
+                    Orphaned.AddRange(gate.Held);
+                    gate.Held.Clear();
+                    Dead.Add(pair.Key);
                 }
-                Restored = true;
+                else if (gate.Ack.Confirmed)
+                {
+                    Released.AddRange(gate.Held);
+                    gate.Held.Clear();
+                }
+                else if (gate.Ack.Expire(now)) Expired.Add(pair.Key);
             }
+            foreach (int peer in Dead)
+            {
+                Gates.Remove(peer);
+                Core.Log.Msg($"world state replication: peer {peer} left; its gate is closed");
+            }
+            InsertAtFront(queue, Released);
+            InsertAtFront(queue, Orphaned);
+            foreach (int peer in Expired) Kick(peer, Gates[peer], now);
+
+            for (int i = 0; i < queue.Count;)
+            {
+                var request = queue[i];
+                var target = request?.Target;
+                if (target == null || !target.IsValid || target.IsHost) { i++; continue; }
+                var gate = For(target);
+                if (gate.Ack.Confirmed) { i++; continue; }
+                gate.Held.Add(request);
+                queue.RemoveAt(i);
+            }
+
+            foreach (var pair in Gates)
+                if (pair.Value.Ack.ShouldRequest(now)) Due.Add(pair.Key);
+            foreach (int peer in Due) RequestSnapshot(peer, Gates[peer], now);
+        }
+
+        /// <summary>Earlier tasks go before new ones and keep their order. Each is taken off the list once it is back.</summary>
+        private static void InsertAtFront(Il2CppSystem.Collections.Generic.List<ReplicationQueue.ReplicationRequest> queue, List<ReplicationQueue.ReplicationRequest> requests)
+        {
+            for (int i = requests.Count - 1; i >= 0; i--)
+            {
+                queue.Insert(0, requests[i]);
+                requests.RemoveAt(i);
+            }
+        }
+
+        private static void RequestSnapshot(int peer, Gate gate, double now)
+        {
+            gate.Requests++;
+            if (gate.Requests == 1)
+                Core.Log.Msg($"world state replication: withholding peer {peer}'s native tasks until its snapshot ACK ({gate.Held.Count} held)");
+            else
+                Core.Log.Warning($"world state replication: peer {peer} has not acknowledged revision {gate.Ack.Revision} after {now - gate.Ack.Started:0.0}s; " +
+                                 $"snapshot request {gate.Requests}, {gate.Held.Count} native tasks held, last request: {gate.LastFailure ?? "delivered to the consumer"}");
+            gate.LastFailure = MapExpansionsApi.RaisePeerWorldStateRequested(peer);
+        }
+
+        private static void Kick(int peer, Gate gate, double now)
+        {
+            string cause = gate.LastFailure ?? (gate.Ack.Revision < 0 ? "the consumer never required a revision for this peer" : "the peer did not acknowledge the snapshot");
+            Core.Log.Error($"world state replication: disconnecting peer {peer} during its join: no acknowledgement of revision {gate.Ack.Revision} after " +
+                           $"{now - gate.Ack.Started:0.00}s (limit {PeerWorldStateAck.TimeoutSeconds}s), {gate.Requests} snapshot requests, {gate.Held.Count} native tasks held; cause: {cause}");
+            gate.Connection.Disconnect(true);
         }
 
         [HarmonyPatch(typeof(ReplicationQueue), nameof(ReplicationQueue.Update))]
         private static class BeforeNativeReplication
         {
-            private static void Prefix(ReplicationQueue __instance, out Held __state)
+            private static void Prefix(ReplicationQueue __instance)
             {
-                __state = new Held();
-                if (!InstanceFinder.IsServer || !Enabled) return;
-                var requestPeers = new HashSet<int>();
-                try
-                {
-                    foreach (var pair in Gates.ToArray())
-                    {
-                        var gate = pair.Value;
-                        if (!gate.Connection.IsValid) { Gates.Remove(pair.Key); continue; }
-                        if (gate.Ack.Expire(Now))
-                        {
-                            Core.Log.Error($"world state replication: peer {pair.Key} failed revision {gate.Ack.Revision} ACK after {Now - gate.Ack.Started:0.00}s (limit {PeerWorldStateAck.TimeoutSeconds}s); disconnecting before native replication timeout");
-                            gate.Connection.Disconnect(true);
-                        }
-                    }
-                    for (int i = __instance.queue.Count - 1; i >= 0; i--)
-                    {
-                        var request = __instance.queue[i];
-                        var target = request?.Target;
-                        if (target == null || !target.IsValid || target.IsHost) continue;
-                        var gate = For(target);
-                        if (gate.Ack.Confirmed) continue;
-                        __state.Requests.Insert(0, request);
-                        __instance.queue.RemoveAt(i);
-                        // requestsByConnection deliberately retains the task, so vanilla cannot signal replication complete.
-                        if (!gate.Requested) { gate.Requested = true; requestPeers.Add(target.ClientId); }
-                    }
-                    foreach (int peer in requestPeers)
-                    {
-                        Core.Log.Msg($"world state replication: withholding peer {peer}'s native tasks until its snapshot ACK");
-                        MapExpansionsApi.RaisePeerWorldStateRequested(peer);
-                    }
-                }
+                // Runs every frame: installs without world states and idle hosts leave here without allocating.
+                if (!Registry.HasWorldStates || !InstanceFinder.IsServer) return;
+                if (Gates.Count == 0 && __instance.queue.Count == 0) return;
+                try { Sweep(__instance); }
                 catch (Exception e)
                 {
                     Core.Log.Error($"world state replication: failed to withhold native tasks; original update will not execute: {e}");
-                    __state.Restore(__instance);
                     throw;
                 }
-            }
-            private static void Postfix(ReplicationQueue __instance, Held __state) => __state?.Restore(__instance);
-            private static Exception Finalizer(ReplicationQueue __instance, Held __state, Exception __exception)
-            {
-                __state?.Restore(__instance);
-                return __exception;
             }
         }
     }

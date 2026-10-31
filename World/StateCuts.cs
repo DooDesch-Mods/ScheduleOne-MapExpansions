@@ -39,13 +39,14 @@ namespace MapExpansions.World
             }
         }
 
-        internal static Lease Apply(BuiltExpansion b, SceneIndex index, ObjectRule rule)
+        /// <param name="offColliders">Gets the source colliders the cut switched off; the caller takes them out of their groups once per transition.</param>
+        internal static Lease Apply(BuiltExpansion b, SceneIndex index, ObjectRule rule, HashSet<IntPtr> offColliders)
         {
             if (index == null || rule.Area.size == Vector3.zero) throw new InvalidOperationException("state cut needs a scene index and area");
             var part = index.Of(WorldSide.Main, b);
             if (part == null) throw new InvalidOperationException("state cut has no main-world index");
             var lease = new Lease { Owner = b };
-            int ownedBefore = b.Owned.Count, changed = 0;
+            int ownedBefore = b.Owned.Count, changed = 0, hidden = 0;
             var boxes = new[] { new OrientedBox(rule.Area.center, Quaternion.identity, rule.Area.extents) };
             // Visibility and runtime bounds are not scene geometry readiness. The independent cut tests the actual
             // selected mesh or local collider shape against the area, including inactive client scene objects.
@@ -56,6 +57,9 @@ namespace MapExpansions.World
                 foreach (var r in rule.Effect == ObjectEffect.Cut ? part.Renderers : Enumerable.Empty<Renderer>())
                 {
                     if (r == null || !SceneIndex.MatchesSelfOrAncestor(r.transform, selector, default)) continue;
+                    // A switched-off renderer draws nothing, often a collision helper with a default material.
+                    // Its replacement would show up as a plain wall in front of the real one.
+                    if (!r.enabled) { hidden++; continue; }
                     if (RenderersInUse.Contains(r.Pointer)) throw new InvalidOperationException($"another active state already cuts '{MeshCarver.Path(r.transform)}'");
                     var mr = r.TryCast<MeshRenderer>();
                     if (mr == null) throw new InvalidOperationException($"state cut renderer '{r.name}' is not a MeshRenderer");
@@ -109,10 +113,9 @@ namespace MapExpansions.World
                 }
                 if (changed == 0) throw new InvalidOperationException($"state cut '{rule.Key}' changed no geometry in its area");
                 lease.Assets.AddRange(b.Owned.Skip(ownedBefore));
-                var disabledSources = new HashSet<IntPtr>(lease.Colliders.Select(x => x.collider.Pointer));
-                ColliderKeepAlive.Detach(disabledSources);
+                foreach (var (source, _, _, _) in lease.Colliders) offColliders.Add(source.Pointer);
                 Physics.SyncTransforms();
-                Core.Log.Msg($"state cut: '{b.Id}' '{rule.Key}' applied {changed} geometry changes from selected source data; visibility-independent replacements active");
+                Core.Log.Msg($"state cut: '{b.Id}' '{rule.Key}' applied {changed} geometry changes from selected source data; visibility-independent replacements active, {hidden} switched-off renderers stay off");
                 return lease;
             }
             catch (Exception original)

@@ -48,17 +48,14 @@ namespace MapExpansions.World
                 Attached = false;
             }
             if (Root != null) Root.SetActive(false);
-            Deregister(Dock);
-            Deregister(Parking);
+            ReleaseGuids();
             if (Root != null) Object.Destroy(Root);
         }
 
-        private static void Deregister(Component component)
+        internal void ReleaseGuids()
         {
-            if (component == null) return;
-            var registerable = component.Cast<Il2CppScheduleOne.IGUIDRegisterable>();
-            var existing = Il2Cpp.GUIDManager.GetObject<Component>(registerable.GUID);
-            if (existing != null && existing.Pointer == component.Pointer) Il2Cpp.GUIDManager.DeregisterObject(registerable);
+            GuidLeases.Release(Dock, $"dock {Index}");
+            GuidLeases.Release(Parking, $"dock {Index} parking");
         }
     }
 
@@ -73,6 +70,12 @@ namespace MapExpansions.World
                 if (point.HasValue && (!float.IsFinite(point.Value.Position.x) || !float.IsFinite(point.Value.Position.y) ||
                     !float.IsFinite(point.Value.Position.z) || !float.IsFinite(point.Value.Yaw))) yield return "dock placement contains a non-finite coordinate";
         }
+
+        /// <summary>
+        /// Whether the dock has a place. A definition may get it after registration, so this is required when the dock is
+        /// applied and only warned about when it is registered.
+        /// </summary>
+        internal static bool HasPlacement(PropertyDockDefinition def) => def.At.Position != Vector3.zero || def.At.Yaw != 0f;
 
         internal static void CheckRemovalOrder(IEnumerable<PropertyDockLease> leases)
         {
@@ -90,6 +93,7 @@ namespace MapExpansions.World
         {
             var errors = Validate(def).ToArray();
             if (errors.Length > 0) throw new InvalidOperationException(string.Join("; ", errors));
+            if (!HasPlacement(def)) throw new InvalidOperationException($"dock '{def.Id}' has no At; a dock needs a world position");
             DockIndexPolicy.RequireAppend(property.LoadingDocks?.Length ?? 0, def.Index);
             Property sourceProperty = null;
             foreach (var candidate in Property.Properties)
@@ -100,8 +104,8 @@ namespace MapExpansions.World
             if (source == null) throw new InvalidOperationException($"dock '{def.Id}' template is null");
             var dockGuid = new Il2CppSystem.Guid(Places.StableGuid(expansion, "property-dock", extension + "/" + def.Id).ToString());
             var lotGuid = new Il2CppSystem.Guid(Places.StableGuid(expansion, "property-dock-lot", extension + "/" + def.Id).ToString());
-            if (Il2Cpp.GUIDManager.IsGUIDAlreadyRegistered(dockGuid) || Il2Cpp.GUIDManager.IsGUIDAlreadyRegistered(lotGuid))
-                throw new InvalidOperationException($"dock '{def.Id}' or its parking GUID is already registered");
+            GuidLeases.RequireFree(dockGuid, $"dock '{def.Id}'");
+            GuidLeases.RequireFree(lotGuid, $"dock '{def.Id}' parking");
             var root = new GameObject($"MapExpansions.{expansion}.{extension}.Dock.{def.Id}");
             root.SetActive(false);
             root.transform.SetParent(property.transform, true);

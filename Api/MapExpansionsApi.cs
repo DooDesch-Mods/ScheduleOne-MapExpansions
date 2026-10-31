@@ -46,7 +46,10 @@ namespace MapExpansions
         /// <summary>Raised after a selected local state's geometry, grids and navigation have been applied.</summary>
         public static event Action<string, string> WorldStateApplied;
 
-        /// <summary>The host needs the consumer to send this remote peer a complete authoritative world-state snapshot.</summary>
+        /// <summary>
+        /// The host needs the consumer to send this remote peer a complete authoritative world-state snapshot. Raised
+        /// again every few seconds until the peer acknowledges, so the handler must be safe to repeat.
+        /// </summary>
         public static event Action<int> PeerWorldStateRequested;
 
         /// <summary>Hold this peer's native replication until it acknowledges the specified authoritative revision.</summary>
@@ -64,20 +67,32 @@ namespace MapExpansions
                 catch (Exception e) { Core.Log.Error($"world state applied handler '{handler.Method.Name}' failed for '{id}': {e}"); }
         }
 
-        internal static void RaisePeerWorldStateRequested(int peerId)
+        /// <summary>Returns why the request did not reach a working consumer, or null when every handler ran.</summary>
+        internal static string RaisePeerWorldStateRequested(int peerId)
         {
             var handlers = PeerWorldStateRequested;
-            if (handlers == null) { Core.Log.Error($"world state replication: peer {peerId} needs a snapshot but no consumer is subscribed"); return; }
+            if (handlers == null)
+            {
+                const string none = "no consumer is subscribed";
+                Core.Log.Error($"world state replication: peer {peerId} needs a snapshot but {none}");
+                return none;
+            }
+            string failure = null;
             foreach (Action<int> handler in handlers.GetInvocationList())
                 try { handler(peerId); }
-                catch (Exception e) { Core.Log.Error($"world state snapshot handler '{handler.Method.Name}' failed for peer {peerId}: {e}"); }
+                catch (Exception e)
+                {
+                    Core.Log.Error($"world state snapshot handler '{handler.Method.Name}' failed for peer {peerId}: {e}");
+                    failure = $"handler '{handler.Method.Name}' failed: {e.Message}";
+                }
+            return failure;
         }
 
         /// <summary>
         /// Registers an expansion. Call it from <c>OnInitializeMelon</c>; definitions registered after the main menu
         /// opened are checked but only built from the next game start on.
         /// </summary>
-        /// <returns>False when the id is taken or the definition is null; the log names the reason.</returns>
+        /// <returns>False when the id is taken, the definition is null or its check rejected it; the log names the reason.</returns>
         public static bool Register(ExpansionDefinition definition) => Registry.Register(definition);
 
         /// <summary>

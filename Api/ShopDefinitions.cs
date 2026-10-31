@@ -30,6 +30,12 @@ namespace MapExpansions
         /// <summary>Overrides the native lights after stripping visual-only copies; null keeps their source state.</summary>
         public bool? LightsOn { get; set; }
 
+        /// <summary>
+        /// Path of a main-world ModularSwitch. The copy's lamps and their glowing surfaces then follow that switch on
+        /// every peer, starting from its current state; a visual-only copy has no lamp script the switch could reach.
+        /// </summary>
+        public string LightSwitch { get; set; }
+
         /// <summary>The main-world object whose place <see cref="At"/> gives. Empty means the template itself.</summary>
         public string Frame { get; set; }
 
@@ -194,6 +200,12 @@ namespace MapExpansions
 
         /// <summary>For <see cref="BoxKind.Panel"/>: the name of a loaded material.</summary>
         public string Material { get; set; }
+
+        /// <summary>
+        /// For <see cref="BoxKind.Panel"/>: metres one repeat of the material's texture covers, measured in main-world
+        /// coordinates so that neighbouring panels run on without a seam. 0 stretches the texture once over each face.
+        /// </summary>
+        public float TileMetres { get; set; }
 
         internal BoxDefinition Clone() => (BoxDefinition)MemberwiseClone();
     }

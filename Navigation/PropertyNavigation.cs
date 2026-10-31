@@ -24,11 +24,69 @@ namespace MapExpansions.Navigation
             internal readonly List<Source.NavLinks.Lease> Links = new();
             public void Dispose()
             {
-                foreach (var link in Links) link.Dispose();
-                Links.Clear();
-                foreach (var surface in Surfaces)
+                // Each part leaves its list once it is gone, so a failed removal resumes on the next try.
+                for (int i = Links.Count - 1; i >= 0; i--)
+                {
+                    Links[i].Dispose();
+                    Links.RemoveAt(i);
+                }
+                for (int i = Surfaces.Count - 1; i >= 0; i--)
+                {
+                    var surface = Surfaces[i];
                     if (surface != null) { surface.RemoveData(); surface.gameObject.SetActive(false); Object.Destroy(surface.gameObject); }
-                Surfaces.Clear();
+                    Surfaces.RemoveAt(i);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Keeps the player's placed items out of a state bake. Their visual colliders sit on the Default layer, so a
+        /// PhysicsColliders bake over Default and Terrain treats racks and stations as walls; one standing on a doorway
+        /// probe would fail the transition. Vanilla's NavMesh is the empty building with the items carving it, and this
+        /// bake matches that: while it runs, the items' colliders sit on a layer outside the bake's mask. Moving the
+        /// layer sends no trigger events, unlike disabling them, and the whole hold lasts one synchronous call.
+        /// </summary>
+        private sealed class PlacedItemsBakeHold : IDisposable
+        {
+            private readonly List<(GameObject go, int layer)> _moved = new();
+
+            internal PlacedItemsBakeHold(string id, Bounds bounds)
+            {
+                try
+                {
+                    int excluded = LayerMask.NameToLayer("Ignore Raycast");
+                    if (excluded < 0) throw new InvalidOperationException("layer 'Ignore Raycast' does not exist");
+                    int items = 0;
+                    foreach (var property in Property.Properties)
+                    {
+                        if (property?.BuildableItems == null) continue;
+                        foreach (var item in property.BuildableItems)
+                        {
+                            if (item == null) continue;
+                            int before = _moved.Count;
+                            foreach (var c in item.GetComponentsInChildren<Collider>(true))
+                            {
+                                if (c == null || ((1 << c.gameObject.layer) & Mask) == 0 || !c.bounds.Intersects(bounds)) continue;
+                                _moved.Add((c.gameObject, c.gameObject.layer));
+                                c.gameObject.layer = excluded;
+                            }
+                            if (_moved.Count > before) items++;
+                        }
+                    }
+                    Core.Log.Msg($"state nav: '{id}' keeps {items} placed items ({_moved.Count} collider objects) out of the bake sources");
+                }
+                catch
+                {
+                    Dispose();
+                    throw;
+                }
+            }
+
+            public void Dispose()
+            {
+                foreach (var (go, layer) in _moved)
+                    if (go != null) go.layer = layer;
+                _moved.Clear();
             }
         }
 
@@ -39,6 +97,11 @@ namespace MapExpansions.Navigation
             {
                 var registered = NpcNavigation.AgentTypes().Select(a => new NavigationAgentSelection.Agent(a, NpcNavigation.AgentName(a))).ToArray();
                 var agents = NavigationAgentSelection.Resolve(requiredAgents, registered);
+                // A state's volume is property interior, as vanilla marks its buildings: civilians' masks leave the area out,
+                // employees' include it. An expansion's own NPC needs the area in its mask to walk here.
+                int area = NavMesh.GetAreaFromName(InteriorArea);
+                if (area < 0) throw new InvalidOperationException($"state '{id}' needs the NavMesh area '{InteriorArea}', which this game does not define");
+                using var placedItems = new PlacedItemsBakeHold(id, bounds);
                 foreach (int agent in agents)
                 {
                     var go = new GameObject($"MapExpansions.{id}.StateNav.{agent}");
@@ -51,6 +114,7 @@ namespace MapExpansions.Navigation
                     surface.collectObjects = CollectObjects.Volume;
                     surface.useGeometry = NavMeshCollectGeometry.PhysicsColliders;
                     surface.layerMask = Mask;
+                    surface.defaultArea = area;
                     surface.center = Vector3.zero;
                     surface.size = bounds.size;
                     var settings = NavMesh.GetSettingsByID(agent);
@@ -90,6 +154,7 @@ namespace MapExpansions.Navigation
         }
 
         private static readonly int Mask = LayerMask.GetMask("Default", "Terrain");
+        private const string InteriorArea = "PropertyInterior";
 
         /// <summary>
         /// Bakes the copy's surroundings for every agent type without a NavMesh at its idle points. The pieces hang under

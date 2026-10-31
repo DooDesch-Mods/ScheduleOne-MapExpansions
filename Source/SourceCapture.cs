@@ -87,6 +87,7 @@ namespace MapExpansions.Source
             "UnityEngine.Light",
             "UnityEngine.ReflectionProbe",
             "UnityEngine.Rendering.Universal.UniversalAdditionalLightData",
+            "ScheduleOne.Misc.Spin",
         };
 
         /// <summary>

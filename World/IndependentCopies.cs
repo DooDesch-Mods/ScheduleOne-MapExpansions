@@ -22,7 +22,8 @@ namespace MapExpansions.World
             return mr;
         }
 
-        internal static void Extract(BuiltExpansion b, Transform source, GameObject copy, bool ownMesh)
+        /// <param name="assets">Gets the extracted meshes, which belong to this copy alone and go with it.</param>
+        internal static void Extract(BuiltExpansion b, Transform source, GameObject copy, bool ownMesh, List<Object> assets)
         {
             var original = source.GetComponentsInChildren<MeshRenderer>(true);
             var cloned = copy.GetComponentsInChildren<MeshRenderer>(true);
@@ -34,7 +35,7 @@ namespace MapExpansions.World
                 if (!src.isPartOfStaticBatch || (!ownMesh && dst.transform == copy.transform)) continue;
                 var mesh = MeshCarver.BuildForward(src, $"MapExpansions.{b.Id}.{src.name}.Independent");
                 if (mesh == null) throw new InvalidOperationException($"renderer '{MeshCarver.Path(src.transform)}' has no extractable selected submeshes");
-                b.Own(mesh);
+                assets.Add(b.Own(mesh));
                 var replacement = Renderer(src, dst.transform, mesh, "MapExpansions independent visual");
                 foreach (var group in copy.GetComponentsInChildren<LODGroup>(true))
                 {

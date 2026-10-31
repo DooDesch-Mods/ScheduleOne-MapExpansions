@@ -25,6 +25,7 @@ namespace MapExpansions.Lifecycle
             var state = new WorldStateDefinition { Id = source.Id, NavigationBounds = source.NavigationBounds, Layer = source.Layer };
             state.Rules.AddRange(def.Hide);
             state.Copies.AddRange(def.Copies);
+            state.Moves.AddRange(source.Moves);
             state.PropertyExtensions.AddRange(source.PropertyExtensions);
             state.NavigationProbes.AddRange(source.NavigationProbes);
             state.NavigationAgents.AddRange(source.NavigationAgents);

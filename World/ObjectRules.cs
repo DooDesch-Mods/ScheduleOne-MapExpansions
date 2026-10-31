@@ -10,8 +10,12 @@ namespace MapExpansions.World
     internal static class ObjectRules
     {
         /// <summary>Switches off what each rule selects. Colliders that were switched off are added to <paramref name="offColliders"/>.</summary>
+        /// <param name="stateRule">
+        /// The rule belongs to a world state: a Remove rule also freezes bodies it fully selects, and every selected
+        /// collider counts as off, because the state's revert restores group membership for all of them.
+        /// </param>
         public static void Apply(BuiltExpansion b, SceneIndex index, IEnumerable<ObjectRule> rules, HashSet<IntPtr> offColliders,
-            TerrainOps.HoleMask holes)
+            TerrainOps.HoleMask holes, bool stateRule = false, SceneIndex.AreaSnapshot mainNearby = null)
         {
             foreach (var rule in rules)
             {
@@ -85,6 +89,7 @@ namespace MapExpansions.World
                     else Core.Log.Msg(holesLine);
                     continue;
                 }
+                if (mainNearby != null && rule.Side == WorldSide.Main && area.size != Vector3.zero) part = mainNearby.Near(area);
                 int renderers = 0, colliders = 0, terrains = 0, lights = 0;
                 bool hide = rule.Effect != ObjectEffect.NoCollision;
                 bool noCollision = rule.Effect != ObjectEffect.Hide;
@@ -104,14 +109,21 @@ namespace MapExpansions.World
                         if (Take(rec, l, l.enabled, v => l.enabled = v)) lights++;
                     }
                 if (noCollision)
+                {
+                    // Bodies freeze before any selected collider is disabled.
+                    if (stateRule && rule.Effect == ObjectEffect.Remove) HoldFullySelectedBodies(rec, part, rule, area);
                     foreach (var c in part.Colliders)
                     {
                         if (c == null || !SceneIndex.MatchesSelfOrAncestor(c.transform, rule, area)) continue;
-                        if (rule.Effect == ObjectEffect.Remove) TakeRemovedBody(rec, c.attachedRigidbody);
-                        if (!Take(rec, c, c.enabled, v => c.enabled = v)) continue;
+                        if (!Take(rec, c, c.enabled, v => c.enabled = v))
+                        {
+                            if (stateRule) offColliders.Add(c.Pointer);
+                            continue;
+                        }
                         offColliders.Add(c.Pointer);
                         colliders++;
                     }
+                }
                 foreach (var t in part.Terrains)
                 {
                     if (t == null || !SceneIndex.MatchesSelfOrAncestor(t.transform, rule, area)) continue;
@@ -120,12 +132,12 @@ namespace MapExpansions.World
                     if (noCollision)
                     {
                         var tc = t.GetComponent<TerrainCollider>();
-                        if (tc != null && Take(rec, tc, tc.enabled, v => tc.enabled = v)) offColliders.Add(tc.Pointer);
+                        if (tc != null && (Take(rec, tc, tc.enabled, v => tc.enabled = v) || stateRule)) offColliders.Add(tc.Pointer);
                     }
                     terrains++;
                 }
                 string line = $"rules: '{b.Id}' {rule}: {renderers} renderers, {colliders} colliders, {terrains} terrains, {lights} lamps";
-                if (rule.Effect == ObjectEffect.Remove) line += $", {rec.BodyKeys.Count} rigidbodies held";
+                if (stateRule && rule.Effect == ObjectEffect.Remove) line += $", {rec.BodyKeys.Count} rigidbodies held";
                 if (renderers + colliders + terrains == 0) Core.Log.Warning(line + "; the rule matched nothing");
                 else Core.Log.Msg(line);
             }
@@ -200,6 +212,8 @@ namespace MapExpansions.World
             public ObjectRule Rule;
             public readonly List<BoxCollider> Boxes = new();
             public readonly List<GameObject> Shells = new();
+            /// <summary>The lining meshes of the shells; they go with the shells when the rule is taken back.</summary>
+            public readonly List<Object> Assets = new();
         }
 
         private static readonly List<HollowRecord> Hollows = new();
@@ -236,9 +250,15 @@ namespace MapExpansions.World
                 box.enabled = true;
                 boxes++;
             }
+            foreach (var asset in rec.Assets)
+            {
+                b.Owned.Remove(asset);
+                if (asset != null) Object.Destroy(asset);
+            }
             Hollows.Remove(rec);
             Physics.SyncTransforms();
-            Core.Log.Msg($"rules: revert '{b.Id}' {rule}: {shells} shells taken out, {boxes} boxes solid again (they stay out of their collider groups)");
+            // Only a world state notes the groups it took colliders from; see ColliderKeepAlive.Restore.
+            Core.Log.Msg($"rules: revert '{b.Id}' {rule}: {shells} shells taken out, {boxes} boxes solid again, {rec.Assets.Count} lining meshes released (out of their collider groups unless a world state restores them)");
             return boxes;
         }
 
@@ -255,9 +275,51 @@ namespace MapExpansions.World
             return true;
         }
 
+        /// <summary>
+        /// A state's Remove takes a rigidbody along only when it selects every collider of the body. A body with a
+        /// collider outside the rule stays dynamic, so a rule cannot freeze a whole vehicle through one of its parts.
+        /// </summary>
+        private static void HoldFullySelectedBodies(Record rec, SceneIndex.Part part, ObjectRule rule, Bounds area)
+        {
+            var selected = new Dictionary<IntPtr, (Rigidbody body, HashSet<IntPtr> colliders)>();
+            foreach (var c in part.Colliders)
+            {
+                if (c == null || !SceneIndex.MatchesSelfOrAncestor(c.transform, rule, area)) continue;
+                var body = OwnerBody(c.transform);
+                if (body == null) continue;
+                if (!selected.TryGetValue(body.Pointer, out var entry))
+                    selected[body.Pointer] = entry = (body, new HashSet<IntPtr>());
+                entry.colliders.Add(c.Pointer);
+            }
+            foreach (var (body, colliders) in selected.Values)
+            {
+                int total = 0, outside = 0;
+                foreach (var c in body.GetComponentsInChildren<Collider>(true))
+                {
+                    // A child with its own rigidbody moves on its own and is judged by itself.
+                    if (c == null || OwnerBody(c.transform)?.Pointer != body.Pointer) continue;
+                    total++;
+                    if (!colliders.Contains(c.Pointer)) outside++;
+                }
+                if (outside == 0) TakeRemovedBody(rec, body);
+                else Core.Log.Warning($"rules: '{rec.ExpansionId}' {rule}: rigidbody '{MeshCarver.Path(body.transform)}' stays dynamic; {outside} of its {total} colliders are outside the rule");
+            }
+        }
+
+        /// <summary>The rigidbody a collider belongs to. attachedRigidbody is null for a disabled collider, so this walks up.</summary>
+        private static Rigidbody OwnerBody(Transform t)
+        {
+            for (; t != null; t = t.parent)
+            {
+                var body = t.GetComponent<Rigidbody>();
+                if (body != null) return body;
+            }
+            return null;
+        }
+
         private static void TakeRemovedBody(Record rec, Rigidbody target)
         {
-            if (target == null || rec.BodyKeys.Contains(target.Pointer)) return;
+            if (rec.BodyKeys.Contains(target.Pointer)) return;
             bool first = !BodyHolds.TryGetValue(target.Pointer, out var hold);
             if (first)
             {
@@ -331,7 +393,7 @@ namespace MapExpansions.World
             if (bodies > 0) Physics.SyncTransforms();
             Records.Remove(rec);
             string line = $"rules: revert '{b.Id}' {rule}: {back} components on again, {rec.Keys.Count - back} stay as other rules or the world keep them";
-            if (rule.Effect == ObjectEffect.Remove) line += $", {bodies} rigidbodies restored";
+            if (rec.BodyKeys.Count > 0) line += $", {bodies} rigidbodies restored";
             Core.Log.Msg(line);
             return back;
         }
@@ -351,6 +413,19 @@ namespace MapExpansions.World
             int detached = ColliderKeepAlive.Detach(off);
             Physics.SyncTransforms();
             Core.Log.Msg($"rules: apply '{b.Id}' {rule}: {off.Count} colliders off ({detached} taken out of collider groups), {cells} terrain cells changed");
+        }
+
+        /// <summary>
+        /// Applies one rule of a world state. Colliders it switches off go to <paramref name="offColliders"/>; the state
+        /// takes them out of their groups in one batch after all its rules.
+        /// </summary>
+        internal static void ApplyState(BuiltExpansion b, SceneIndex index, ObjectRule rule, HashSet<IntPtr> offColliders, SceneIndex.AreaSnapshot mainNearby)
+        {
+            if (index == null) throw new InvalidOperationException($"rules: apply '{b.Id}' {rule}: the world has no scene index");
+            var holes = new TerrainOps.HoleMask(b);
+            Apply(b, index, new[] { rule }, offColliders, holes, stateRule: true, mainNearby: mainNearby);
+            int cells = holes.Apply();
+            if (cells > 0) Core.Log.Msg($"rules: apply '{b.Id}' {rule}: {cells} terrain cells changed");
         }
 
         /// <summary>How many hiding rules are applied and how many components they hold off, for checks.</summary>
@@ -587,6 +662,7 @@ namespace MapExpansions.World
             bool lined = rule.Bands.Count > 0 || rule.CeilingMaterial != null || rule.FloorMaterial != null;
             var rec = new HollowRecord { ExpansionId = b.Id, Rule = rule };
             Hollows.Add(rec);
+            int ownedBefore = b.Owned.Count;
             foreach (var c in part.Colliders)
             {
                 if (c == null || !c.enabled || c.isTrigger || !SceneIndex.MatchesSelfOrAncestor(c.transform, rule, area)) continue;
@@ -623,6 +699,7 @@ namespace MapExpansions.World
                 }
                 Core.Log.Msg($"rules: '{b.Id}' {rule}: box '{path}' ({size.x:0.00} x {size.y:0.00} x {size.z:0.00} m) is now a shell of {pieces - before} boxes");
             }
+            rec.Assets.AddRange(b.Owned.Skip(ownedBefore));
             // The shell joins the index, so later rules and the clearing of the connections treat it like the box it replaces.
             part.Colliders.AddRange(added);
             part.Renderers.AddRange(liners);

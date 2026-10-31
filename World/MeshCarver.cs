@@ -158,9 +158,9 @@ namespace MapExpansions.World
         }
 
         /// <summary>
-        /// A readable copy of a renderer's mesh in the renderer's own space with the winding reversed, so it draws the
-        /// faces the original culls. Normals are recalculated for the reversed faces. One submesh per material of the
-        /// renderer; null when the renderer has no mesh or no triangles.
+        /// A readable copy of a renderer's mesh in the renderer's own space with the original winding and UVs, so it
+        /// draws the faces the original draws without the static batch. One submesh per material of the renderer; null
+        /// when the renderer has no mesh or no selected submesh.
         /// </summary>
         internal static Mesh BuildForward(MeshRenderer mr, string name)
         {
@@ -174,6 +174,11 @@ namespace MapExpansions.World
             return Copy(mesh, first, count, mr.transform.worldToLocalMatrix * toWorld, false, name, true);
         }
 
+        /// <summary>
+        /// A readable copy of a renderer's mesh in the renderer's own space with the winding reversed, so it draws the
+        /// faces the original culls. Normals are recalculated for the reversed faces. One submesh per material of the
+        /// renderer; null when the renderer has no mesh or no triangles.
+        /// </summary>
         internal static Mesh BuildBack(MeshRenderer mr, string name)
         {
             var mf = mr.GetComponent<MeshFilter>();

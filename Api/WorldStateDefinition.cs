@@ -8,6 +8,8 @@ namespace MapExpansions
         public string Id { get; set; }
         public List<ObjectRule> Rules { get; } = new();
         public List<CopyDefinition> Copies { get; } = new();
+        /// <summary>Main-world objects that stand elsewhere in this state, for fixtures that must keep working.</summary>
+        public List<ObjectMoveDefinition> Moves { get; } = new();
         public List<PropertyExtensionDefinition> PropertyExtensions { get; } = new();
         /// <summary>World-space volume baked by the host for the required NPC agent profiles when this state is applied.</summary>
         public Bounds? NavigationBounds { get; set; }
@@ -22,5 +24,21 @@ namespace MapExpansions
             Layer = new LayerSource { Assembly = assembly, ResourceName = resourceName };
             return this;
         }
+    }
+
+    /// <summary>
+    /// Moves one main-world object itself for as long as a state stands. Unlike a copy it keeps its interactions and
+    /// network behaviours. The object goes back when the state leaves.
+    /// </summary>
+    public sealed class ObjectMoveDefinition
+    {
+        /// <summary>Unique inside the state.</summary>
+        public string Id { get; set; }
+
+        /// <summary>Path of the object in the main world, as in <see cref="CopyDefinition.Template"/>.</summary>
+        public string Path { get; set; }
+
+        /// <summary>World-space shift of the object's pivot.</summary>
+        public Vector3 Offset { get; set; }
     }
 }

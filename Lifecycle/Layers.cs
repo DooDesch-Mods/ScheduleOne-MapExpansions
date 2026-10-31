@@ -349,6 +349,7 @@ namespace MapExpansions.Lifecycle
             if (e["visualOnly"] != null) d.VisualOnly = Bool(e, "visualOnly");
             if (e is JsonObject lightEntry && lightEntry.ContainsKey("lightsOn"))
                 d.LightsOn = e["lightsOn"] is JsonValue lightValue && lightValue.TryGetValue<bool>(out var on) ? on : null;
+            if (e["lightSwitch"] != null) d.LightSwitch = Str(e, "lightSwitch");
             if (e["file"] != null) d.Model = Str(e, "file");
             if (e["prefab"] != null) d.Prefab = Str(e, "prefab");
             if (Enum<ModelCollider>(e, "collider") is ModelCollider col) d.Collider = col;
@@ -409,7 +410,7 @@ namespace MapExpansions.Lifecycle
             var kind = Enum<BoxKind>(e, "kind");
             var box = Box(e);
             if (string.IsNullOrEmpty(id) || kind == null || box == null) return null;
-            return new BoxDefinition { Id = id, Kind = kind.Value, Box = box.Value, Material = Str(e, "material") };
+            return new BoxDefinition { Id = id, Kind = kind.Value, Box = box.Value, Material = Str(e, "material"), TileMetres = Num(e, "tile") ?? 0f };
         }
 
         // ---- writing entries
@@ -436,6 +437,7 @@ namespace MapExpansions.Lifecycle
                 if (!string.IsNullOrEmpty(d.ResourceRoot)) o["resourceRoot"] = d.ResourceRoot;
                 if (d.VisualOnly) o["visualOnly"] = true;
                 if (d.LightsOn.HasValue) o["lightsOn"] = d.LightsOn.Value;
+                if (!string.IsNullOrEmpty(d.LightSwitch)) o["lightSwitch"] = d.LightSwitch;
                 if (d.Exclude.Count > 0) o["exclude"] = new JsonArray(d.Exclude.Select(x => (JsonNode)x).ToArray());
             }
             if (string.IsNullOrEmpty(d.Onto))
@@ -477,6 +479,7 @@ namespace MapExpansions.Lifecycle
             o["min"] = Vector(b.Box.min);
             o["max"] = Vector(b.Box.max);
             if (b.Kind == BoxKind.Panel) o["material"] = b.Material;
+            if (b.Kind == BoxKind.Panel && b.TileMetres > 0f) o["tile"] = Round(b.TileMetres);
             return o;
         }
 

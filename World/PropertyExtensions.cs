@@ -13,6 +13,12 @@ namespace MapExpansions.World
     internal sealed class PropertyExtensionLease : IDisposable
     {
         internal Property Property;
+        internal string ExtensionId;
+        /// <summary>The definition this lease was built from, see <see cref="Lifecycle.WorldStateSignatures"/>.</summary>
+        internal string Signature;
+        internal IReadOnlyCollection<string> CarrierCopies = Array.Empty<string>();
+        /// <summary>Removal has started, so the lease no longer stands for its definition and a transition cannot keep it.</summary>
+        internal bool Damaged;
         internal readonly List<(Grid grid, Tile tile)> Tiles = new();
         internal readonly List<BoxCollider> Boxes = new();
         internal readonly List<(Surface surface, bool ownObject)> Surfaces = new();
@@ -35,26 +41,37 @@ namespace MapExpansions.World
         {
             CheckRemovable();
             PropertyDocks.CheckRemovalOrder(Docks);
-            foreach (var dock in Docks.AsEnumerable().Reverse()) dock.Remove();
-            Docks.Clear();
-            foreach (var (surface, ownObject) in Surfaces)
+            Damaged = true;
+            // Each part leaves its list once it is gone, so a removal that fails half way resumes on the next try.
+            for (int i = Docks.Count - 1; i >= 0; i--)
             {
-                if (surface == null) continue;
-                Il2Cpp.GUIDManager.DeregisterObject(surface.Cast<Il2CppScheduleOne.IGUIDRegisterable>());
-                if (ownObject) { surface.gameObject.SetActive(false); Object.Destroy(surface.gameObject); }
-                else Object.DestroyImmediate(surface);
+                Docks[i].Remove();
+                Docks.RemoveAt(i);
             }
-            Surfaces.Clear();
-            foreach (var (grid, tile) in Tiles)
+            for (int i = Surfaces.Count - 1; i >= 0; i--)
             {
-                if (grid == null || tile == null) continue;
-                grid._coordinateToTile.Remove(new Coordinate(tile.x, tile.y));
-                grid.DeregisterTile(tile);
-                tile.gameObject.SetActive(false);
-                Object.Destroy(tile.gameObject);
-                grid.SetGridSize();
+                var (surface, ownObject) = Surfaces[i];
+                GuidLeases.Release(surface, $"surface of '{ExtensionId}'");
+                if (surface != null)
+                {
+                    if (ownObject) { surface.gameObject.SetActive(false); Object.Destroy(surface.gameObject); }
+                    else Object.DestroyImmediate(surface);
+                }
+                Surfaces.RemoveAt(i);
             }
-            Tiles.Clear();
+            for (int i = Tiles.Count - 1; i >= 0; i--)
+            {
+                var (grid, tile) = Tiles[i];
+                if (grid != null && tile != null)
+                {
+                    grid._coordinateToTile.Remove(new Coordinate(tile.x, tile.y));
+                    grid.DeregisterTile(tile);
+                    tile.gameObject.SetActive(false);
+                    Object.Destroy(tile.gameObject);
+                    grid.SetGridSize();
+                }
+                Tiles.RemoveAt(i);
+            }
             if (Property != null && Property.propertyBoundsColliders != null)
             {
                 var keep = Property.propertyBoundsColliders.Where(x => x != null && !Boxes.Any(b => b != null && b.Pointer == x.Pointer)).ToArray();
@@ -64,6 +81,13 @@ namespace MapExpansions.World
                 if (box != null) { box.gameObject.SetActive(false); Object.Destroy(box.gameObject); }
             Boxes.Clear();
         }
+
+        /// <summary>Deregisters the lease's GUIDs when the scene is gone and its objects cannot be removed one by one.</summary>
+        internal void ReleaseGuids()
+        {
+            foreach (var (surface, _) in Surfaces) GuidLeases.Release(surface, $"surface of '{ExtensionId}'");
+            foreach (var dock in Docks) dock.ReleaseGuids();
+        }
     }
 
     internal static class PropertyExtensions
@@ -71,7 +95,7 @@ namespace MapExpansions.World
         private static void AddSurface(string expansion, string extension, Property prop, PropertySurfaceDefinition def, PropertyExtensionLease lease)
         {
             var guid = new Il2CppSystem.Guid(Places.StableGuid(expansion, "surface", extension + "/" + def.Id).ToString());
-            if (Il2Cpp.GUIDManager.IsGUIDAlreadyRegistered(guid)) throw new InvalidOperationException($"surface '{def.Id}' GUID is already registered");
+            GuidLeases.RequireFree(guid, $"surface '{def.Id}'");
             GameObject go;
             bool ownObject = string.IsNullOrEmpty(def.CopyId);
             if (ownObject)
@@ -137,13 +161,21 @@ namespace MapExpansions.World
                 if (template == null || grid._coordinateToTile == null)
                     throw new InvalidOperationException($"property '{def.PropertyCode}' grid {def.GridIndex} has no initialized tile template");
             }
-            var lease = new PropertyExtensionLease { Property = prop };
+            var lease = new PropertyExtensionLease
+            {
+                Property = prop,
+                ExtensionId = def.Id,
+                Signature = Lifecycle.WorldStateSignatures.Of(def),
+                CarrierCopies = Lifecycle.WorldStateSignatures.Carriers(def),
+            };
+            int reusedTiles = 0;
             try
             {
                 foreach (var coord in def.Tiles)
                 {
                     var key = new Coordinate(coord.X, coord.Y);
-                    if (grid.GetTile(key) != null) continue;
+                    // The grid or another extension already has this tile, and it stays when this extension goes.
+                    if (grid.GetTile(key) != null) { reusedTiles++; continue; }
                     var go = Object.Instantiate(template.gameObject, grid.transform);
                     go.name = $"MapExpansions.{expansion}.{def.Id}.Tile.{coord.X}.{coord.Y}";
                     go.transform.localPosition = new Vector3(coord.X * Grid.TileSize, 0f, coord.Y * Grid.TileSize);
@@ -180,7 +212,7 @@ namespace MapExpansions.World
                 Physics.SyncTransforms();
                 foreach (var bounds in def.Bounds)
                     if (!prop.DoBoundsContainPoint(bounds.center)) throw new InvalidOperationException("property bounds readback failed");
-                Core.Log.Msg($"property extension: '{expansion}/{def.Id}' on '{def.PropertyCode}': {lease.Tiles.Count} added tiles, {lease.Boxes.Count} bounds, {lease.Docks.Count} docks, grid GUID {grid?.GUID}");
+                Core.Log.Msg($"property extension: '{expansion}/{def.Id}' on '{def.PropertyCode}': {lease.Tiles.Count} added tiles, {reusedTiles} existing tiles reused, {lease.Boxes.Count} bounds, {lease.Docks.Count} docks, grid GUID {grid?.GUID}");
                 return lease;
             }
             catch (Exception original)

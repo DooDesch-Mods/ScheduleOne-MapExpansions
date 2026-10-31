@@ -188,7 +188,7 @@ namespace MapExpansions.Editor
                 d.Boxes.Insert(Mathf.Clamp(index, 0, d.Boxes.Count), v);
                 if (p?.Built?.Local != null)
                 {
-                    if (MainCopies.AddBox(b, d, OwnerLabel(a.Owner), p.Built.Local.transform, p.Built.Move, v) != null) Physics.SyncTransforms();
+                    if (MainCopies.AddBox(b, d, OwnerLabel(a.Owner), p.Built.Local.transform, p.Built.Move, v, p.Built.Assets) != null) Physics.SyncTransforms();
                 }
                 else Core.Log.Warning($"box ({why}): the copy of '{a}' is not built; only its definition changes");
             }
