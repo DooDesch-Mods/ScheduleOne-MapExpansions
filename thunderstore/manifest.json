@@ -2,7 +2,7 @@
   "name": "MapExpansions",
   "version_number": "1.0.0",
   "website_url": "https://github.com/DooDesch-Mods/ScheduleOne-MapExpansions",
-  "description": "Framework for new map areas and property upgrades in Schedule I. Mods like Based need it.",
+  "description": "Framework and API for new map areas and property upgrades in Schedule I. Mods like Based need it.",
   "dependencies": [
     "LavaGang-MelonLoader-0.7.3"
   ],

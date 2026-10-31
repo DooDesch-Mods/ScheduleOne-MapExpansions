@@ -10,7 +10,7 @@
 
 ![MapExpansions](https://raw.githubusercontent.com/DooDesch-Mods/ScheduleOne-MapExpansions/main/docs/img/header.jpg)
 
-> The framework behind new map areas and property upgrades. Another mod brings the content, MapExpansions builds it into the world.
+> Framework and API for mods that add map areas and property upgrades. Another mod brings the content, MapExpansions builds it into the world.
 
 ## For players
 
