@@ -1,4 +1,5 @@
 using Il2CppInterop.Runtime;
+using MapExpansions.Lifecycle;
 using Unity.AI.Navigation;
 using UnityEngine;
 using UnityEngine.AI;
@@ -16,6 +17,77 @@ namespace MapExpansions.Navigation
     {
         /// <summary>Metres the baked volume reaches past the property's walls, docks and idle points.</summary>
         private const float Margin = 4f;
+
+        internal sealed class StateBake : IDisposable
+        {
+            internal readonly List<NavMeshSurface> Surfaces = new();
+            internal readonly List<Source.NavLinks.Lease> Links = new();
+            public void Dispose()
+            {
+                foreach (var link in Links) link.Dispose();
+                Links.Clear();
+                foreach (var surface in Surfaces)
+                    if (surface != null) { surface.RemoveData(); surface.gameObject.SetActive(false); Object.Destroy(surface.gameObject); }
+                Surfaces.Clear();
+            }
+        }
+
+        internal static StateBake BakeState(string id, Bounds bounds, IReadOnlyList<Vector3> probes, Transform parent, IReadOnlyList<string> requiredAgents)
+        {
+            var result = new StateBake();
+            try
+            {
+                var registered = NpcNavigation.AgentTypes().Select(a => new NavigationAgentSelection.Agent(a, NpcNavigation.AgentName(a))).ToArray();
+                var agents = NavigationAgentSelection.Resolve(requiredAgents, registered);
+                foreach (int agent in agents)
+                {
+                    var go = new GameObject($"MapExpansions.{id}.StateNav.{agent}");
+                    go.transform.SetParent(parent, true);
+                    go.transform.SetPositionAndRotation(bounds.center, Quaternion.identity);
+                    go.AddComponent(Il2CppType.Of<NavMeshSurface>());
+                    var surface = go.GetComponent<NavMeshSurface>();
+                    result.Surfaces.Add(surface);
+                    surface.agentTypeID = agent;
+                    surface.collectObjects = CollectObjects.Volume;
+                    surface.useGeometry = NavMeshCollectGeometry.PhysicsColliders;
+                    surface.layerMask = Mask;
+                    surface.center = Vector3.zero;
+                    surface.size = bounds.size;
+                    var settings = NavMesh.GetSettingsByID(agent);
+                    Core.Log.Msg($"state nav: '{id}' baking required agent '{NpcNavigation.AgentName(agent)}' ({agent}), radius {settings.agentRadius:0.###}, height {settings.agentHeight:0.###}, volume {bounds}");
+                    surface.BuildNavMesh();
+                    if (surface.navMeshData == null) throw new InvalidOperationException($"state '{id}' baked no navigation for agent {agent}");
+                    foreach (var point in probes)
+                        if (!NpcNavigation.Covered(point, agent)) throw new InvalidOperationException($"state '{id}' point {point} has no navigation for required agent '{NpcNavigation.AgentName(agent)}' ({agent}, radius {settings.agentRadius:0.###}, height {settings.agentHeight:0.###})");
+                }
+                // The first two authored probes straddle the doorway. A short seam joins separate NavMesh data.
+                if (probes.Count >= 2)
+                {
+                    foreach (int agent in agents)
+                    {
+                        var path = new NavMeshPath();
+                        var filter = new NavMeshQueryFilter { agentTypeID = agent, areaMask = NavMesh.AllAreas };
+                        if (!NavMesh.CalculatePath(probes[0], probes[1], filter, path) || path.status != NavMeshPathStatus.PathComplete)
+                        {
+                            if (Vector3.Distance(probes[0], probes[1]) > 2.5f)
+                                throw new InvalidOperationException($"state '{id}' doorway probes are over 2.5 m apart; no safe seam");
+                            result.Links.Add(Source.NavLinks.AddOwned(probes[0], probes[1], 0.7f, new[] { agent }));
+                        }
+                        for (int i = 1; i < probes.Count; i++)
+                            if (!NavMesh.CalculatePath(probes[0], probes[i], filter, path) || path.status != NavMeshPathStatus.PathComplete)
+                                throw new InvalidOperationException($"state '{id}' has no complete path to probe {i} for agent {agent}");
+                    }
+                }
+                Core.Log.Msg($"state nav: '{id}' baked {agents.Length} agent types; {probes.Count} probes connected");
+                return result;
+            }
+            catch (Exception original)
+            {
+                try { result.Dispose(); }
+                catch (Exception cleanup) { throw new AggregateException("state navigation and cleanup failed", original, cleanup); }
+                throw;
+            }
+        }
 
         private static readonly int Mask = LayerMask.GetMask("Default", "Terrain");
 

@@ -155,7 +155,7 @@ namespace MapExpansions.Lifecycle
             return root;
         }
 
-        private static void ApplyNode(ExpansionDefinition def, JsonNode root, State state, string from)
+        private static void ApplyNode(ExpansionDefinition def, JsonNode root, State state, string from, bool strict = false)
         {
             var notes = new List<string>();
 
@@ -237,6 +237,7 @@ namespace MapExpansions.Lifecycle
 
             ApplyPoints(def, root, state, notes);
 
+            if (strict && notes.Count > 0) throw new InvalidOperationException(string.Join("; ", notes));
             foreach (var n in notes) Core.Log.Warning($"layer: '{def.Id}' {n}; left out");
             Core.Log.Msg($"layer: '{def.Id}' layer from {from}: {state.Copies.Count} copies ({state.AddedCopies.Count} new), {state.Rules.Count} rules, " +
                          $"{state.Boxes.Count} boxes, {state.Points.Count} points laid over the code; " +
@@ -342,6 +343,12 @@ namespace MapExpansions.Lifecycle
             if (Vec(e["ontoRotation"]) is Vector3 rot) d.OntoRotation = rot;
             if (Num(e, "scale") is float scale) d.Scale = scale;
             if (e["ownMesh"] != null) d.OwnMesh = Bool(e, "ownMesh");
+            if (e["independentMesh"] != null) d.IndependentMesh = Bool(e, "independentMesh");
+            if (e["resource"] != null) d.Resource = Str(e, "resource");
+            if (e["resourceRoot"] != null) d.ResourceRoot = Str(e, "resourceRoot");
+            if (e["visualOnly"] != null) d.VisualOnly = Bool(e, "visualOnly");
+            if (e is JsonObject lightEntry && lightEntry.ContainsKey("lightsOn"))
+                d.LightsOn = e["lightsOn"] is JsonValue lightValue && lightValue.TryGetValue<bool>(out var on) ? on : null;
             if (e["file"] != null) d.Model = Str(e, "file");
             if (e["prefab"] != null) d.Prefab = Str(e, "prefab");
             if (Enum<ModelCollider>(e, "collider") is ModelCollider col) d.Collider = col;
@@ -360,7 +367,7 @@ namespace MapExpansions.Lifecycle
         {
             var d = new CopyDefinition { Id = Str(e, "id"), Added = true };
             ReadCopy(e, d);
-            bool made = !string.IsNullOrEmpty(d.Template) || !string.IsNullOrEmpty(d.Model) || !string.IsNullOrEmpty(d.Prefab);
+            bool made = !string.IsNullOrEmpty(d.Template) || !string.IsNullOrEmpty(d.Model) || !string.IsNullOrEmpty(d.Prefab) || !string.IsNullOrEmpty(d.Resource);
             return string.IsNullOrEmpty(d.Id) || !made ? null : d;
         }
 
@@ -424,6 +431,11 @@ namespace MapExpansions.Lifecycle
                 if (!string.IsNullOrEmpty(d.Frame)) o["frame"] = d.Frame;
                 if (!string.IsNullOrEmpty(d.Onto)) o["onto"] = d.Onto;
                 if (!d.OwnMesh) o["ownMesh"] = false;
+                if (d.IndependentMesh) o["independentMesh"] = true;
+                if (!string.IsNullOrEmpty(d.Resource)) o["resource"] = d.Resource;
+                if (!string.IsNullOrEmpty(d.ResourceRoot)) o["resourceRoot"] = d.ResourceRoot;
+                if (d.VisualOnly) o["visualOnly"] = true;
+                if (d.LightsOn.HasValue) o["lightsOn"] = d.LightsOn.Value;
                 if (d.Exclude.Count > 0) o["exclude"] = new JsonArray(d.Exclude.Select(x => (JsonNode)x).ToArray());
             }
             if (string.IsNullOrEmpty(d.Onto))

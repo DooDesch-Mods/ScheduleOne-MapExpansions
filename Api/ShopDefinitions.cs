@@ -20,6 +20,16 @@ namespace MapExpansions
         /// </summary>
         public string Template { get; set; }
 
+        /// <summary>A vanilla Resources GameObject path, used with VisualOnly for static decoration.</summary>
+        public string Resource { get; set; }
+        /// <summary>Optional visual child path below the loaded Resources prefab.</summary>
+        public string ResourceRoot { get; set; }
+        /// <summary>Strips scripts, network components, audio and physics bodies from the inactive copy using the source whitelist.</summary>
+        public bool VisualOnly { get; set; }
+
+        /// <summary>Overrides the native lights after stripping visual-only copies; null keeps their source state.</summary>
+        public bool? LightsOn { get; set; }
+
         /// <summary>The main-world object whose place <see cref="At"/> gives. Empty means the template itself.</summary>
         public string Frame { get; set; }
 
@@ -48,6 +58,9 @@ namespace MapExpansions
         /// contents are fitted into the expansion's own shell.
         /// </summary>
         public bool OwnMesh { get; set; } = true;
+
+        /// <summary>Extracts each batched renderer's selected submeshes, so repeated copies draw independently.</summary>
+        public bool IndependentMesh { get; set; }
 
         /// <summary>Paths below the template that are left out of the copy, such as a door to a room the expansion lacks.</summary>
         public List<string> Exclude { get; private set; } = new();
@@ -94,7 +107,7 @@ namespace MapExpansions
         internal bool Added { get; set; }
 
         /// <summary>What the copy is made from, for log lines: a model, a game prefab or a template.</summary>
-        internal string Source => !string.IsNullOrEmpty(Model) ? $"model '{Model}'" : !string.IsNullOrEmpty(Prefab) ? $"prefab '{Prefab}'" : $"'{Template}'";
+        internal string Source => !string.IsNullOrEmpty(Resource) ? $"resource '{Resource}'" : !string.IsNullOrEmpty(Model) ? $"model '{Model}'" : !string.IsNullOrEmpty(Prefab) ? $"prefab '{Prefab}'" : $"'{Template}'";
 
         public CopyDefinition() { }
 

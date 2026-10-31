@@ -169,7 +169,7 @@ namespace MapExpansions.World
         /// The patch renderer under the expansion root, drawn where <paramref name="source"/> is drawn: in the same
         /// LOD level of its LOD group, if it has one. Null when no piece is outside the boxes.
         /// </summary>
-        public MeshRenderer Build(MeshRenderer source, Material[] materials, BuiltExpansion owner, string name)
+        public MeshRenderer Build(MeshRenderer source, Material[] materials, BuiltExpansion owner, string name, Transform parent = null)
         {
             if (Pieces == 0) return null;
             var mesh = owner.Own(new Mesh { name = name });
@@ -191,7 +191,7 @@ namespace MapExpansions.World
 
             // Made at the world origin, so the world-space vertices stay where they are under the root.
             var go = new GameObject(name) { layer = source.gameObject.layer };
-            go.transform.SetParent(owner.Root.transform, true);
+            go.transform.SetParent(parent ?? owner.Root.transform, true);
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var mr = go.AddComponent<MeshRenderer>();
             mr.sharedMaterials = new Il2CppReferenceArray<Material>(materials);

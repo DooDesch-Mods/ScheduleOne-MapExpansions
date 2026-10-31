@@ -19,6 +19,10 @@
 
   <ItemGroup>
     <Compile Include="..\Lifecycle\LayerMerge.cs" Link="modsrc\Lifecycle\LayerMerge.cs" />
+    <Compile Include="..\Lifecycle\BoxDifference.cs" Link="modsrc\Lifecycle\BoxDifference.cs" />
+    <Compile Include="..\Lifecycle\PeerWorldStateAck.cs" Link="modsrc\Lifecycle\PeerWorldStateAck.cs" />
+    <Compile Include="..\Lifecycle\NavigationAgentSelection.cs" Link="modsrc\Lifecycle\NavigationAgentSelection.cs" />
+    <Compile Include="..\Lifecycle\DockIndexPolicy.cs" Link="modsrc\Lifecycle\DockIndexPolicy.cs" />
   </ItemGroup>
 
 </Project>

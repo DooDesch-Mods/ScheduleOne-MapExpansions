@@ -24,7 +24,7 @@ namespace MapExpansions.World
             int batched = 0, own = 0;
             foreach (var mr in copy.GetComponentsInChildren<MeshRenderer>(true))
             {
-                if (!mr.isPartOfStaticBatch) continue;
+                if (!mr.enabled || !mr.isPartOfStaticBatch) continue;
                 var orig = mr.staticBatchRootTransform;
                 if (orig != null && orig.IsChildOf(copy))
                 {

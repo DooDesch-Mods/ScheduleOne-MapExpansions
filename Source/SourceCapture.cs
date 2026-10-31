@@ -411,7 +411,9 @@ namespace MapExpansions.Source
             if (o != null) o.hideFlags |= HideFlags.DontUnloadUnusedAsset;
         }
 
-        private static void Strip(GameObject clone)
+        internal static void StripVisual(GameObject clone) => Strip(clone, true);
+
+        private static void Strip(GameObject clone, bool strict = false)
         {
             var removed = new Dictionary<string, int>(StringComparer.Ordinal);
             int remaining = 0;
@@ -441,6 +443,7 @@ namespace MapExpansions.Source
             Core.Log.Msg($"capture: stripped {total} components of {removed.Count} types; {remaining} could not be removed");
             foreach (var kv in removed.OrderByDescending(k => k.Value).Take(40))
                 Core.Log.Msg($"capture:   removed {kv.Value,6} x {kv.Key}");
+            if (strict && remaining > 0) throw new InvalidOperationException($"visual copy has {remaining} components outside the source whitelist");
             if (remaining > 0)
                 Core.Log.Warning($"capture: {remaining} non-whitelisted components remain on the clone");
         }

@@ -165,6 +165,20 @@ namespace MapExpansions.World
             if (built == null) return null;
             if (built.Local != null) Obstacles.Apply(built, $"'{b.Id}' {owner} '{d.Id}'");
             var placed = new Placed { Expansion = b, LayerOwner = layerOwner, Built = built };
+            if (layerOwner.StartsWith("state:", StringComparison.Ordinal))
+            {
+                foreach (var box in d.Boxes)
+                {
+                    var child = built.Local?.transform.Find(BoxName(box));
+                    bool present = child != null && (box.Kind == BoxKind.Panel
+                        ? child.GetComponent<MeshRenderer>()?.sharedMaterial != null
+                        : child.GetComponent<BoxCollider>() != null);
+                    if (present) continue;
+                    Core.Log.Error($"copies: apply '{b.Id}' {owner} '{d.Id}' required {box.Kind} '{box.Id}' was not built; state copy rejected, see original box error above");
+                    Revert(placed);
+                    return null;
+                }
+            }
             All.Add(placed);
             if (built.Parts.Count > 0)
             {
@@ -202,6 +216,7 @@ namespace MapExpansions.World
             if (p.Built.Local != null)
             {
                 released = StaticBatches.Release(p.Built.Local.transform);
+                p.Built.Local.SetActive(false);
                 Object.Destroy(p.Built.Local);
             }
             p.Built.Local = null;
@@ -212,23 +227,26 @@ namespace MapExpansions.World
         private static Built BuildOne(BuiltExpansion b, CopyDefinition d, string owner, Dictionary<string, Transform> found,
             HashSet<int> zoneLights, Transform templates, Transform holder)
         {
-            bool model = !string.IsNullOrEmpty(d.Model), prefab = !string.IsNullOrEmpty(d.Prefab);
-            if (string.IsNullOrEmpty(d.Id) || (!model && !prefab && string.IsNullOrEmpty(d.Template)))
+            bool model = !string.IsNullOrEmpty(d.Model), prefab = !string.IsNullOrEmpty(d.Prefab), resource = !string.IsNullOrEmpty(d.Resource);
+            if (string.IsNullOrEmpty(d.Id) || (!model && !prefab && !resource && string.IsNullOrEmpty(d.Template)))
             {
                 Core.Log.Error($"copies: '{b.Id}' {owner} has a copy without id or template ('{d.Id}', '{d.Template}'); it is not built");
                 return null;
             }
             if (prefab) return BuildPrefab(b, d, owner);
-            bool fromMain = !model && d.TemplateSide == WorldSide.Main;
+            if (resource && !d.VisualOnly) throw new InvalidOperationException("resource copies require VisualOnly=true");
+            bool fromMain = !model && !resource && d.TemplateSide == WorldSide.Main;
             string world = model ? "the expansion's models" : fromMain ? "the main world" : "the expansion";
-            var src = model ? Models.Template(b, d.Model, d.Collider, templates)
+            var resourcePrefab = resource ? Resources.Load<GameObject>(d.Resource) : null;
+            var resourceTransform = resourcePrefab == null ? null : string.IsNullOrEmpty(d.ResourceRoot) ? resourcePrefab.transform : resourcePrefab.transform.Find(d.ResourceRoot);
+            var src = resource ? resourceTransform : model ? Models.Template(b, d.Model, d.Collider, templates)
                 : fromMain ? Resolve(found, d.Template) : FindInExpansion(b, d.Template);
             if (src == null)
             {
                 Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': {d.Source} is not in {world}; it is not built");
                 return null;
             }
-            var frame = string.IsNullOrEmpty(d.Frame) || model ? src : fromMain ? Resolve(found, d.Frame) : FindInExpansion(b, d.Frame);
+            var frame = string.IsNullOrEmpty(d.Frame) || model ? src : resource ? src.Find(d.Frame) : fromMain ? Resolve(found, d.Frame) : FindInExpansion(b, d.Frame);
             if (frame == null)
             {
                 Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': frame '{d.Frame}' is not in {world}; it is not built");
@@ -253,18 +271,32 @@ namespace MapExpansions.World
             // Built inactive, so nothing of the copy wakes before its networked parts are out and it stands in place.
             var go = Object.Instantiate(src.gameObject, templates);
             go.name = src.name;
+            try
+            {
+                if (d.VisualOnly) Source.SourceCapture.StripVisual(go);
+                if (d.LightsOn.HasValue)
+                {
+                    var lights = go.GetComponentsInChildren<Light>(true);
+                    if (d.LightsOn.Value && lights.Length == 0)
+                        throw new InvalidOperationException($"copy '{d.Id}' requests lighting but contains no native Light");
+                    foreach (var light in lights) light.enabled = d.LightsOn.Value;
+                    Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {lights.Length} native lights {(d.LightsOn.Value ? "on" : "off")}");
+                }
+                if (d.IndependentMesh) IndependentCopies.Extract(b, src, go, d.OwnMesh);
+            }
+            catch { Object.DestroyImmediate(go); throw; }
             go.transform.SetPositionAndRotation(pose.GetColumn(3), pose.rotation);
             go.transform.localScale = pose.lossyScale;
             var built = new Built { Def = d, Move = move };
             // A fresh copy has the original's hierarchy, so its lamps pair up with the original's in order.
             var srcLights = src.GetComponentsInChildren<ToggleableLight>(true);
             var copyLights = go.GetComponentsInChildren<ToggleableLight>(true);
-            if (srcLights.Length == copyLights.Length)
+            if (!d.VisualOnly && srcLights.Length == copyLights.Length)
             {
                 for (int i = 0; i < srcLights.Length; i++)
                     if (srcLights[i] != null && zoneLights.Contains(srcLights[i].GetInstanceID())) built.ZoneLights.Add(copyLights[i]);
             }
-            else
+            else if (!d.VisualOnly)
                 Core.Log.Error($"copies: '{b.Id}' {owner} '{d.Id}': {copyLights.Length} lamps in the copy against {srcLights.Length} in {d.Source}; " +
                                "no lamp of it follows opening hours");
             Trim(b, d, owner, go);

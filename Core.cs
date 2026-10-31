@@ -31,7 +31,10 @@ namespace MapExpansions
         public override void OnSceneWasInitialized(int buildIndex, string sceneName)
         {
             if (sceneName == "Menu")
+            {
+                WorldStates.ResetSelections();
                 SourceCapture.OnMenuReady();
+            }
             else if (sceneName == BuildPipeline.MainScene)
                 BuildPipeline.OnMainInitialized();
         }

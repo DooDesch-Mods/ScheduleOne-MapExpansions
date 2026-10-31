@@ -135,6 +135,7 @@ namespace MapExpansions.Lifecycle
                 foreach (var id in c.Boxes.GroupBy(x => x.Id).Where(g => g.Count() > 1).Select(g => g.Key))
                     problems.Add($"copy '{c.Id}' has two boxes with the id '{id}'");
 
+            problems.AddRange(WorldStates.Validate(def));
             if (problems.Count > 0)
             {
                 foreach (var p in problems) Core.Log.Error($"validate: '{def.Id}': {p}");

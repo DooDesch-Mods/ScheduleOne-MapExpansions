@@ -107,6 +107,7 @@ namespace MapExpansions.World
                     foreach (var c in part.Colliders)
                     {
                         if (c == null || !SceneIndex.MatchesSelfOrAncestor(c.transform, rule, area)) continue;
+                        if (rule.Effect == ObjectEffect.Remove) TakeRemovedBody(rec, c.attachedRigidbody);
                         if (!Take(rec, c, c.enabled, v => c.enabled = v)) continue;
                         offColliders.Add(c.Pointer);
                         colliders++;
@@ -124,6 +125,7 @@ namespace MapExpansions.World
                     terrains++;
                 }
                 string line = $"rules: '{b.Id}' {rule}: {renderers} renderers, {colliders} colliders, {terrains} terrains, {lights} lamps";
+                if (rule.Effect == ObjectEffect.Remove) line += $", {rec.BodyKeys.Count} rigidbodies held";
                 if (renderers + colliders + terrains == 0) Core.Log.Warning(line + "; the rule matched nothing");
                 else Core.Log.Msg(line);
             }
@@ -139,14 +141,55 @@ namespace MapExpansions.World
             public bool Ours;
         }
 
+        /// <summary>A removed body's motion is retained until the last Remove rule releases it.</summary>
+        private sealed class BodyHold
+        {
+            public Rigidbody Target;
+            public int Count;
+            public bool IsKinematic, DetectCollisions, Sleeping;
+            public Vector3 Position, Velocity, AngularVelocity;
+            public Quaternion Rotation;
+
+            public void Freeze()
+            {
+                if (!Target.isKinematic)
+                {
+                    Target.velocity = Vector3.zero;
+                    Target.angularVelocity = Vector3.zero;
+                }
+                Target.isKinematic = true;
+                Target.detectCollisions = false;
+                if (!Target.isKinematic || Target.detectCollisions)
+                    throw new InvalidOperationException($"Remove could not freeze rigidbody '{MeshCarver.Path(Target.transform)}'");
+            }
+
+            public void RestoreOriginalMotion()
+            {
+                Target.position = Position;
+                Target.rotation = Rotation;
+                Target.detectCollisions = DetectCollisions;
+                Target.isKinematic = IsKinematic;
+                // Unity does not accept velocity writes on kinematic bodies.
+                if (!IsKinematic)
+                {
+                    Target.velocity = Velocity;
+                    Target.angularVelocity = AngularVelocity;
+                    if (Sleeping) Target.Sleep();
+                    else Target.WakeUp();
+                }
+            }
+        }
+
         /// <summary>What one hiding rule holds off, so the rule can be taken back alone.</summary>
         private sealed class Record
         {
             public string ExpansionId;
             public ObjectRule Rule;
             public readonly List<IntPtr> Keys = new();
+            public readonly HashSet<IntPtr> BodyKeys = new();
         }
 
+        private static readonly Dictionary<IntPtr, BodyHold> BodyHolds = new();
         private static readonly Dictionary<IntPtr, Hold> Holds = new();
         private static readonly List<Record> Records = new();
 
@@ -212,6 +255,40 @@ namespace MapExpansions.World
             return true;
         }
 
+        private static void TakeRemovedBody(Record rec, Rigidbody target)
+        {
+            if (target == null || rec.BodyKeys.Contains(target.Pointer)) return;
+            bool first = !BodyHolds.TryGetValue(target.Pointer, out var hold);
+            if (first)
+            {
+                hold = new BodyHold
+                {
+                    Target = target,
+                    IsKinematic = target.isKinematic,
+                    DetectCollisions = target.detectCollisions,
+                    Sleeping = target.IsSleeping(),
+                    Position = target.position,
+                    Rotation = target.rotation,
+                    Velocity = target.velocity,
+                    AngularVelocity = target.angularVelocity,
+                };
+                BodyHolds.Add(target.Pointer, hold);
+            }
+            hold.Count++;
+            rec.BodyKeys.Add(target.Pointer);
+            // Freeze before any selected collider is disabled, including bodies shared by several colliders.
+            hold.Freeze();
+            if (first)
+                Core.Log.Msg($"rules: '{rec.ExpansionId}' {rec.Rule}: first Remove hold for rigidbody '{MeshCarver.Path(target.transform)}': " +
+                    $"original position={hold.Position.ToString("F3")}, rotation={hold.Rotation.ToString("F3")}, isKinematic={hold.IsKinematic}, " +
+                    $"detectCollisions={hold.DetectCollisions}, velocity={hold.Velocity.ToString("F3")}, angularVelocity={hold.AngularVelocity.ToString("F3")}, sleeping={hold.Sleeping}; " +
+                    $"held {BodyMotion(target)}");
+        }
+
+        private static string BodyMotion(Rigidbody target) =>
+            $"position={target.position.ToString("F3")}, rotation={target.rotation.ToString("F3")}, isKinematic={target.isKinematic}, " +
+            $"detectCollisions={target.detectCollisions}, velocity={target.velocity.ToString("F3")}, angularVelocity={target.angularVelocity.ToString("F3")}, sleeping={target.IsSleeping()}";
+
         /// <summary>
         /// Takes back one hiding rule: what no other rule still holds off and a rule switched off comes back on.
         /// Returns the components switched on, or -1 when the rule cannot be taken back alone.
@@ -236,8 +313,26 @@ namespace MapExpansions.World
                 h.Set(true);
                 back++;
             }
+            int bodies = 0;
+            // Colliders are restored first; a released dynamic body must have its original support again.
+            foreach (var key in rec.BodyKeys)
+            {
+                if (!BodyHolds.TryGetValue(key, out var hold))
+                    throw new InvalidOperationException($"rules: revert '{b.Id}' {rule}: rigidbody hold {key} is missing");
+                if (--hold.Count > 0) continue;
+                if (hold.Target != null)
+                {
+                    hold.RestoreOriginalMotion();
+                    Core.Log.Msg($"rules: revert '{b.Id}' {rule}: last Remove hold released for rigidbody '{MeshCarver.Path(hold.Target.transform)}': {BodyMotion(hold.Target)}");
+                    bodies++;
+                }
+                BodyHolds.Remove(key);
+            }
+            if (bodies > 0) Physics.SyncTransforms();
             Records.Remove(rec);
-            Core.Log.Msg($"rules: revert '{b.Id}' {rule}: {back} components on again, {rec.Keys.Count - back} stay as other rules or the world keep them");
+            string line = $"rules: revert '{b.Id}' {rule}: {back} components on again, {rec.Keys.Count - back} stay as other rules or the world keep them";
+            if (rule.Effect == ObjectEffect.Remove) line += $", {bodies} rigidbodies restored";
+            Core.Log.Msg(line);
             return back;
         }
 
@@ -262,8 +357,13 @@ namespace MapExpansions.World
         internal static (int rules, int held) Counts(string expansionId) =>
             (Records.Count(r => r.ExpansionId == expansionId), Holds.Count);
 
+        internal static int AppliedTargets(string expansionId, ObjectRule rule) =>
+            Records.Where(r => r.ExpansionId == expansionId && ReferenceEquals(r.Rule, rule)).Sum(r => r.Keys.Count) +
+            Hollows.Where(r => r.ExpansionId == expansionId && ReferenceEquals(r.Rule, rule)).Sum(r => r.Boxes.Count + r.Shells.Count);
+
         internal static void Clear()
         {
+            BodyHolds.Clear();
             Holds.Clear();
             Records.Clear();
             Hollows.Clear();
