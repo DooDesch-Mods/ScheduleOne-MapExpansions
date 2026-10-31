@@ -45,7 +45,7 @@ namespace MapExpansions.Navigation
         private readonly Dictionary<BuiltConnection, Vector3> _exitPoints = new();
         private int _areaGraph = -1, _corridorGraph = -1, _roadGraph = -1;
         private object _watch;
-        private bool _alive = true;
+        private bool _alive = true, _scanned;
 
         public VehicleNavigation(string id) => _id = id;
 
@@ -176,10 +176,20 @@ namespace MapExpansions.Navigation
                 if (approach == _roadGraph) BridgeGaps(a, conn);
             }
             ApplyJoins(a, "joined");
+            _scanned = true;
+        }
 
+        /// <summary>Lets the vehicles drive on the scanned graphs. No car routes into the expansion before this call.</summary>
+        public void Open(BuiltExpansion b)
+        {
+            if (!_scanned)
+            {
+                Core.Log.Warning($"vehicle nav: '{b.Id}' has no scanned graphs to open; vehicles cannot drive into the expansion");
+                return;
+            }
             ExtraMask = (_areaGraph >= 0 ? 1 << _areaGraph : 0) | (_corridorGraph >= 0 ? 1 << _corridorGraph : 0) | (_roadGraph >= 0 ? 1 << _roadGraph : 0);
             int seekers = UpdateSeekers();
-            AddRoadNodes(a, b);
+            AddRoadNodes(Astar, b);
             Core.Log.Msg($"vehicle nav: '{b.Id}' graph mask {ExtraMask} added to '{GeneralGraphName}' lookups, {seekers} vehicle seekers updated");
 
             foreach (var conn in b.Connections) CheckPath(conn);
