@@ -292,6 +292,19 @@ namespace MapExpansions.Navigation
             else SwitchOffPassable(bounds, g.mask, what, off);
             var twinNames = new List<string>();
             var twins = readable ? AddReadableTwins(bounds, g.mask, what, twinNames) : new List<GameObject>();
+            // A mesh scan writes one warning per statically batched mesh, about 34000 over the main world. Each runs a
+            // stack trace and every handler of Application.logMessageReceived, and the game adds handlers with each
+            // scene load without removing them, so the scan would slow down with every load of the same game.
+            var logger = UnityEngine.Debug.unityLogger.TryCast<Logger>();
+            var logFilter = logger?.filterLogType ?? LogType.Log;
+            bool filter = logger != null && g.rasterizeMeshes;
+            if (logger == null)
+                Core.Log.Warning($"vehicle nav: the game's logger is no Logger; the {what} scan writes its warnings");
+            else if (filter)
+            {
+                logger.filterLogType = LogType.Error;
+                Core.Log.Msg($"vehicle nav: game log warnings are off during the {what} scan; errors still show");
+            }
             try
             {
                 a.Scan(g);
@@ -302,6 +315,7 @@ namespace MapExpansions.Navigation
             }
             finally
             {
+                if (filter) logger.filterLogType = logFilter;
                 foreach (var c in off)
                     if (c != null) c.enabled = true;
                 foreach (var t in twins)
