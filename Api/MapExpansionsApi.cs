@@ -191,6 +191,13 @@ namespace MapExpansions
         }
 
         /// <summary>Id of the expansion whose region contains the world point, or null.</summary>
+        /// <summary>
+        /// A readable copy of a renderer's mesh in the renderer's own space, for a copy of a map object. Static batching
+        /// shares one mesh between the object and its clones, so a clone flickers between both places; a renderer with this
+        /// mesh draws on its own. One submesh per material; null when the renderer has no mesh or no submesh.
+        /// </summary>
+        public static Mesh ExtractRendererMesh(MeshRenderer renderer, string name) => World.MeshCarver.BuildForward(renderer, name);
+
         public static string ExpansionAt(Vector3 world) => Regions.RegionRegistry.ExpansionAt(world);
 
         internal static void RaiseReady(string expansionId)
