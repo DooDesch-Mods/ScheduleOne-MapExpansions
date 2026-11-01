@@ -59,11 +59,15 @@ namespace MapExpansions.World
                 }
                 Surfaces.RemoveAt(i);
             }
+            Grid tilesGrid = null;
+            var removedTiles = new List<(int x, int y)>();
             for (int i = Tiles.Count - 1; i >= 0; i--)
             {
                 var (grid, tile) = Tiles[i];
                 if (grid != null && tile != null)
                 {
+                    tilesGrid = grid;
+                    removedTiles.Add((tile.x, tile.y));
                     grid._coordinateToTile.Remove(new Coordinate(tile.x, tile.y));
                     grid.DeregisterTile(tile);
                     tile.gameObject.SetActive(false);
@@ -72,6 +76,7 @@ namespace MapExpansions.World
                 }
                 Tiles.RemoveAt(i);
             }
+            if (Property != null && tilesGrid != null) HeatmapTiles.Set(Property, tilesGrid, removedTiles, false);
             if (Property != null && Property.propertyBoundsColliders != null)
             {
                 var keep = Property.propertyBoundsColliders.Where(x => x != null && !Boxes.Any(b => b != null && b.Pointer == x.Pointer)).ToArray();
@@ -192,6 +197,7 @@ namespace MapExpansions.World
                         throw new InvalidOperationException($"tile {coord.X},{coord.Y} registration readback failed");
                 }
                 grid?.SetGridSize();
+                if (grid != null) HeatmapTiles.Set(prop, grid, lease.Tiles.Select(t => (t.tile.x, t.tile.y)).ToList(), true);
                 foreach (var bounds in def.Bounds)
                 {
                     var go = new GameObject($"MapExpansions.{expansion}.{def.Id}.Bounds");
