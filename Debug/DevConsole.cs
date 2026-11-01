@@ -42,6 +42,7 @@ namespace MapExpansions.Debug
     /// mxhide filter [on]              stop (or resume) drawing renderers and terrains whose path contains filter
     /// mxterrain filter [pixelError]   render settings of terrains whose name contains filter, optionally a new pixel error
     /// mxproperty code                 ownership, grids, loading docks, idle points and employees of a property
+    /// mxheat code [on]                compare a property's tiles with its heatmap mask, and show or hide the temperature view
     /// mxagents                        NavMesh agents that are enabled but off the NavMesh
     /// mxarrest                        arrest the local player where they stand, as the police would
     /// mxshop [id|close]               list the shops, pick a shop's seller choice, or close every shop screen
@@ -150,6 +151,7 @@ namespace MapExpansions.Debug
                     case "mxedges" when parts.Length > 7: Edges(V(parts, 1), V(parts, 4), string.Join(" ", parts, 7, parts.Length - 7)); break;
                     case "mxline" when parts.Length > 4: Line(F(parts[1]), F(parts[2]), F(parts[3]), F(parts[4]), parts.Length > 5 ? F(parts[5]) : 4f, parts.Length > 6 ? F(parts[6]) : 80f); break;
                     case "mxproperty" when parts.Length > 1: PropertyInfo(parts[1]); break;
+                    case "mxheat" when parts.Length > 1: Heat(parts[1], parts.Length > 2 && parts[2] == "on"); break;
                     case "mxagents": Agents(); break;
                     case "mxarrest": Arrest(); break;
                     case "mxshop": World.Shops.Choose(parts.Length > 1 ? parts[1] : ""); break;
@@ -218,6 +220,26 @@ namespace MapExpansions.Debug
                     Core.Log.Msg($"[dev] mxproperty: idle point {i} at {p.EmployeeIdlePoints[i].position}");
             foreach (var e in p.Employees)
                 Core.Log.Msg($"[dev] mxproperty: employee '{e.ID}' at {e.transform.position}");
+        }
+
+        /// <summary>Shows or hides a property's temperature view and compares each grid's tiles with the heatmap's mask.</summary>
+        private static void Heat(string code, bool show)
+        {
+            var manager = Il2CppScheduleOne.DevUtilities.Singleton<Il2CppScheduleOne.Heatmap.HeatmapManager>.Instance;
+            if (manager == null || manager._propertyGridMasks == null || !manager._propertyGridMasks.ContainsKey(code))
+            {
+                Core.Log.Warning($"[dev] mxheat: the heatmap has no property '{code}'");
+                return;
+            }
+            var data = manager._propertyGridMasks[code];
+            for (int i = 0; i < data.Property.Grids.Count && i < 16; i++)
+            {
+                int marked = 0;
+                for (int n = 16384 * i; n < 16384 * (i + 1); n++) marked += data.MaskData[n];
+                Core.Log.Msg($"[dev] mxheat: grid {i} of '{code}' has {data.Property.Grids[i].Tiles.Count} tiles, the mask marks {marked}");
+            }
+            manager.SetHeatmapActive(code, show);
+            Core.Log.Msg($"[dev] mxheat: view of '{code}' {(show ? "on" : "off")}");
         }
 
         private static void Npc(string idPart)
