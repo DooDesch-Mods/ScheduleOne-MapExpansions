@@ -50,6 +50,7 @@ namespace MapExpansions.Debug
     /// mxdoors x y z [radius] [open]   working doors, knock doors and door renderers near a point; open tries each working door as the player
     /// mxnav ...                       NPC navigation tests, see NavTest
     /// mxveh ...                       vehicle navigation tests, see VehicleTest
+    /// mxpayphone [ring|answer|end]    pay phones and their call state, see PayPhoneTest
     /// </summary>
     internal static class DevConsole
     {
@@ -161,6 +162,7 @@ namespace MapExpansions.Debug
                     case "mxdoors" when parts.Length > 3: Doors(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 8f, parts.Length > 5 && parts[5] == "open"); break;
                     case "mxnav": NavTest.Handle(parts); break;
                     case "mxveh": VehicleTest.Handle(parts); break;
+                    case "mxpayphone": PayPhoneTest.Handle(parts); break;
                     default:
                         Core.Log.Warning($"[dev] unknown command '{cmd}'");
                         return false;

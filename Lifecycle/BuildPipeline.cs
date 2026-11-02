@@ -111,6 +111,7 @@ namespace MapExpansions.Lifecycle
                     PoliceStations.Build(b);
                     MainCopies.Build(b, b.Definition.Copies, "expansion", Layers.ExpansionOwner);
                     Shops.Build(b);
+                    PayPhones.Build(b);
                     Registry.SetState(b.Id, ExpansionState.Placed);
                 }
                 catch (Exception e)
@@ -319,6 +320,7 @@ namespace MapExpansions.Lifecycle
             Properties.Clear();
             PoliceStations.Clear();
             Shops.Clear();
+            PayPhones.Clear();
             MainCopies.Clear();
             TunnelShadows.Clear();
             WeatherCover.Clear();
