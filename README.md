@@ -8,6 +8,8 @@
 ![Game](https://img.shields.io/badge/game-Schedule%20I-purple)
 ![MelonLoader](https://img.shields.io/badge/MelonLoader-0.7.3+-green)
 
+[![MLVScan MapExpansions.dll](https://mlvscan.com/attestations/att_cssG0GVe8QM1S4p44PqCPTtZ/badge.svg)](https://mlvscan.com/attestations/att_cssG0GVe8QM1S4p44PqCPTtZ)
+
 ![MapExpansions](https://raw.githubusercontent.com/DooDesch-Mods/ScheduleOne-MapExpansions/main/docs/img/header.jpg)
 
 > Framework and API for mods that add map areas and property upgrades. Another mod brings the content, MapExpansions builds it into the world.
