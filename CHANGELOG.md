@@ -4,6 +4,12 @@ All notable changes to MapExpansions are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to Semantic Versioning.
 
+## [1.0.1] - 2026-11-02
+
+### Changed
+
+- Thunderstore and Nexus Mods may now review the mod files: the license names their package review as an exception.
+
 ## [1.0.0] - 2026-11-02
 
 ### Added
