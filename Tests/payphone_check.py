@@ -72,6 +72,16 @@ def main():
     exp = [p for p in found if p["exp"] != "main"]
     check("FindObjectsOfType<PayPhone> lists expansion phones with the PayPhone script",
           len(exp) > 0 and all("PayPhone" in p["comps"].split(",") for p in exp), [p["text"] for p in exp] or "no expansion phone")
+    # The phone models of the expansion hang under a live (active) copy; the stripped visuals are off.
+    answer = game.world("find_world_objects", {"name": "PayPhone_low", "under": "MapExpansions.", "kind": "renderer"})
+    items = (answer.get("result") or {}).get("objects") or []
+    # The source cache holds the captured scene, inactive for the whole session.
+    items = [o for o in items if not o.get("path", "").startswith("MapExpansions.SourceCache/")]
+    live = [o for o in items if "(stripped)" not in o.get("path", "")]
+    stripped = [o for o in items if "(stripped)" in o.get("path", "")]
+    check("find PayPhone_low: expansion phone models are active, the stripped visuals are off",
+          len(live) > 0 and all(o.get("active") for o in live) and not any(o.get("active") for o in stripped),
+          ["%s active=%s" % (o.get("path"), o.get("active")) for o in items] or answer)
     check("main world pay phones still there", any(p["exp"] == "main" for p in found), "%d main phones" % sum(p["exp"] == "main" for p in found))
     if not exp:
         return finish()
@@ -83,7 +93,12 @@ def main():
     px, py, pz = target["pos"]
     sx, _, sz = target["stand"] or [px, py, pz + 1.0]
     yaw = math.degrees(math.atan2(px - sx, pz - sz))
-    game.world("teleport", {"x": sx, "y": py + 0.1, "z": sz, "yaw": yaw})
+    # The player's position is about a metre above the feet; lower and the player drops through the sidewalk.
+    game.world("teleport", {"x": sx, "y": py + 1.0, "z": sz, "yaw": yaw})
+    time.sleep(1.0)
+    at = game.world("player_position").get("result", {}).get("position") or [0, -1000, 0]
+    dist = math.dist(at, [px, py + 1.0, pz])
+    check("player stands at the expansion phone", dist < 2.5, "player at %s, %.1f m from the phone" % (at, dist))
     rang, light, queued_ok, samples = False, False, False, []
     for _ in range(8):
         time.sleep(1.0)
@@ -98,8 +113,13 @@ def main():
     check("expansion phone light blinks", light, samples[-1:] or "no sample")
     check("expansion phone rings next to the player", rang, [s for s in samples if "ring sound playing" in s][:1] or samples[-1:])
     if a.shot:
-        path = game.shot()
-        check("screenshot taken at the ringing expansion phone", bool(path), path)
+        # A parked camera a few metres in front of the phone, looking at its handset.
+        dx, dz = sx - px, sz - pz
+        n = math.hypot(dx, dz) or 1.0
+        eye = [px + dx / n * 2.5, py + 1.7, pz + dz / n * 2.5]
+        answer = game.world("camera_shot", {"eye": eye, "target": [px, py + 1.2, pz], "settleFrames": 10}, timeout_ms=15000)
+        path = (answer.get("result") or {}).get("path")
+        check("screenshot taken at the ringing expansion phone", bool(path), path or answer)
 
     # 4. Answering through the phone's own handler opens the call.
     lines = run(game, "mxpayphone answer exp")
