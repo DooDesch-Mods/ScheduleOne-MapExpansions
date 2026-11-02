@@ -79,6 +79,7 @@ namespace MapExpansions.World
         public static void Clear()
         {
             ShowEffects("teardown");
+            WeatherReach.Reset();
             if (Areas.Count > 0) Core.Log.Msg($"weather cover: teardown, {Areas.Count} areas gone; {_covered} of {_queries} cover queries were under a roof");
             Areas.Clear();
             _calls = _queries = _covered = 0;
@@ -117,6 +118,7 @@ namespace MapExpansions.World
                 return;
             }
             var p = cam.transform.position;
+            WeatherReach.Tick(p);
             bool covered = TunnelShadows.CameraInside || (InArea(p) && IsCovered(p));
             if (covered)
             {
