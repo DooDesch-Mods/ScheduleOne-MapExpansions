@@ -377,7 +377,7 @@ jobs:
           repo: thunderstore.io
           namespace: DooDesch
           name: MapExpansions
-          description: Framework for new map areas and property upgrades in Schedule I. Mods like MapExpansions need it.
+          description: Framework and API for new map areas and property upgrades in Schedule I. Mods like Based need it.
           version: ${{ needs.build.outputs.version }}
           path: thunderstore-package
           deps: |
