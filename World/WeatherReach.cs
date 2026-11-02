@@ -1,4 +1,5 @@
 using HarmonyLib;
+using Il2CppScheduleOne.Core.Weather;
 using Il2CppScheduleOne.DevUtilities;
 using Il2CppScheduleOne.Weather;
 using UnityEngine;
@@ -94,6 +95,10 @@ namespace MapExpansions.World
             return true;
         }
 
+        private const float LookupReportSeconds = 10f;
+        private static float _lookupReportedAt = float.NegativeInfinity;
+        private static int _lookupThrows;
+
         private static void Failed(string what, Exception e)
         {
             if (_failedReported) return;
@@ -176,6 +181,33 @@ namespace MapExpansions.World
                 }
                 catch (Exception e) { Failed("a position's lookup", e); }
             }
+
+            // From the second load of a game session the game's list of active weather volumes still holds the old scene's
+            // destroyed volumes for some frames, and its own lookup throws on them. A patched method reports that as an error
+            // line per entity and frame; an entity without a profile just keeps its weather for this frame.
+            private static Exception Finalizer(EnvironmentManager __instance, Exception __exception, ref WeatherProfile __result)
+            {
+                if (__exception == null) return null;
+                __result = null;
+                _lookupThrows++;
+                if (Time.unscaledTime - _lookupReportedAt < LookupReportSeconds) return null;
+                _lookupReportedAt = Time.unscaledTime;
+                Core.Log.Warning($"weather reach: the game's weather lookup threw {_lookupThrows} time(s) so far, those entities keep their weather for the frame; {LookupState(__instance)}: {__exception.Message.Split('\n')[0].Trim()}");
+                return null;
+            }
+        }
+
+        private static string LookupState(EnvironmentManager env)
+        {
+            try
+            {
+                if (env == null) return "the manager is gone";
+                int gone = 0, count = env._activeWeatherVolumes != null ? env._activeWeatherVolumes.Count : -1;
+                for (int i = 0; i < count; i++)
+                    if (env._activeWeatherVolumes[i] == null) gone++;
+                return $"anchor set={env._weatherBoundsAnchor != null}, {gone} of {count} active volume(s) gone";
+            }
+            catch (Exception e) { return "state unreadable (" + e.Message + ")"; }
         }
     }
 }
