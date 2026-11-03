@@ -26,6 +26,8 @@ namespace MapExpansions.Debug
     /// mxframe [seconds]               frame time statistics over a sample window
     /// mxfind name [main|exp]          renderers whose name contains name
     /// mxfog [feature|volumetric] on|off the screen fog render feature, the volumetric fog, or both
+    /// mxcover [sound on|off|enclosures] weather cover at the camera and its sound; sound off compares the unmuffled
+    ///                                 rain, enclosures lists the game's enclosure boxes nearby
     /// mxbox x0 y0 z0 x1 y1 z1 [filter] renderers and colliders whose bounds meet a world box, with their paths
     /// mxwall x0 y0 z0 x1 y1 z1 [loose] | off  a Default-layer box no property owns (loose: with a free Rigidbody)
     /// mxline ax az bx bz [step] [y]   every surface a ray down from height y (80) meets, sampled along a line
@@ -141,6 +143,11 @@ namespace MapExpansions.Debug
                             Il2CppScheduleOne.UI.Phone.Phone.Instance.RequestCloseApp();
                             Core.Log.Msg("[dev] mxphone: the open app was asked to close");
                         }
+                        break;
+                    case "mxcover" when parts.Length > 1 && parts[1] == "enclosures": Enclosures(); break;
+                    case "mxcover" when parts.Length > 2 && parts[1] == "sound":
+                        World.WeatherCover.MuffleSound = parts[2] == "on";
+                        Core.Log.Msg($"[dev] mxcover sound: muffling under a roof {(World.WeatherCover.MuffleSound ? "on" : "off")}");
                         break;
                     case "mxcover": Core.Log.Msg(World.WeatherCover.Describe(Camera.main != null ? Camera.main.transform.position : Vector3.zero)); break;
                     case "mxhide" when parts.Length > 1:
@@ -632,6 +639,23 @@ namespace MapExpansions.Debug
             Physics.SyncTransforms();
             _walls.Add(go);
             Core.Log.Msg($"[dev] mxwall placed {(loose ? "loose" : "static")} wall {B(box)}; {_walls.Count} dev walls");
+        }
+
+        /// <summary>The game's weather enclosure boxes within 40 m of the camera, and whether the camera is inside each.</summary>
+        private static void Enclosures()
+        {
+            var cam = Camera.main;
+            if (cam == null) { Core.Log.Warning("[dev] mxcover enclosures: no main camera"); return; }
+            var p = cam.transform.position;
+            int n = 0;
+            foreach (var e in Object.FindObjectsOfType<Il2CppScheduleOne.Core.Weather.BasicEnclosure>())
+            {
+                if (e == null || Vector3.Distance(e.transform.position, p) > 40f) continue;
+                var t = e.transform;
+                Core.Log.Msg($"[dev] mxcover enclosure '{PathOf(t)}' {(e.IsBlendZone ? "blend zone" : "box")} at {t.TransformPoint(e.GetCenter())} size {e.GetSize()} rot {t.eulerAngles.y:0}: camera {(e.WithinEnclosure(p) ? "inside" : "outside")}");
+                n++;
+            }
+            Core.Log.Msg($"[dev] mxcover enclosures: {n} within 40 m of {p}");
         }
 
         private static void WallOff()
