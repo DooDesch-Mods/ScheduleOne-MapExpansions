@@ -73,7 +73,17 @@ namespace MapExpansions.Navigation
                             if (_moved.Count > before) items++;
                         }
                     }
-                    Core.Log.Msg($"state nav: '{id}' keeps {items} placed items ({_moved.Count} collider objects) out of the bake sources");
+                    // Loose physics props (dropped items, trash, boxes) move about and are no part of the floor plan either.
+                    int loose = 0;
+                    foreach (var c in Physics.OverlapBox(bounds.center, bounds.extents, Quaternion.identity, Mask, QueryTriggerInteraction.Collide))
+                    {
+                        var body = c == null ? null : c.attachedRigidbody;
+                        if (body == null || body.isKinematic) continue;
+                        _moved.Add((c.gameObject, c.gameObject.layer));
+                        c.gameObject.layer = excluded;
+                        loose++;
+                    }
+                    Core.Log.Msg($"state nav: '{id}' keeps {items} placed items and {loose} loose props ({_moved.Count} collider objects) out of the bake sources");
                 }
                 catch
                 {
@@ -99,6 +109,7 @@ namespace MapExpansions.Navigation
                 var agents = NavigationAgentSelection.Resolve(requiredAgents, registered);
                 // A state's volume is property interior, as vanilla marks its buildings: civilians' masks leave the area out,
                 // employees' include it. An expansion's own NPC needs the area in its mask to walk here.
+                int blocked = 0;
                 int area = NavMesh.GetAreaFromName(InteriorArea);
                 if (area < 0) throw new InvalidOperationException($"state '{id}' needs the NavMesh area '{InteriorArea}', which this game does not define");
                 using var placedItems = new PlacedItemsBakeHold(id, bounds);
@@ -121,8 +132,14 @@ namespace MapExpansions.Navigation
                     Core.Log.Msg($"state nav: '{id}' baking required agent '{NpcNavigation.AgentName(agent)}' ({agent}), radius {settings.agentRadius:0.###}, height {settings.agentHeight:0.###}, volume {bounds}");
                     surface.BuildNavMesh();
                     if (surface.navMeshData == null) throw new InvalidOperationException($"state '{id}' baked no navigation for agent {agent}");
+                    // A probe can sit under whatever the player's world holds there (another mod's object, a loose prop).
+                    // That costs NPCs a corner, so it is reported and the state still applies: a failed state blocks saving.
                     foreach (var point in probes)
-                        if (!NpcNavigation.Covered(point, agent)) throw new InvalidOperationException($"state '{id}' point {point} has no navigation for required agent '{NpcNavigation.AgentName(agent)}' ({agent}, radius {settings.agentRadius:0.###}, height {settings.agentHeight:0.###})");
+                    {
+                        if (NpcNavigation.Covered(point, agent)) continue;
+                        Core.Log.Warning($"state nav: '{id}' point {point} has no navigation for required agent '{NpcNavigation.AgentName(agent)}' ({agent}, radius {settings.agentRadius:0.###}, height {settings.agentHeight:0.###}); obstacles there: {Obstacles(point, point, parent)}");
+                        blocked++;
+                    }
                 }
                 // The first two authored probes straddle the doorway. A short seam joins separate NavMesh data.
                 if (probes.Count >= 2)
@@ -138,11 +155,15 @@ namespace MapExpansions.Navigation
                             result.Links.Add(Source.NavLinks.AddOwned(probes[0], probes[1], 0.7f, new[] { agent }));
                         }
                         for (int i = 1; i < probes.Count; i++)
-                            if (!NavMesh.CalculatePath(probes[0], probes[i], filter, path) || path.status != NavMeshPathStatus.PathComplete)
-                                throw new InvalidOperationException($"state '{id}' has no complete path to probe {i} for agent {agent}");
+                        {
+                            if (NavMesh.CalculatePath(probes[0], probes[i], filter, path) && path.status == NavMeshPathStatus.PathComplete) continue;
+                            Core.Log.Warning($"state nav: '{id}' has no complete path to probe {i} {probes[i]} for agent {agent}; obstacles on the line from the doorway: {Obstacles(probes[0], probes[i], parent)}");
+                            blocked++;
+                        }
                     }
                 }
-                Core.Log.Msg($"state nav: '{id}' baked {agents.Length} agent types; {probes.Count} probes connected");
+                if (blocked == 0) Core.Log.Msg($"state nav: '{id}' baked {agents.Length} agent types; {probes.Count} probes connected");
+                else Core.Log.Warning($"state nav: '{id}' baked {agents.Length} agent types; {blocked} probe checks failed, the state applies and NPCs may not reach those points");
                 return result;
             }
             catch (Exception original)
@@ -155,6 +176,31 @@ namespace MapExpansions.Navigation
 
         private static readonly int Mask = LayerMask.GetMask("Default", "Terrain");
         private const string InteriorArea = "PropertyInterior";
+
+        /// <summary>Names the bake-source colliders on a walking line at knee height, so a failed probe says what stands there.</summary>
+        private static string Obstacles(Vector3 from, Vector3 to, Transform expansion)
+        {
+            try
+            {
+                var lift = Vector3.up * 0.5f;
+                var names = new List<string>();
+                foreach (var c in Physics.OverlapCapsule(from + lift, to + lift, 0.4f, Mask, QueryTriggerInteraction.Ignore))
+                {
+                    if (c == null) continue;
+                    var t = c.transform;
+                    string path = t.name;
+                    for (var p = t.parent; p != null && path.Length < 120; p = p.parent) path = p.name + "/" + path;
+                    if (expansion != null && t.IsChildOf(expansion)) path = "[expansion] " + path;
+                    names.Add(path);
+                }
+                return names.Count == 0 ? "none found" : string.Join("; ", names.Distinct().Take(10));
+            }
+            catch (Exception e)
+            {
+                Core.Log.Warning($"state nav: obstacle lookup failed: {e.Message}");
+                return "lookup failed";
+            }
+        }
 
         /// <summary>
         /// Bakes the copy's surroundings for every agent type without a NavMesh at its idle points. The pieces hang under

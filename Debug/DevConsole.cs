@@ -27,6 +27,7 @@ namespace MapExpansions.Debug
     /// mxfind name [main|exp]          renderers whose name contains name
     /// mxfog [feature|volumetric] on|off the screen fog render feature, the volumetric fog, or both
     /// mxbox x0 y0 z0 x1 y1 z1 [filter] renderers and colliders whose bounds meet a world box, with their paths
+    /// mxwall x0 y0 z0 x1 y1 z1 [loose] | off  a Default-layer box no property owns (loose: with a free Rigidbody)
     /// mxline ax az bx bz [step] [y]   every surface a ray down from height y (80) meets, sampled along a line
     /// mxray ax ay az bx by bz         every collider a ray from a to b meets, nearest first
     /// mxedges x0 y0 z0 x1 y1 z1 filter open mesh edges inside a world box, as chains, of renderers whose path contains filter
@@ -105,6 +106,8 @@ namespace MapExpansions.Debug
                     case "mxfog" when parts.Length > 2: Fog(parts[1], parts[2] == "on"); break;
                     case "mxfog" when parts.Length > 1: Fog("all", parts[1] == "on"); break;
                     case "mxbox" when parts.Length > 6: Box(V(parts, 1), V(parts, 4), parts.Length > 7 ? parts[7] : ""); break;
+                    case "mxwall" when parts.Length > 1 && parts[1] == "off": WallOff(); break;
+                    case "mxwall" when parts.Length > 6: Wall(V(parts, 1), V(parts, 4), parts.Length > 7 && parts[7] == "loose"); break;
                     case "mxhover": Hover(parts.Length > 1 && parts[1] == "use"); break;
                     case "mxlight" when parts.Length > 3: LightsNear(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 8f); break;
                     case "mxlight": Lights(); break;
@@ -607,6 +610,36 @@ namespace MapExpansions.Debug
         }
 
         private static string B(Bounds b) => $"x {b.min.x:0.0}..{b.max.x:0.0} y {b.min.y:0.0}..{b.max.y:0.0} z {b.min.z:0.0}..{b.max.z:0.0}";
+
+        private static readonly List<GameObject> _walls = new();
+
+        // A collider on the Default layer that no property owns, as another mod's object or a loose prop would be.
+        private static void Wall(Vector3 a, Vector3 c, bool loose)
+        {
+            var box = new Bounds();
+            box.SetMinMax(Vector3.Min(a, c), Vector3.Max(a, c));
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            go.name = "MapExpansions.DevWall" + (loose ? ".Loose" : "");
+            go.layer = LayerMask.NameToLayer("Default");
+            go.transform.position = box.center;
+            go.transform.localScale = box.size;
+            if (loose)
+            {
+                var body = go.AddComponent<Rigidbody>();
+                body.isKinematic = false;
+                body.constraints = RigidbodyConstraints.FreezeAll;
+            }
+            Physics.SyncTransforms();
+            _walls.Add(go);
+            Core.Log.Msg($"[dev] mxwall placed {(loose ? "loose" : "static")} wall {B(box)}; {_walls.Count} dev walls");
+        }
+
+        private static void WallOff()
+        {
+            foreach (var go in _walls) if (go != null) Object.Destroy(go);
+            Core.Log.Msg($"[dev] mxwall removed {_walls.Count} dev walls");
+            _walls.Clear();
+        }
 
         private static void Box(Vector3 a, Vector3 c, string filter)
         {
