@@ -32,6 +32,12 @@ namespace MapExpansions.World
         private static readonly string[] Effects = { "RainEffect", "LowCloudsMesh" };
 
         private static readonly List<(string owner, Rect area)> Areas = new();
+
+        /// <summary>
+        /// Areas of applied world states. They lie inside the main map, where the weather and its height map work, but
+        /// the baked mask knows nothing of the roofs a state adds. They take part in cover only, not in WeatherReach.
+        /// </summary>
+        private static readonly List<(string owner, Rect area)> StateAreas = new();
         private static readonly List<Renderer> Hidden = new();
         private static bool _cameraCovered;
         private static float _nextScan;
@@ -73,6 +79,30 @@ namespace MapExpansions.World
                 Core.Log.Msg($"weather cover: {Areas[i].owner} covers x {Areas[i].area.xMin:0}..{Areas[i].area.xMax:0}, z {Areas[i].area.yMin:0}..{Areas[i].area.yMax:0}");
         }
 
+        /// <summary>Cover from the world's roofs over a world state's volume while the state is applied.</summary>
+        public static void AddState(string owner, Bounds volume)
+        {
+            RemoveState(owner, quiet: true);
+            var rect = Rect.MinMaxRect(volume.min.x, volume.min.z, volume.max.x, volume.max.z);
+            StateAreas.Add((owner, rect));
+            Core.Log.Msg($"weather cover: {owner} covers x {rect.xMin:0}..{rect.xMax:0}, z {rect.yMin:0}..{rect.yMax:0}");
+        }
+
+        public static void RemoveState(string owner, bool quiet = false)
+        {
+            int removed = StateAreas.RemoveAll(a => a.owner == owner);
+            if (removed > 0 && !quiet) Core.Log.Msg($"weather cover: {owner} area gone");
+            if (removed > 0 && StateAreas.Count == 0 && Areas.Count == 0) ShowEffects("world state cover gone");
+        }
+
+        private static bool InStateArea(Vector3 p)
+        {
+            var xz = new Vector2(p.x, p.z);
+            foreach (var (_, area) in StateAreas)
+                if (area.Contains(xz)) return true;
+            return false;
+        }
+
         private static Rect Grow(Rect r, Vector2 p) =>
             Rect.MinMaxRect(Mathf.Min(r.xMin, p.x), Mathf.Min(r.yMin, p.y), Mathf.Max(r.xMax, p.x), Mathf.Max(r.yMax, p.y));
 
@@ -80,8 +110,9 @@ namespace MapExpansions.World
         {
             ShowEffects("teardown");
             WeatherReach.Reset();
-            if (Areas.Count > 0) Core.Log.Msg($"weather cover: teardown, {Areas.Count} areas gone; {_covered} of {_queries} cover queries were under a roof");
+            if (Areas.Count + StateAreas.Count > 0) Core.Log.Msg($"weather cover: teardown, {Areas.Count} areas and {StateAreas.Count} world state areas gone; {_covered} of {_queries} cover queries were under a roof");
             Areas.Clear();
+            StateAreas.Clear();
             _calls = _queries = _covered = 0;
         }
 
@@ -100,7 +131,7 @@ namespace MapExpansions.World
         /// <summary>Cover for a weather entity; null leaves the answer to the game's mask.</summary>
         internal static bool? Query(Vector3 p)
         {
-            if (Areas.Count == 0 || !InArea(p)) return null;
+            if (!InArea(p) && !InStateArea(p)) return null;
             bool covered = IsCovered(p);
             _queries++;
             if (covered) _covered++;
@@ -110,7 +141,7 @@ namespace MapExpansions.World
 
         public static void Tick()
         {
-            if (Areas.Count == 0) return;
+            if (Areas.Count == 0 && StateAreas.Count == 0) return;
             var cam = Camera.main;
             if (cam == null)
             {
@@ -118,8 +149,8 @@ namespace MapExpansions.World
                 return;
             }
             var p = cam.transform.position;
-            WeatherReach.Tick(p);
-            bool covered = TunnelShadows.CameraInside || (InArea(p) && IsCovered(p));
+            if (Areas.Count > 0) WeatherReach.Tick(p);
+            bool covered = TunnelShadows.CameraInside || ((InArea(p) || InStateArea(p)) && IsCovered(p));
             if (covered)
             {
                 if (!_cameraCovered || Time.unscaledTime >= _nextScan) HideEffects();
@@ -175,7 +206,8 @@ namespace MapExpansions.World
         }
 
         public static string Describe(Vector3 p) =>
-            $"weather cover: {Areas.Count} areas; at {p} {(InArea(p) ? "in an expansion" : "outside the expansions")}, " +
+            $"weather cover: {Areas.Count} areas, {StateAreas.Count} world state areas; at {p} " +
+            $"{(InArea(p) ? "in an expansion" : InStateArea(p) ? "in a world state area" : "outside the expansions")}, " +
             $"{(IsCovered(p) ? "under a roof" : "open sky")}; camera effects {(_cameraCovered ? "off" : "on")}; " +
             $"{_covered} of {_queries} entity queries under a roof, {_calls} cover queries in all";
 

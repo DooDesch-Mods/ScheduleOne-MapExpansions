@@ -43,6 +43,8 @@ namespace MapExpansions.Lifecycle
             internal void Remove(Carried carry)
             {
                 var errors = new List<Exception>();
+                try { World.WeatherCover.RemoveState(CoverOwner(Expansion, State)); }
+                catch (Exception e) { errors.Add(e); }
                 try
                 {
                     Navigation?.Dispose();
@@ -319,9 +321,22 @@ namespace MapExpansions.Lifecycle
                 else
                     result.Navigation = PropertyNavigation.BakeState(b.Id + "/" + state.Id, state.NavigationBounds.Value, state.NavigationProbes, b.Root.transform, state.NavigationAgents);
             }
+            // The game's rain and its cover queries read a mask baked without this state's roofs; the world's own
+            // colliders answer over the state's volume instead.
+            Bounds? cover = state.NavigationBounds;
+            foreach (var p in state.PropertyExtensions)
+                foreach (var box in p.Bounds)
+                {
+                    var grown = cover ?? box;
+                    grown.Encapsulate(box);
+                    cover = grown;
+                }
+            if (cover.HasValue) World.WeatherCover.AddState(CoverOwner(b, state), cover.Value);
             result.Timing = $"lookup {lookupMs} ms, {fresh.Count} copies {copiesMs - lookupMs} ms, {state.Rules.Count} rules {rulesMs - copiesMs} ms, " +
                             $"properties {propertiesMs - rulesMs} ms, navigation {clock.ElapsedMilliseconds - propertiesMs} ms; kept {carry.Copies.Count} copies, {carry.Properties.Count} extensions";
         }
+
+        private static string CoverOwner(BuiltExpansion b, WorldStateDefinition state) => $"'{b.Id}' world state {state.Id}";
 
         private static bool Fail(string id, string stateId, Exception cause, out string error)
         {
@@ -468,6 +483,7 @@ namespace MapExpansions.Lifecycle
             {
                 try { item.Navigation?.Dispose(); }
                 catch (Exception e) { Core.Log.Error($"world state '{item.Expansion.Id}' navigation teardown failed: {e}"); }
+                World.WeatherCover.RemoveState(CoverOwner(item.Expansion, item.State));
                 // The objects go with the scene; their entries in the static GUIDManager do not.
                 foreach (var property in item.Properties) property.ReleaseGuids();
             }
