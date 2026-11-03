@@ -4,6 +4,12 @@ All notable changes to MapExpansions are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to Semantic Versioning.
 
+## [1.0.3] - 2026-11-03
+
+### Fixed
+- Rain stays out of a finished expansion room. It fell through the new roof, because the game's rain map does
+  not know it.
+
 ## [1.0.2] - 2026-11-03
 
 ### Fixed
