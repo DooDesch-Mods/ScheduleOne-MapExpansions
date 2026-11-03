@@ -4,6 +4,16 @@ All notable changes to MapExpansions are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to Semantic Versioning.
 
+## [1.0.2] - 2026-11-03
+
+### Fixed
+- An expansion finishes, and saving works, when something stands in the new room's walkway. Based blocked saving
+  until the object moved.
+
+### For mod authors
+- A navigation probe without a path from the doorway is now a warning that names the colliders there; the world
+  state still applies. Loose physics props stay out of the state bake.
+
 ## [1.0.1] - 2026-11-02
 
 ### Changed
