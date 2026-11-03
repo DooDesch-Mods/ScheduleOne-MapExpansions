@@ -1,5 +1,6 @@
 """
-In-game check: the roof a world state adds keeps the rain out (MapExpansions World/WeatherCover.cs, state areas).
+In-game check: the roof a world state adds keeps the rain out and muffles its sound (MapExpansions
+World/WeatherCover.cs, state areas and the sound blend).
 Uses Based's finished Sweatshop expansion as the host; the game's own rain mask knows nothing of its roof.
 
 Drives a running test slot over the ScheduleMCP bridge (Workspace/tools/bridge/s1.py). Needs Debug builds of
@@ -10,6 +11,7 @@ Sweatshop. It completes the expansion in the save and leaves the weather on heav
 """
 import argparse
 import os
+import re
 import shutil
 import sys
 import time
@@ -31,6 +33,9 @@ from s1 import Game  # noqa: E402
 # Inside the new wing, beside navigation probe 2, and above its roof.
 INSIDE = "-57.5 0 140"
 ABOVE = "-57.5 9 140"
+# The wing's cover rectangle is x -66..-54, z 135..146.
+GRID_X = (-64, -61, -58, -55.5)
+GRID_Z = (136.5, 139.5, 142.5, 145)
 
 
 class Run:
@@ -108,15 +113,58 @@ def main():
     run.cmd("mxtp " + INSIDE, wait=3.0)
     line = run.cover()
     run.check("inside the wing: a world state area", "in a world state area" in line, line[-200:])
-    run.check("inside the wing: under a roof", "under a roof" in line, "")
+    run.check("inside the wing: under a roof", roofed(line), "")
     run.check("inside the wing: rain off around the camera", "camera effects off" in line, "")
     run.shot(args.shots, "rain-inside.png")
 
-    run.cmd("mxtp " + ABOVE, wait=1.0)
+    # The sound: the game muffles the weather by its enclosure blend, from its own enclosure boxes only. A grid over the
+    # wing finds the covered spots none of them reaches; there the rain played as outside before the fix.
+    run.cmd("mxcover enclosures", wait=0.5)
+    run.cmd("mxcover sound off", wait=0.5)
+    bare = []
+    for x in GRID_X:
+        for z in GRID_Z:
+            run.cmd("mxtp %s 0 %s" % (x, z), wait=2.5)
+            line = run.cover()
+            s = sound(line)
+            covered = "in a world state area" in line and roofed(line)
+            print("      %s %s: %s, %s" % (x, z, "covered" if covered else "not covered", s), flush=True)
+            if covered and s["own"] is not None and s["own"] < 0.1:
+                bare.append((x, z, s))
+    run.check("muffling off: covered spots in the wing without a game enclosure", len(bare) > 0,
+              "%d spots: %s" % (len(bare), [(x, z) for x, z, _ in bare]))
+    run.cmd("mxcover sound on", wait=0.5)
+    for x, z, off in bare[:3]:
+        run.cmd("mxtp %s 0 %s" % (x, z), wait=2.5)
+        on = sound(run.cover())
+        run.check("%s %s: the game's enclosure blend follows the roof" % (x, z), on["game"] is not None and on["game"] > 0.9, on)
+        run.check("%s %s: the rain is quieter than unmuffled" % (x, z),
+                  on["volume"] is not None and off["volume"] is not None and on["volume"] < off["volume"] * 0.8,
+                  "volume %s muffled, %s unmuffled" % (on["volume"], off["volume"]))
+
+    run.cmd("mxtp " + ABOVE, wait=2.5)
     line = run.cover()
-    run.check("above the roof: open sky", "open sky" in line, line[-200:])
+    run.check("above the roof: open sky", not roofed(line) and ", open sky;" in line, line[-200:])
     run.check("above the roof: rain on", "camera effects on" in line, "")
+    above = sound(line)
+    run.check("above the roof: the rain sounds as outside", above["game"] is not None and above["game"] < 0.1, above)
     return run.summary()
+
+
+def roofed(line):
+    """Whether the camera spot itself is under a roof; the entity query count later in the line says "under a roof" too."""
+    return ", under a roof;" in line
+
+
+def sound(line):
+    """The sound part of an mxcover line: our blend, the game's enclosure blend and the rain's volume."""
+    def number(pattern):
+        m = re.search(pattern, line)
+        return float(m.group(1)) if m else None
+    return {"ours": number(r"sound blend ([0-9.]+)"),
+            "game": number(r"game enclosure blend ([0-9.]+)"),
+            "own": number(r"its own enclosures ([0-9.]+)"),
+            "volume": number(r"rain volume ([0-9.]+)")}
 
 
 if __name__ == "__main__":

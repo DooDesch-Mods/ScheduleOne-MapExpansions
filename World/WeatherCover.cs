@@ -14,7 +14,9 @@ namespace MapExpansions.World
     /// itself: a ray from high above that hits a roof, a ceiling or a hill before it reaches the position. NPCs, cars and
     /// wheels get that answer through <c>EnvironmentManager.IsPositionUnderCover</c>. The rain and the low clouds draw
     /// around the camera and only read the baked mask, so while the camera stands under cover in an expansion, or in a
-    /// tunnel, their renderers are off; they come back when it leaves.
+    /// tunnel, their renderers are off; they come back when it leaves. The weather's sound muffles itself inside the
+    /// game's own enclosure volumes only, which an expansion has none of; under cover there its enclosure blend rises
+    /// the same way, so the rain sounds as it does inside a vanilla building.
     /// </summary>
     internal static class WeatherCover
     {
@@ -39,6 +41,15 @@ namespace MapExpansions.World
         /// </summary>
         private static readonly List<(string owner, Rect area)> StateAreas = new();
         private static readonly List<Renderer> Hidden = new();
+
+        /// <summary>How fast the sound blend follows the roof; the game's enclosures use the same rate.</summary>
+        private const float SoundBlendSpeed = 3f;
+
+        private static float _soundBlend, _gameBlend;
+        private static bool _soundReported, _soundFailedReported;
+
+        /// <summary>Off only for a dev comparison against the unmuffled sound.</summary>
+        internal static bool MuffleSound = true;
         private static bool _cameraCovered;
         private static float _nextScan;
         private static bool _noManagerReported;
@@ -114,6 +125,8 @@ namespace MapExpansions.World
             Areas.Clear();
             StateAreas.Clear();
             _calls = _queries = _covered = 0;
+            _soundBlend = 0f;
+            _soundReported = false;
         }
 
         public static bool InArea(Vector3 p)
@@ -141,16 +154,28 @@ namespace MapExpansions.World
 
         public static void Tick()
         {
-            if (Areas.Count == 0 && StateAreas.Count == 0) return;
+            if (Areas.Count == 0 && StateAreas.Count == 0)
+            {
+                _soundBlend = 0f;
+                return;
+            }
             var cam = Camera.main;
             if (cam == null)
             {
+                _soundBlend = 0f;
                 ShowEffects("no main camera");
                 return;
             }
             var p = cam.transform.position;
             if (Areas.Count > 0) WeatherReach.Tick(p);
             bool covered = TunnelShadows.CameraInside || ((InArea(p) || InStateArea(p)) && IsCovered(p));
+            _soundBlend = Mathf.Lerp(_soundBlend, covered ? 1f : 0f, Time.deltaTime * SoundBlendSpeed);
+            if (_soundBlend < 0.001f)
+            {
+                _soundBlend = 0f;
+                if (_soundReported) Core.Log.Msg("weather cover: camera under open sky, the weather sounds as outside again");
+                _soundReported = false;
+            }
             if (covered)
             {
                 if (!_cameraCovered || Time.unscaledTime >= _nextScan) HideEffects();
@@ -209,7 +234,61 @@ namespace MapExpansions.World
             $"weather cover: {Areas.Count} areas, {StateAreas.Count} world state areas; at {p} " +
             $"{(InArea(p) ? "in an expansion" : InStateArea(p) ? "in a world state area" : "outside the expansions")}, " +
             $"{(IsCovered(p) ? "under a roof" : "open sky")}; camera effects {(_cameraCovered ? "off" : "on")}; " +
-            $"{_covered} of {_queries} entity queries under a roof, {_calls} cover queries in all";
+            $"{_covered} of {_queries} entity queries under a roof, {_calls} cover queries in all; " +
+            $"sound blend {_soundBlend:0.00}{(MuffleSound ? "" : " (muffling off)")}, {GameSound()}";
+
+        /// <summary>The enclosure blend the game's weather effects use and the loudest weather sound playing now.</summary>
+        private static string GameSound()
+        {
+            try
+            {
+                var env = NetworkSingleton<EnvironmentManager>.Instance;
+                if (env == null) return "no EnvironmentManager";
+                float blend = 0f;
+                foreach (var c in env.GetComponentsInChildren<WeatherEffectController>(true))
+                    if (c != null) blend = Mathf.Max(blend, c._enclosureBlend);
+                float loudest = 0f, rain = 0f;
+                string name = "none";
+                foreach (var a in env.GetComponentsInChildren<AudioSource>(true))
+                {
+                    if (a == null || !a.isPlaying) continue;
+                    if (a.gameObject.name.IndexOf("Rain", StringComparison.OrdinalIgnoreCase) >= 0) rain = Mathf.Max(rain, a.volume);
+                    if (a.volume <= loudest) continue;
+                    loudest = a.volume;
+                    name = a.gameObject.name;
+                }
+                return $"game enclosure blend {blend:0.00} (its own enclosures {_gameBlend:0.00}), rain volume {rain:0.000}, loudest weather sound {name} at volume {loudest:0.000}";
+            }
+            catch (Exception e)
+            {
+                Core.Log.Warning($"weather cover: reading the weather sound failed: {e.Message}");
+                return "weather sound unreadable";
+            }
+        }
+
+        [HarmonyPatch(typeof(WeatherVolume), nameof(WeatherVolume.UpdateVolume))]
+        private static class SoundPatch
+        {
+            private static void Prefix(ref float enclosureBlend, ref float enclosurePan)
+            {
+                try
+                {
+                    _gameBlend = enclosureBlend;
+                    if (!MuffleSound || _soundBlend <= enclosureBlend) return;
+                    if (enclosureBlend <= 0f) enclosurePan = 0f;
+                    enclosureBlend = _soundBlend;
+                    if (_soundReported) return;
+                    _soundReported = true;
+                    Core.Log.Msg("weather cover: camera under a roof, the weather sounds as inside a building");
+                }
+                catch (Exception e)
+                {
+                    if (_soundFailedReported) return;
+                    _soundFailedReported = true;
+                    Core.Log.Error($"weather cover: muffling the weather sound failed; it plays as outside: {e}");
+                }
+            }
+        }
 
         [HarmonyPatch(typeof(EnvironmentManager), nameof(EnvironmentManager.IsPositionUnderCover))]
         private static class UnderCoverPatch
