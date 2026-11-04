@@ -2,6 +2,8 @@
 
 > 🛟 **Need help or found a bug?** Get support at [support.doodesch.de/mapexpansions](https://support.doodesch.de/mapexpansions).
 
+[![Discord](https://mods.doodesch.de/img/badge.svg)](https://mods.doodesch.de)
+
 📖 **API documentation:** [docs.doodesch.de/mods/mapexpansions/api/](https://docs.doodesch.de/mods/mapexpansions/api/)
 
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
@@ -36,6 +38,12 @@ Declare the dependency with `[assembly: MelonAdditionalDependencies("MapExpansio
 ## Requirements
 
 - [MelonLoader](https://melonwiki.xyz/) 0.7.3 or newer
+
+## Community
+
+[![DooDesch Mods on Discord](https://mods.doodesch.de/img/card.svg)](https://mods.doodesch.de)
+
+Join the DooDesch Mods Discord: update pings, polls on what comes next, and playtests of new mods.
 
 ## License
 

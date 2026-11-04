@@ -4,6 +4,8 @@
 
 **Download:** [Nexus Mods](https://www.nexusmods.com/schedule1/mods/3033) · [Thunderstore](https://thunderstore.io/c/schedule-i/p/DooDesch/MapExpansions/) · [GitHub Releases](https://github.com/DooDesch-Mods/ScheduleOne-MapExpansions/releases)
 
+[![Discord](https://mods.doodesch.de/img/badge.svg)](https://mods.doodesch.de)
+
 📖 **API documentation:** [docs.doodesch.de/mods/mapexpansions/api/](https://docs.doodesch.de/mods/mapexpansions/api/)
 
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
@@ -56,6 +58,12 @@ Install with a mod manager (r2modman / Gale) from the Schedule I community, or u
 ### Manual
 
 Download the zip from [GitHub Releases](https://github.com/DooDesch-Mods/ScheduleOne-MapExpansions/releases) and put `MapExpansions.dll` into your Schedule I `Mods/` folder.
+
+## Community
+
+[![DooDesch Mods on Discord](https://mods.doodesch.de/img/card.svg)](https://mods.doodesch.de)
+
+Join the DooDesch Mods Discord: update pings, polls on what comes next, and playtests of new mods.
 
 ## License
 
