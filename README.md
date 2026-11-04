@@ -4,14 +4,12 @@
 
 **Download:** [Nexus Mods](https://www.nexusmods.com/schedule1/mods/3033) · [Thunderstore](https://thunderstore.io/c/schedule-i/p/DooDesch/MapExpansions/) · [GitHub Releases](https://github.com/DooDesch-Mods/ScheduleOne-MapExpansions/releases)
 
-[![Discord](https://mods.doodesch.de/img/badge.svg)](https://mods.doodesch.de)
-
 📖 **API documentation:** [docs.doodesch.de/mods/mapexpansions/api/](https://docs.doodesch.de/mods/mapexpansions/api/)
 
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![Game](https://img.shields.io/badge/game-Schedule%20I-purple)
 ![MelonLoader](https://img.shields.io/badge/MelonLoader-0.7.3+-green)
-[![Polyfill](https://polyfill.doomods.com/badge/mapexpansions.svg)](https://polyfill.doomods.com/mod/mapexpansions)
+[![Discord](https://mods.doodesch.de/img/badge.svg)](https://mods.doodesch.de) [![Polyfill](https://polyfill.doomods.com/badge/mapexpansions.svg)](https://polyfill.doomods.com/mod/mapexpansions)
 
 [![MLVScan MapExpansions.dll](https://mlvscan.com/attestations/att_wNmvo2bauiwEUZQVynaY8xP2/badge.svg)](https://mlvscan.com/attestations/att_wNmvo2bauiwEUZQVynaY8xP2)
 
