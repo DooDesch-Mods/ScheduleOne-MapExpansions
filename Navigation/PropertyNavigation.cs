@@ -18,11 +18,50 @@ namespace MapExpansions.Navigation
         /// <summary>Metres the baked volume reaches past the property's walls, docks and idle points.</summary>
         private const float Margin = 4f;
 
+#if DEBUG
+        /// <summary>Dev switch for `mxreach keepcache`: leaves the cache alone to compare against the old behaviour.</summary>
+        internal static bool KeepSamplesForTest;
+#endif
+
+        /// <summary>
+        /// Drops the game's NavMesh sample cache. Employees ask it before every reach check (NavMeshUtility.SamplePosition),
+        /// it keeps a hit for every point within 0.5 m of an earlier query, and only a save load clears it. After a state
+        /// adds or removes NavMesh, a hit from the old mesh can sit far enough from a station's access point that the
+        /// station counts as unreachable (the spawn station allows 0.6 m).
+        /// </summary>
+        internal static void ForgetSamples(string why)
+        {
+#if DEBUG
+            if (KeepSamplesForTest)
+            {
+                Core.Log.Warning($"[dev] nav: kept the game's NavMesh sample cache after {why} (mxreach keepcache on)");
+                return;
+            }
+#endif
+            try
+            {
+                int entries = Il2CppScheduleOne.DevUtilities.NavMeshUtility.sampleCacheKeys?.Count ?? 0;
+                Il2CppScheduleOne.DevUtilities.NavMeshUtility.ClearCache();
+                Core.Log.Msg($"nav: cleared the game's NavMesh sample cache ({entries} entries) after {why}");
+            }
+            catch (Exception e)
+            {
+                Core.Log.Warning($"nav: could not clear the game's NavMesh sample cache after {why}; employees may misjudge reach until the next load: {e.Message}");
+            }
+        }
+
         internal sealed class StateBake : IDisposable
         {
             internal readonly List<NavMeshSurface> Surfaces = new();
             internal readonly List<Source.NavLinks.Lease> Links = new();
             public void Dispose()
+            {
+                bool had = Surfaces.Count > 0 || Links.Count > 0;
+                try { RemoveParts(); }
+                finally { if (had) ForgetSamples("a state's navigation was removed"); }
+            }
+
+            private void RemoveParts()
             {
                 // Each part leaves its list once it is gone, so a failed removal resumes on the next try.
                 for (int i = Links.Count - 1; i >= 0; i--)
@@ -164,6 +203,7 @@ namespace MapExpansions.Navigation
                 }
                 if (blocked == 0) Core.Log.Msg($"state nav: '{id}' baked {agents.Length} agent types; {probes.Count} probes connected");
                 else Core.Log.Warning($"state nav: '{id}' baked {agents.Length} agent types; {blocked} probe checks failed, the state applies and NPCs may not reach those points");
+                ForgetSamples($"state '{id}' baked its navigation");
                 return result;
             }
             catch (Exception original)
@@ -275,6 +315,7 @@ namespace MapExpansions.Navigation
                 if (reached < probes.Count) Core.Log.Warning(line);
                 else Core.Log.Msg(line);
             }
+            ForgetSamples($"property '{code}' baked its navigation");
         }
     }
 }
