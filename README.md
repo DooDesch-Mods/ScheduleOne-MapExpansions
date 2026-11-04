@@ -2,6 +2,8 @@
 
 > 🛟 **Need help or found a bug?** Get support at [support.doodesch.de/mapexpansions](https://support.doodesch.de/mapexpansions).
 
+**Download:** [Nexus Mods](https://www.nexusmods.com/schedule1/mods/3033) · [Thunderstore](https://thunderstore.io/c/schedule-i/p/DooDesch/MapExpansions/) · [GitHub Releases](https://github.com/DooDesch-Mods/ScheduleOne-MapExpansions/releases)
+
 📖 **API documentation:** [docs.doodesch.de/mods/mapexpansions/api/](https://docs.doodesch.de/mods/mapexpansions/api/)
 
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
@@ -17,7 +19,7 @@
 
 ## For players
 
-Install it when a mod asks for it, like [Based](https://thunderstore.io/c/schedule-i/p/DooDesch/Based/). On its own it adds nothing you can see.
+Install it when a mod asks for it, like [Based](https://www.nexusmods.com/schedule1/mods/3034). On its own it adds nothing you can see.
 
 In co-op, every player needs it and the same version of the mods that use it.
 
@@ -38,6 +40,22 @@ The map editor lives in `Editor/`. It is a tool for authors and is not part of t
 ## Requirements
 
 - [MelonLoader](https://melonwiki.xyz/) 0.7.3 or newer
+
+## Installation
+
+### Recommended: Nexus Mods
+
+1. Install **MelonLoader 0.7.3** for Schedule I ([melonwiki.xyz](https://melonwiki.xyz/)).
+2. Download MapExpansions from [Nexus Mods](https://www.nexusmods.com/schedule1/mods/3033) and install it with Vortex,
+   or put **`MapExpansions.dll`** into your Schedule I `Mods/` folder.
+
+### Thunderstore mod manager
+
+Install with a mod manager (r2modman / Gale) from the Schedule I community, or use the [Thunderstore page](https://thunderstore.io/c/schedule-i/p/DooDesch/MapExpansions/).
+
+### Manual
+
+Download the zip from [GitHub Releases](https://github.com/DooDesch-Mods/ScheduleOne-MapExpansions/releases) and put `MapExpansions.dll` into your Schedule I `Mods/` folder.
 
 ## License
 
