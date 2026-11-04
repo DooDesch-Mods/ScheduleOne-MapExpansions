@@ -4,6 +4,12 @@ All notable changes to MapExpansions are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to Semantic Versioning.
 
+## [1.0.4] - 2026-11-04
+
+### Fixed
+- Rain sounds muffled under an expansion's roof, like in any other building. It played as if you stood outside.
+- Botanists use spawn stations in a freshly finished expansion room. They ignored them there before.
+
 ## [1.0.3] - 2026-11-03
 
 ### Fixed
