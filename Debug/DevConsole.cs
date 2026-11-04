@@ -170,6 +170,7 @@ namespace MapExpansions.Debug
                     case "mxbuy" when parts.Length > 1: World.RealtorListings.Buy(parts[1]); break;
                     case "mxdoors" when parts.Length > 3: Doors(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 8f, parts.Length > 5 && parts[5] == "open"); break;
                     case "mxnav": NavTest.Handle(parts); break;
+                    case "mxreach": ReachTest.Handle(parts); break;
                     case "mxveh": VehicleTest.Handle(parts); break;
                     default:
                         Core.Log.Warning($"[dev] unknown command '{cmd}'");
