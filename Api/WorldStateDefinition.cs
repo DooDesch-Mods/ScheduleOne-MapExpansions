@@ -15,6 +15,13 @@ namespace MapExpansions
         public Bounds? NavigationBounds { get; set; }
         /// <summary>Ordered world-space points which must have a complete walking path after baking.</summary>
         public List<Vector3> NavigationProbes { get; } = new();
+        /// <summary>
+        /// Floor inside <see cref="NavigationBounds"/> that the main world's NavMesh already covers, such as an old room whose
+        /// walls came out. The bake leaves these boxes out, so two walking maps never lie on top of each other, and joins
+        /// each box's edges to the new floor around it every 0.75 m. A box's bottom face is the floor height. Without
+        /// these, an NPC standing there can end up on the state's copy of the floor with no way back to the world.
+        /// </summary>
+        public List<Bounds> NavigationExistingFloor { get; } = new();
         /// <summary>Exact registered agent names this state must support. Empty requires every registered profile.</summary>
         public List<string> NavigationAgents { get; } = new();
         /// <summary>An embedded editor layer containing copies, rules and boxes for this state.</summary>

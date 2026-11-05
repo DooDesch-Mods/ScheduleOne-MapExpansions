@@ -139,7 +139,122 @@ namespace MapExpansions.Navigation
             }
         }
 
-        internal static StateBake BakeState(string id, Bounds bounds, IReadOnlyList<Vector3> probes, Transform parent, IReadOnlyList<string> requiredAgents)
+        /// <summary>
+        /// Marks floor the main world already walks on as not walkable for one state bake, so the state's mesh leaves it
+        /// to the world's mesh. The volumes reach half a metre below each box so the floor surface lies inside them.
+        /// </summary>
+        private sealed class ExistingFloorHold : IDisposable
+        {
+            private readonly List<GameObject> _volumes = new();
+
+            internal ExistingFloorHold(string id, IReadOnlyList<Bounds> floors, Transform parent)
+            {
+                try
+                {
+                    int notWalkable = NavMesh.GetAreaFromName("Not Walkable");
+                    if (notWalkable < 0) throw new InvalidOperationException("the NavMesh area 'Not Walkable' does not exist");
+                    for (int i = 0; i < floors.Count; i++)
+                    {
+                        var f = floors[i];
+                        var go = new GameObject($"MapExpansions.{id}.ExistingFloor.{i}") { layer = 0 };
+                        _volumes.Add(go);
+                        go.transform.SetParent(parent, true);
+                        go.transform.SetPositionAndRotation(f.center + Vector3.down * 0.25f, Quaternion.identity);
+                        go.AddComponent(Il2CppType.Of<NavMeshModifierVolume>());
+                        var volume = go.GetComponent<NavMeshModifierVolume>();
+                        if (volume == null) throw new InvalidOperationException($"state '{id}' could not add a NavMeshModifierVolume");
+                        volume.center = Vector3.zero;
+                        volume.size = f.size + Vector3.up * 0.5f;
+                        volume.area = notWalkable;
+                    }
+                    if (floors.Count > 0) Core.Log.Msg($"state nav: '{id}' leaves {floors.Count} existing floor box(es) to the world's NavMesh");
+                }
+                catch
+                {
+                    Dispose();
+                    throw;
+                }
+            }
+
+            public void Dispose()
+            {
+                foreach (var go in _volumes)
+                    if (go != null) { go.SetActive(false); UnityEngine.Object.Destroy(go); }
+                _volumes.Clear();
+            }
+        }
+
+        private const float StitchStep = 0.75f;
+        private const float StitchReach = 0.6f;
+
+        /// <summary>Points just inside and just outside each edge of an existing floor box, one pair every <see cref="StitchStep"/>.</summary>
+        private static IEnumerable<(Vector3 inner, Vector3 outer)> EdgePairs(Bounds f)
+        {
+            float y = f.min.y;
+            foreach (var (from, to, outward) in new[]
+            {
+                (new Vector2(f.min.x, f.min.z), new Vector2(f.max.x, f.min.z), Vector2.down),
+                (new Vector2(f.min.x, f.max.z), new Vector2(f.max.x, f.max.z), Vector2.up),
+                (new Vector2(f.min.x, f.min.z), new Vector2(f.min.x, f.max.z), Vector2.left),
+                (new Vector2(f.max.x, f.min.z), new Vector2(f.max.x, f.max.z), Vector2.right),
+            })
+            {
+                float length = Vector2.Distance(from, to);
+                int count = Mathf.Max(1, Mathf.FloorToInt(length / StitchStep));
+                for (int i = 0; i < count; i++)
+                {
+                    var p = Vector2.Lerp(from, to, (i + 0.5f) / count);
+                    var a = p - outward * StitchReach;
+                    var b = p + outward * StitchReach;
+                    yield return (new Vector3(a.x, y, a.y), new Vector3(b.x, y, b.y));
+                }
+            }
+        }
+
+        private static bool InsideXZ(Bounds b, Vector3 p) => p.x >= b.min.x && p.x <= b.max.x && p.z >= b.min.z && p.z <= b.max.z;
+
+        /// <summary>
+        /// True when the NavMesh already runs from a to b about as straight as the seam would. A detour through the next seam
+        /// along the edge is longer and still gets its own. NavMesh.Raycast with a query filter throws ObjectCollectedException
+        /// under IL2CPP interop, so this uses CalculatePath.
+        /// </summary>
+        private static bool AlreadyJoined(Vector3 a, Vector3 b, NavMeshQueryFilter filter)
+        {
+            var path = new NavMeshPath();
+            if (!NavMesh.CalculatePath(a, b, filter, path) || path.status != NavMeshPathStatus.PathComplete) return false;
+            var corners = path.corners;
+            float length = 0f;
+            for (int i = 1; i < corners.Length; i++) length += Vector3.Distance(corners[i - 1], corners[i]);
+            return length <= Vector3.Distance(a, b) * 1.5f + 0.2f;
+        }
+
+        /// <summary>
+        /// Joins one existing floor box to the state's new floor for one agent. A pair is joined only where the inner end lies
+        /// on the box, the outer end on new floor inside the volume, no wall stands between them and the NavMesh does not
+        /// already run straight across.
+        /// </summary>
+        private static (int joined, int open) Stitch(string id, Bounds volume, IReadOnlyList<Bounds> floors, Bounds f, int agent, StateBake result)
+        {
+            // The interop filter wraps a boxed IL2CPP value the native GC may take between calls, so each query gets its own.
+            NavMeshQueryFilter Filter() => new NavMeshQueryFilter { agentTypeID = agent, areaMask = NavMesh.AllAreas };
+            int joined = 0, open = 0;
+            foreach (var (inner, outer) in EdgePairs(f))
+            {
+                if (!InsideXZ(volume, outer) || floors.Any(other => InsideXZ(other, outer))) continue;
+                open++;
+                if (!NavMesh.SamplePosition(inner, out NavMeshHit a, StitchReach, Filter()) || Mathf.Abs(a.position.y - inner.y) > 0.5f || !InsideXZ(f, a.position)) continue;
+                if (!NavMesh.SamplePosition(outer, out NavMeshHit b, StitchReach, Filter()) || Mathf.Abs(b.position.y - outer.y) > 0.5f || InsideXZ(f, b.position)) continue;
+                if (Physics.Linecast(a.position + Vector3.up * 0.4f, b.position + Vector3.up * 0.4f, Mask, QueryTriggerInteraction.Ignore) ||
+                    Physics.Linecast(a.position + Vector3.up * 1.2f, b.position + Vector3.up * 1.2f, Mask, QueryTriggerInteraction.Ignore)) continue;
+                if (AlreadyJoined(a.position, b.position, Filter())) continue;
+                result.Links.Add(Source.NavLinks.AddOwned(a.position, b.position, 0.7f, new[] { agent }));
+                joined++;
+            }
+            return (joined, open);
+        }
+
+        internal static StateBake BakeState(string id, Bounds bounds, IReadOnlyList<Vector3> probes, Transform parent, IReadOnlyList<string> requiredAgents,
+            IReadOnlyList<Bounds> existingFloor)
         {
             var result = new StateBake();
             try
@@ -152,6 +267,7 @@ namespace MapExpansions.Navigation
                 int area = NavMesh.GetAreaFromName(InteriorArea);
                 if (area < 0) throw new InvalidOperationException($"state '{id}' needs the NavMesh area '{InteriorArea}', which this game does not define");
                 using var placedItems = new PlacedItemsBakeHold(id, bounds);
+                using var existing = new ExistingFloorHold(id, existingFloor, parent);
                 foreach (int agent in agents)
                 {
                     var go = new GameObject($"MapExpansions.{id}.StateNav.{agent}");
@@ -180,6 +296,21 @@ namespace MapExpansions.Navigation
                         blocked++;
                     }
                 }
+                existing.Dispose();
+                // Each existing floor box meets the new floor along its open edges; one seam per step keeps the join when a
+                // placed item later carves some of them away.
+                for (int i = 0; i < existingFloor.Count; i++)
+                    foreach (int agent in agents)
+                    {
+                        var (joined, open) = Stitch(id, bounds, existingFloor, existingFloor[i], agent, result);
+                        string line = $"state nav: '{id}' existing floor {i} {existingFloor[i]} joined to the new floor at {joined} of {open} edge points for agent '{NpcNavigation.AgentName(agent)}' ({agent})";
+                        if (joined > 0) Core.Log.Msg(line);
+                        else
+                        {
+                            Core.Log.Warning(line + "; NPCs on that floor cannot reach the new rooms through it");
+                            blocked++;
+                        }
+                    }
                 // The first two authored probes straddle the doorway. A short seam joins separate NavMesh data.
                 if (probes.Count >= 2)
                 {

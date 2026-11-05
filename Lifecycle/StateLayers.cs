@@ -29,6 +29,7 @@ namespace MapExpansions.Lifecycle
             state.PropertyExtensions.AddRange(source.PropertyExtensions);
             state.NavigationProbes.AddRange(source.NavigationProbes);
             state.NavigationAgents.AddRange(source.NavigationAgents);
+            state.NavigationExistingFloor.AddRange(source.NavigationExistingFloor);
             return state;
         }
     }
