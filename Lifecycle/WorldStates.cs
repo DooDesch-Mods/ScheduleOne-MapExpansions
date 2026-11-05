@@ -212,6 +212,10 @@ namespace MapExpansions.Lifecycle
                         errors.Add($"state '{state.Id}' declares navigation agents without a navigation volume");
                     if (state.NavigationBounds.HasValue && (!ValidBounds(state.NavigationBounds.Value) || state.NavigationProbes.Count < 2))
                         errors.Add($"state '{state.Id}' navigation needs valid bounds and at least two doorway probes");
+                    if (state.NavigationExistingFloor.Count > 0 && !state.NavigationBounds.HasValue)
+                        errors.Add($"state '{state.Id}' declares existing floor without a navigation volume");
+                    else if (state.NavigationExistingFloor.Any(f => !ValidBounds(f) || !f.Intersects(state.NavigationBounds.Value)))
+                        errors.Add($"state '{state.Id}' existing floor boxes must be valid and lie in the navigation volume");
                     Definitions[(def.Id, state.Id)] = state;
                 }
                 catch (Exception e) { errors.Add($"state '{source.Id}' cannot be resolved: {e.Message}"); }
@@ -319,7 +323,7 @@ namespace MapExpansions.Lifecycle
                 if (Il2CppFishNet.InstanceFinder.IsClient && !Il2CppFishNet.InstanceFinder.IsServer)
                     Core.Log.Msg($"world state: '{b.Id}/{state.Id}' geometry and property effects applied; NPC navigation is server-owned on this client");
                 else
-                    result.Navigation = PropertyNavigation.BakeState(b.Id + "/" + state.Id, state.NavigationBounds.Value, state.NavigationProbes, b.Root.transform, state.NavigationAgents);
+                    result.Navigation = PropertyNavigation.BakeState(b.Id + "/" + state.Id, state.NavigationBounds.Value, state.NavigationProbes, b.Root.transform, state.NavigationAgents, state.NavigationExistingFloor);
             }
             // The game's rain and its cover queries read a mask baked without this state's roofs; the world's own
             // colliders answer over the state's volume instead.
