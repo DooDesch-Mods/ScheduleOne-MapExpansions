@@ -27,8 +27,10 @@ namespace MapExpansions.Debug
     ///
     /// mxreach code [clear]                       per employee: vanilla reach of every object, expansion tiles summed up
     /// mxreach place code itemId wing|old [rot]   builds an item on a free tile of the expansion or of the old grid
-    /// mxreach setup code                         assigns every bed, pot and spawn station to each botanist, first storage as supplies
-    /// mxreach stock code itemId qty              puts items into the property's first storage
+    /// mxreach setup code [wing]                  assigns every bed, pot, drying rack and spawn station to each botanist, a
+    ///                                            storage rack as supplies (with wing: one on the expansion tiles, and only
+    ///                                            the drying racks on the expansion tiles stay assigned)
+    /// mxreach stock code itemId qty              puts items into the botanist's supplies, else the first storage rack
     /// mxreach work code                          each employee's active work and reported issues
     /// </summary>
     internal static class ReachTest
@@ -39,7 +41,7 @@ namespace MapExpansions.Debug
             switch (sub)
             {
                 case "place" when parts.Length > 4: Place(parts[2], parts[3], parts[4], parts.Length > 5 ? int.Parse(parts[5]) : 0); break;
-                case "setup" when parts.Length > 2: Setup(parts[2]); break;
+                case "setup" when parts.Length > 2: Setup(parts[2], parts.Length > 3 && parts[3] == "wing"); break;
                 case "stock" when parts.Length > 4: Stock(parts[2], parts[3], int.Parse(parts[4])); break;
                 case "work" when parts.Length > 2: Work(parts[2]); break;
                 case "keepcache" when parts.Length > 2:
@@ -55,7 +57,7 @@ namespace MapExpansions.Debug
                 }
                 case "fill" when parts.Length > 2: Fill(parts[2], parts.Length > 3 ? int.Parse(parts[3]) : 2); break;
                 case "" or "help":
-                    Core.Log.Warning("[dev] mxreach code [clear] | place code itemId wing|old [rot] | setup code | stock code itemId qty | work code");
+                    Core.Log.Warning("[dev] mxreach code [clear] | place code itemId wing|old [rot] | setup code [wing] | stock code itemId qty | work code");
                     break;
                 default: Report(parts[1], parts.Length > 2 && parts[2] == "clear"); break;
             }
@@ -170,11 +172,17 @@ namespace MapExpansions.Debug
             Core.Log.Msg($"[dev] mxreach place: built {itemId} on {(wing ? "expansion" : "old")} tile {origin.x},{origin.y} at {built.transform.position}, guid {built.GUID}");
         }
 
-        private static void Setup(string code)
+        private static bool OnExpansion(BuildableItem item) =>
+            item?.TryCast<GridItem>() is GridItem gi && gi.CoordinatePairs != null &&
+            gi.CoordinatePairs.ToArray().Any(c => IsExpansionTile(gi.OwnerGrid?.GetTile(c.coord2)));
+
+        private static void Setup(string code, bool wingSupplies)
         {
             var p = Find(code);
             if (p == null) return;
-            var storage = p.BuildableItems.ToArray().FirstOrDefault(i => i?.TryCast<PlaceableStorageEntity>() != null && (i.ItemInstance?.ID?.Contains("storagerack") ?? false));
+            var racks = p.BuildableItems.ToArray().Where(i => i?.TryCast<PlaceableStorageEntity>() != null && (i.ItemInstance?.ID?.Contains("storagerack") ?? false)).ToList();
+            var storage = wingSupplies ? racks.FirstOrDefault(OnExpansion) : racks.FirstOrDefault();
+            if (wingSupplies && storage == null) Core.Log.Warning($"[dev] mxreach setup: '{code}' has no storage rack on the expansion tiles; supplies stay unset");
             int botanists = 0;
             foreach (var e in p.Employees)
             {
@@ -186,18 +194,22 @@ namespace MapExpansions.Debug
                 int added = 0;
                 foreach (var item in p.BuildableItems)
                 {
-                    if (item == null || item.TryCast<GrowContainer>() == null && item.TryCast<MushroomSpawnStation>() == null) continue;
+                    if (item == null || item.TryCast<GrowContainer>() == null && item.TryCast<MushroomSpawnStation>() == null && item.TryCast<DryingRack>() == null) continue;
                     if (config.Assigns.SelectedObjects.Contains(item)) continue;
                     config.Assigns.AddItem(item);
                     added++;
                 }
+                // With wing, only the drying racks on the expansion stay assigned, so the botanist has to use one of them.
+                if (wingSupplies)
+                    foreach (var item in config.Assigns.SelectedObjects.ToArray())
+                        if (item?.TryCast<DryingRack>() != null && !OnExpansion(item)) config.Assigns.RemoveItem(item);
                 if (storage != null) config.Supplies.SetObject(storage, true);
                 // Without a locker and the day's pay the botanist never reaches its task checks.
                 var locker = p.BuildableItems.ToArray().FirstOrDefault(i => i != null && i.GetComponent<EmployeeHome>() != null);
                 if (locker != null) config.Home.SetObject(locker, true);
                 b.SetIsPaid();
-                Core.Log.Msg($"[dev] mxreach setup: {b.FirstName} got {added} more objects ({config.Assigns.SelectedObjects.Count} assigned), " +
-                             $"supplies {(storage != null ? Name(storage) : "none on the property")}, locker {(locker != null ? Name(locker) : "none on the property")}, paid for today");
+                Core.Log.Msg($"[dev] mxreach setup: {b.FirstName} got {added} more objects ({config.Assigns.SelectedObjects.Count} assigned, {config.AssignedRacks.Count} drying racks), " +
+                             $"supplies {(storage != null ? Name(storage) + " at " + storage.transform.position + (OnExpansion(storage) ? " on expansion tiles" : "") : "none on the property")}, locker {(locker != null ? Name(locker) : "none on the property")}, paid for today");
             }
             if (botanists == 0) Core.Log.Warning($"[dev] mxreach setup: '{code}' has no botanist; hire one with 'addemployee botanist {code}'");
             // Handlers need the same locker and pay before they look at their routes.
@@ -218,12 +230,19 @@ namespace MapExpansions.Debug
         {
             var p = Find(code);
             if (p == null) return;
-            var storage = p.BuildableItems.ToArray().Where(i => i?.ItemInstance?.ID?.Contains("storagerack") ?? false).Select(i => i.TryCast<PlaceableStorageEntity>()).FirstOrDefault(s => s != null);
+            PlaceableStorageEntity storage = null;
+            foreach (var e in p.Employees)
+            {
+                var supplies = e?.TryCast<Botanist>()?.configuration?.Supplies?.SelectedObject;
+                storage = supplies?.TryCast<PlaceableStorageEntity>();
+                if (storage != null) break;
+            }
+            storage ??= p.BuildableItems.ToArray().Where(i => i?.ItemInstance?.ID?.Contains("storagerack") ?? false).Select(i => i.TryCast<PlaceableStorageEntity>()).FirstOrDefault(s => s != null);
             if (storage == null) { Core.Log.Warning($"[dev] mxreach stock: '{code}' has no storage"); return; }
             var def = Il2CppScheduleOne.Registry.GetItem(itemId);
             if (def == null) { Core.Log.Warning($"[dev] mxreach stock: no item '{itemId}'"); return; }
             storage.StorageEntity.InsertItem(def.GetDefaultInstance(qty), true);
-            Core.Log.Msg($"[dev] mxreach stock: put {qty} {itemId} into {Name(storage)}");
+            Core.Log.Msg($"[dev] mxreach stock: put {qty} {itemId} into {Name(storage)} at {storage.transform.position}{(OnExpansion(storage) ? " on expansion tiles" : "")}");
         }
 
         private static void Work(string code)
@@ -237,6 +256,13 @@ namespace MapExpansions.Debug
                 var issues = e.WorkIssues?.ToArray().Select(w => $"'{w.Reason}' ({w.Fix})").ToList() ?? new List<string>();
                 Core.Log.Msg($"[dev] mxreach work: {e.FirstName} at {e.transform.position}, active {(active != null ? active.Name : "none")}, " +
                              $"issues: {(issues.Count > 0 ? string.Join("; ", issues) : "none")}");
+                foreach (var item in p.BuildableItems)
+                {
+                    var rack = item?.TryCast<DryingRack>();
+                    if (rack == null) continue;
+                    Core.Log.Msg($"[dev] mxreach work:   drying rack at {item.transform.position}{(OnExpansion(item) ? " on expansion tiles" : "")}: " +
+                                 $"input {rack.InputSlot.Quantity}, drying {rack.GetTotalDryingItems()}, output {rack.OutputSlot.Quantity}");
+                }
                 foreach (var item in p.BuildableItems)
                 {
                     var station = item?.TryCast<MushroomSpawnStation>();
