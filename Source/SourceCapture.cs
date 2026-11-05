@@ -31,6 +31,18 @@ namespace MapExpansions.Source
 
         /// <summary>The source scene's characters, by object name.</summary>
         public readonly List<SourceCharacter> Characters = new();
+
+        /// <summary>Objects that carried the game's pay phone script before the strip, by their place under <see cref="Root"/>.</summary>
+        public readonly List<SourcePayPhone> PayPhones = new();
+    }
+
+    internal sealed class SourcePayPhone
+    {
+        /// <summary>Sibling indices from the root down; names of a scene repeat, indices do not.</summary>
+        public int[] Indices;
+
+        /// <summary>Name path from the root, for the log and as a check of the resolved object.</summary>
+        public string Path;
     }
 
     internal sealed class NavSource
@@ -280,6 +292,7 @@ namespace MapExpansions.Source
             Captured[src.Key] = captured;
             long cloneMs = t.ElapsedMilliseconds;
 
+            CollectPayPhones(clone, captured);
             t.Restart();
             Strip(clone);
             long stripMs = t.ElapsedMilliseconds;
@@ -405,6 +418,29 @@ namespace MapExpansions.Source
             }
             Core.Log.Msg($"capture: {captured.Characters.Count} characters in '{captured.SceneName}': " +
                          string.Join(", ", captured.Characters.Select(c => $"{c.ObjectName} ({c.Id}, look {(c.Data.GetOriginalData().Appearance?.DefaultAppearance != null ? "yes" : "no")})")));
+        }
+
+        /// <summary>
+        /// The strip takes the pay phone script along, so where it sat is noted first; the build puts a working pay phone
+        /// of the main world there.
+        /// </summary>
+        private static void CollectPayPhones(GameObject clone, CapturedSource captured)
+        {
+            foreach (var phone in clone.GetComponentsInChildren<Il2CppScheduleOne.Calling.PayPhone>(true))
+            {
+                var indices = new List<int>();
+                var names = new List<string>();
+                for (var t = phone.transform; t != null && t != clone.transform; t = t.parent)
+                {
+                    indices.Add(t.GetSiblingIndex());
+                    names.Add(t.name);
+                }
+                indices.Reverse();
+                names.Reverse();
+                captured.PayPhones.Add(new SourcePayPhone { Indices = indices.ToArray(), Path = string.Join("/", names) });
+            }
+            Core.Log.Msg($"capture: {captured.PayPhones.Count} pay phones in '{captured.SceneName}'" +
+                         (captured.PayPhones.Count > 0 ? ": " + string.Join(", ", captured.PayPhones.Select(p => $"'{p.Path}'")) : ""));
         }
 
         private static void KeepLoaded(Object o)
