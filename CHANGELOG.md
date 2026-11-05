@@ -4,6 +4,15 @@ All notable changes to MapExpansions are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to Semantic Versioning.
 
+## [1.1.0] - 2026-11-05
+
+### Fixed
+- Pay phones in expansions such as Serena Flats ring for a waiting call and can be answered.
+
+### For mod authors
+- New `WorldStateDefinition.NavigationExistingFloor`: floor the world's NavMesh already covers stays out of the
+  state bake and is joined along its edges every 0.75 m.
+
 ## [1.0.4] - 2026-11-04
 
 ### Fixed
