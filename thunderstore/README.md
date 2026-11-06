@@ -9,7 +9,7 @@
 ![MelonLoader](https://img.shields.io/badge/MelonLoader-0.7.3+-green)
 [![Discord](https://mods.doodesch.de/img/badge.svg)](https://mods.doodesch.de) [![Polyfill](https://polyfill.doomods.com/badge/mapexpansions.svg)](https://polyfill.doomods.com/mod/mapexpansions)
 
-[![MLVScan MapExpansions.dll](https://mlvscan.com/attestations/att_iqtl1lGs1qXj0h72EsYzSpjJ/badge.svg)](https://mlvscan.com/attestations/att_iqtl1lGs1qXj0h72EsYzSpjJ)
+[![MLVScan MapExpansions.dll](https://mlvscan.com/attestations/att_1Qpn0Y-oSFkjKffUb6US1K1M/badge.svg)](https://mlvscan.com/attestations/att_1Qpn0Y-oSFkjKffUb6US1K1M)
 
 ![MapExpansions](https://raw.githubusercontent.com/DooDesch-Mods/ScheduleOne-MapExpansions/main/docs/img/header.jpg)
 
