@@ -35,7 +35,7 @@ namespace MapExpansions
     public static class MapExpansionsApi
     {
         /// <summary>Version of this API. Raised when a public member changes.</summary>
-        public const string ApiVersion = "0.4.0";
+        public const string ApiVersion = "0.5.0";
 
         /// <summary>
         /// Raised when an expansion is placed and joined in the main world, once per world load. The argument is the
@@ -199,6 +199,16 @@ namespace MapExpansions
         public static Mesh ExtractRendererMesh(MeshRenderer renderer, string name) => World.MeshCarver.BuildForward(renderer, name);
 
         public static string ExpansionAt(Vector3 world) => Regions.RegionRegistry.ExpansionAt(world);
+
+        /// <summary>Whether the object is the main-world object of a <see cref="PropertyFixtureDefinition"/>.</summary>
+        public static bool IsFixture(GameObject obj) => World.PropertyFixtures.Find(obj) != null;
+
+        /// <summary>
+        /// Frees (or closes again) the tiles of a fixture whose object stays but is out of use in a way the framework
+        /// cannot see. Removing, disabling, hiding or moving the object frees its tiles automatically; this call is only
+        /// for other cases. Returns false when the object is no fixture.
+        /// </summary>
+        public static bool SetFixtureReleased(GameObject obj, bool released) => World.PropertyFixtures.SetReleased(obj, released);
 
         internal static void RaiseReady(string expansionId)
         {

@@ -54,6 +54,7 @@ namespace MapExpansions.Debug
     /// mxnav ...                       NPC navigation tests, see NavTest
     /// mxveh ...                       vehicle navigation tests, see VehicleTest
     /// mxpayphone [ring|answer|end]    pay phones and their call state, see PayPhoneTest
+    /// mxfixtures [count|aim|hide|show|release|unrelease id]  tile fixtures and whether their object stands, see FixturesTest
     /// </summary>
     internal static class DevConsole
     {
@@ -174,6 +175,7 @@ namespace MapExpansions.Debug
                     case "mxreach": ReachTest.Handle(parts); break;
                     case "mxveh": VehicleTest.Handle(parts); break;
                     case "mxpayphone": PayPhoneTest.Handle(parts); break;
+                    case "mxfixtures": FixturesTest.Handle(parts); break;
                     default:
                         Core.Log.Warning($"[dev] unknown command '{cmd}'");
                         return false;

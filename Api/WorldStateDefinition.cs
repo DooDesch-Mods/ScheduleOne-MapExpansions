@@ -47,5 +47,11 @@ namespace MapExpansions
 
         /// <summary>World-space shift of the object's pivot.</summary>
         public Vector3 Offset { get; set; }
+
+        /// <summary>
+        /// The object may be missing, for example because another mod removed it. An optional move is then logged at info
+        /// level and skipped; otherwise a missing object fails the whole state.
+        /// </summary>
+        public bool Optional { get; set; }
     }
 }

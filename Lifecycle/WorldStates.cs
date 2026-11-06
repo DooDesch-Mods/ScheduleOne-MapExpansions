@@ -176,6 +176,15 @@ namespace MapExpansions.Lifecycle
                         if (p.GridIndex < 0) errors.Add($"state '{state.Id}' grid index is negative");
                         if (p.Tiles.Select(x => (x.X, x.Y)).Distinct().Count() != p.Tiles.Count)
                             errors.Add($"state '{state.Id}' repeats tile coordinates");
+                        var fixtureIds = new HashSet<string>(StringComparer.Ordinal);
+                        foreach (var fixture in p.Fixtures)
+                        {
+                            if (fixture == null || string.IsNullOrEmpty(fixture.Id) || !fixtureIds.Add(fixture.Id))
+                                errors.Add($"state '{state.Id}' extension '{p.Id}' has a missing or repeated fixture id");
+                            else if (string.IsNullOrEmpty(fixture.Path)) errors.Add($"state '{state.Id}' fixture '{fixture.Id}' needs a path");
+                            else if (fixture.Tiles.Count == 0 || fixture.Tiles.Select(x => (x.X, x.Y)).Distinct().Count() != fixture.Tiles.Count)
+                                errors.Add($"state '{state.Id}' fixture '{fixture.Id}' needs at least one tile and no repeated coordinate");
+                        }
                         var surfaces = new HashSet<string>();
                         foreach (var surface in p.Surfaces)
                         {
@@ -308,7 +317,11 @@ namespace MapExpansions.Lifecycle
             }
             ColliderKeepAlive.DetachForState(offColliders, result.DetachedColliders);
             // Before the bake, so that navigation sees a moved object where it now stands.
-            foreach (var move in state.Moves) result.Moves.Add(ObjectMoves.Apply(b.Id + "/" + state.Id, move));
+            foreach (var move in state.Moves)
+            {
+                var moved = ObjectMoves.Apply(b.Id + "/" + state.Id, move);
+                if (moved != null) result.Moves.Add(moved);
+            }
             Physics.SyncTransforms();
             long rulesMs = clock.ElapsedMilliseconds;
 

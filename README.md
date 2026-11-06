@@ -30,6 +30,7 @@ Register an `ExpansionDefinition` in `OnInitializeMelon`:
 - **New areas:** terrain from a source scene, connections to the main world, regions and a sheet on the phone map.
 - **Life in the area:** NPC and vehicle navigation, buildings, parking lots, deal locations, shops and a police station.
 - **Properties:** copy a property to a new place, or extend an existing one with new floor, grids and docks.
+- **Fixtures:** a `PropertyFixtureDefinition` on a property extension closes the tiles under a main-world object, such as a moved sink, for building only while the object stands. Removing, disabling, hiding or moving it frees them; `MapExpansionsApi.SetFixtureReleased` covers other cases. `ObjectMoveDefinition.Optional` skips a move whose object another mod removed.
 - **World states:** named states you switch at runtime and take back, for upgrades that build up over time.
 - **Edits:** hide, cut or copy main-world objects, in code or from a JSON layer.
 
