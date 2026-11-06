@@ -4,6 +4,18 @@ All notable changes to MapExpansions are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to Semantic Versioning.
 
+## [1.2.0] - 2026-11-06
+
+### Added
+- Floor under a moved room object, like the sink in Based's Sweatshop wing, opens for building as soon as another
+  mod removes that object.
+
+### For mod authors
+- New `PropertyFixtureDefinition` in `PropertyExtensionDefinition.Fixtures`: tiles stay closed while their object
+  stands, and open when it is removed, hidden or moved.
+- New `MapExpansionsApi.IsFixture` and `SetFixtureReleased` (API 0.5.0) for a mod that takes such an object out of use.
+- New `ObjectMoveDefinition.Optional`: a move whose object is missing is skipped instead of failing the world state.
+
 ## [1.1.0] - 2026-11-05
 
 ### Fixed
