@@ -27,5 +27,29 @@ namespace MapExpansions
         public List<PropertyDockDefinition> Docks { get; } = new();
         /// <summary>Additional world-space boxes. Existing property bounds are retained.</summary>
         public List<Bounds> Bounds { get; } = new();
+        /// <summary>
+        /// Main-world objects whose tiles stay closed for building while the object stands. Tiles of a fixture that
+        /// <see cref="Tiles"/> lacks are built along with them, so a fixture needs no second list. A repeated extension
+        /// must repeat its fixtures too, because they are part of what makes it identical.
+        /// </summary>
+        public List<PropertyFixtureDefinition> Fixtures { get; } = new();
+    }
+
+    /// <summary>
+    /// A main-world object that occupies grid tiles, such as a sink standing in a room. The tiles take part in the grid like
+    /// any other, but nothing can be placed on them while the object stands there. Removing, disabling, hiding or moving
+    /// the object frees them without a call; <see cref="MapExpansionsApi.SetFixtureReleased"/> covers the other cases.
+    /// An object that is missing when the extension applies is not an error: its tiles are free.
+    /// </summary>
+    public sealed class PropertyFixtureDefinition
+    {
+        /// <summary>Unique inside the extension.</summary>
+        public string Id { get; set; }
+
+        /// <summary>Path of the object in the main world, as in <see cref="ObjectMoveDefinition.Path"/>. It is resolved after the state's moves.</summary>
+        public string Path { get; set; }
+
+        /// <summary>The cells under the object, on the extension's grid.</summary>
+        public List<GridCoordinate> Tiles { get; } = new();
     }
 }

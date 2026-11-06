@@ -53,10 +53,19 @@ namespace MapExpansions.World
             }
         }
 
+        /// <summary>The lease of the move, or null when an optional move found no object.</summary>
         internal static Lease Apply(string owner, ObjectMoveDefinition move)
         {
             var target = MainCopies.FindMain(move.Path);
-            if (target == null) throw new InvalidOperationException($"move '{move.Id}': no main-world object at '{move.Path}'");
+            if (target == null)
+            {
+                if (move.Optional)
+                {
+                    Core.Log.Msg($"moves: '{owner}/{move.Id}': no object at '{move.Path}', the optional move is skipped");
+                    return null;
+                }
+                throw new InvalidOperationException($"move '{move.Id}': no main-world object at '{move.Path}'");
+            }
             return new Lease(target, Matrix4x4.Translate(move.Offset), owner + "/" + move.Id);
         }
     }

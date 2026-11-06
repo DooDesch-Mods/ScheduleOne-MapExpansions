@@ -23,6 +23,7 @@ namespace MapExpansions.World
         internal readonly List<BoxCollider> Boxes = new();
         internal readonly List<(Surface surface, bool ownObject)> Surfaces = new();
         internal readonly List<PropertyDockLease> Docks = new();
+        internal readonly List<PropertyFixtures.Fixture> Fixtures = new();
 
         internal void CheckRemovable()
         {
@@ -42,6 +43,11 @@ namespace MapExpansions.World
             CheckRemovable();
             PropertyDocks.CheckRemovalOrder(Docks);
             Damaged = true;
+            for (int i = Fixtures.Count - 1; i >= 0; i--)
+            {
+                PropertyFixtures.Unregister(Fixtures[i]);
+                Fixtures.RemoveAt(i);
+            }
             // Each part leaves its list once it is gone, so a removal that fails half way resumes on the next try.
             for (int i = Docks.Count - 1; i >= 0; i--)
             {
@@ -92,6 +98,8 @@ namespace MapExpansions.World
         {
             foreach (var (surface, _) in Surfaces) GuidLeases.Release(surface, $"surface of '{ExtensionId}'");
             foreach (var dock in Docks) dock.ReleaseGuids();
+            foreach (var fixture in Fixtures) PropertyFixtures.Unregister(fixture);
+            Fixtures.Clear();
         }
     }
 
@@ -157,7 +165,13 @@ namespace MapExpansions.World
             if (prop == null) throw new InvalidOperationException($"property '{def.PropertyCode}' is not in the loaded scene");
             Grid grid = null;
             Tile template = null;
-            if (def.Tiles.Count > 0)
+            // A fixture's cells are tiles of the extension even when Tiles does not list them.
+            var tiles = new List<GridCoordinate>(def.Tiles);
+            var listed = new HashSet<(int, int)>(tiles.Select(c => (c.X, c.Y)));
+            foreach (var fixture in def.Fixtures)
+                foreach (var c in fixture.Tiles)
+                    if (listed.Add((c.X, c.Y))) tiles.Add(c);
+            if (tiles.Count > 0)
             {
                 if (prop.Grids == null || def.GridIndex < 0 || def.GridIndex >= prop.Grids.Count)
                     throw new InvalidOperationException($"property '{def.PropertyCode}' has no grid {def.GridIndex}");
@@ -176,7 +190,7 @@ namespace MapExpansions.World
             int reusedTiles = 0;
             try
             {
-                foreach (var coord in def.Tiles)
+                foreach (var coord in tiles)
                 {
                     var key = new Coordinate(coord.X, coord.Y);
                     // The grid or another extension already has this tile, and it stays when this extension goes.
@@ -210,6 +224,7 @@ namespace MapExpansions.World
                     box.size = bounds.size;
                     lease.Boxes.Add(box);
                 }
+                foreach (var fixture in def.Fixtures) PropertyFixtures.Register(expansion, def, fixture, prop, grid, lease.Fixtures);
                 foreach (var surface in def.Surfaces) AddSurface(expansion, def.Id, prop, surface, lease);
                 foreach (var dock in def.Docks) lease.Docks.Add(PropertyDocks.Apply(expansion, def.Id, prop, dock));
                 var boxes = prop.propertyBoundsColliders?.Where(x => x != null).ToList() ?? new List<BoxCollider>();

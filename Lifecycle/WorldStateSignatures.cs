@@ -37,6 +37,11 @@ namespace MapExpansions.Lifecycle
                 d.Id, d.Index.ToString(CultureInfo.InvariantCulture), d.TemplatePropertyCode, d.TemplateDockIndex.ToString(CultureInfo.InvariantCulture),
                 P(d.At), P(d.Entry), P(d.Exit), P(d.HiddenVehicleAccess),
             }))),
+            Join(e.Fixtures.Select(f => Join(new[]
+            {
+                f.Id, f.Path,
+                Join(f.Tiles.Select(t => (t.X, t.Y)).OrderBy(t => t.X).ThenBy(t => t.Y).Select(t => FormattableString.Invariant($"{t.X},{t.Y}"))),
+            }))),
         });
 
         /// <summary>The copies whose blocks carry surfaces of this extension.</summary>
