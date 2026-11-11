@@ -206,12 +206,18 @@ namespace MapExpansions.World
             return mr;
         }
 
-        /// <summary>Puts <paramref name="patch"/> into the LOD level of <paramref name="source"/>, if it has one; undone at teardown.</summary>
-        internal static void JoinLod(MeshRenderer source, MeshRenderer patch, BuiltExpansion owner)
+        /// <summary>
+        /// Puts <paramref name="made"/> into every LOD level of <paramref name="source"/>'s LOD group that holds
+        /// <paramref name="source"/>, so it is drawn at the same distances. Teardown takes it out again, or
+        /// <paramref name="undo"/> when the caller removes it earlier. Returns the number of levels joined, 0 when the
+        /// source has no LOD group.
+        /// </summary>
+        internal static int JoinLod(MeshRenderer source, MeshRenderer made, BuiltExpansion owner, List<Action> undo = null)
         {
             var group = source.GetComponentInParent<LODGroup>();
-            if (group == null) return;
+            if (group == null) return 0;
             var lods = group.GetLODs();
+            int joinedLevels = 0;
             for (int i = 0; i < lods.Length; i++)
             {
                 var rs = lods[i].renderers;
@@ -222,21 +228,49 @@ namespace MapExpansions.World
                 if (!has) continue;
                 var joined = new Il2CppReferenceArray<Renderer>(rs.Length + 1);
                 for (int k = 0; k < rs.Length; k++) joined[k] = rs[k];
-                joined[rs.Length] = patch;
-                lods[i].renderers = joined;
-                group.SetLODs(lods);
-                int level = i;
-                owner.OnTeardown.Add(() =>
-                {
-                    if (group == null) return;
-                    var now = group.GetLODs();
-                    if (level < now.Length) now[level].renderers = rs;
-                    group.SetLODs(now);
-                });
-                return;
+                joined[rs.Length] = made;
+                // LOD is a struct: the indexer hands out a copy, so the changed level is written back.
+                var level = lods[i];
+                level.renderers = joined;
+                lods[i] = level;
+                joinedLevels++;
             }
-            Core.Log.Warning($"carve: '{MeshCarver.Path(source.transform)}' is under the LOD group '{group.name}' but in none of its levels; " +
-                             "its patch is drawn at every distance");
+            if (joinedLevels == 0)
+            {
+                Core.Log.Warning($"carve: '{MeshCarver.Path(source.transform)}' is under the LOD group '{group.name}' but in none of its levels; " +
+                                 $"'{made.name}' is drawn at every distance");
+                return 0;
+            }
+            group.SetLODs(lods);
+            var ptr = made.Pointer;
+            int found = 0;
+            foreach (var lod in group.GetLODs())
+                if (lod.renderers != null)
+                    foreach (var r in lod.renderers)
+                        if (r != null && r.Pointer == ptr) found++;
+            if (found != joinedLevels)
+                Core.Log.Warning($"carve: '{made.name}' should be in {joinedLevels} LOD levels of '{group.name}' but the group holds it in {found}; " +
+                                 "it may be drawn at the wrong distances");
+            (undo ?? owner.OnTeardown).Add(() =>
+            {
+                if (group == null) return;
+                // Takes out only this renderer, so the joins of other renderers stay whatever order teardown runs in.
+                var now = group.GetLODs();
+                for (int i = 0; i < now.Length; i++)
+                {
+                    var rs = now[i].renderers;
+                    if (rs == null) continue;
+                    var kept = new List<Renderer>(rs.Length);
+                    for (int k = 0; k < rs.Length; k++)
+                        if (rs[k] != null && rs[k].Pointer != ptr) kept.Add(rs[k]);
+                    if (kept.Count == rs.Length) continue;
+                    var level = now[i];
+                    level.renderers = new Il2CppReferenceArray<Renderer>(kept.ToArray());
+                    now[i] = level;
+                }
+                group.SetLODs(now);
+            });
+            return joinedLevels;
         }
     }
 }
