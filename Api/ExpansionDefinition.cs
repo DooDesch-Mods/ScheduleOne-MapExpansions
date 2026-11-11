@@ -202,7 +202,10 @@ namespace MapExpansions
         /// <summary>Colliders off, renderers stay.</summary>
         NoCollision,
 
-        /// <summary>Renderers and colliders off.</summary>
+        /// <summary>
+        /// Renderers and colliders off. An instanced world object, such as a map tree, is selected when its position
+        /// lies in the area, and its instanced copy drawn from afar goes too.
+        /// </summary>
         Remove,
 
         /// <summary>
