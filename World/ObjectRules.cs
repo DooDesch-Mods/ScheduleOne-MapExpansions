@@ -69,6 +69,11 @@ namespace MapExpansions.World
                     Cut(b, index, part, rule, area, offColliders, rule.Effect == ObjectEffect.Cut);
                     continue;
                 }
+                if (rule.Effect == ObjectEffect.ClearDetails)
+                {
+                    Core.Log.Error($"rules: '{b.Id}' {rule}: clearing details only works in a world state; nothing is cleared");
+                    continue;
+                }
                 if (rule.Effect == ObjectEffect.CloseHoles)
                 {
                     if (area.size == Vector3.zero)

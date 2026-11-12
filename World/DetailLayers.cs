@@ -66,6 +66,119 @@ namespace MapExpansions.World
             return used;
         }
 
+        /// <summary>The tufts a <see cref="Clear"/> took out of one rectangle of detail cells, so they can be put back.</summary>
+        internal sealed class Cleared
+        {
+            internal TerrainData Data;
+            internal string Terrain;
+            internal int X, Y, Width, Height;
+            internal readonly List<(int Layer, int[] Cells)> Layers = new();
+            internal long Tufts;
+        }
+
+        /// <summary>
+        /// Takes every grass and bush tuft of <paramref name="t"/> out of the detail cells under the world rectangle
+        /// <paramref name="area"/> (x and z). Returns what it took, with no layers when the rectangle holds none, or null
+        /// on failure with the cause in <paramref name="detail"/>.
+        /// </summary>
+        internal static Cleared Clear(Terrain t, Rect area, out string detail)
+        {
+            detail = "";
+            if (!Resolve())
+            {
+                detail = "calls missing";
+                return null;
+            }
+            var td = t.terrainData;
+            int res = td != null ? td.detailResolution : 0;
+            if (res <= 0)
+            {
+                detail = "no detail map";
+                return null;
+            }
+            Vector3 pos = t.transform.position, size = td.size;
+            int x0 = Mathf.Clamp(Mathf.FloorToInt((area.xMin - pos.x) / size.x * res), 0, res);
+            int x1 = Mathf.Clamp(Mathf.CeilToInt((area.xMax - pos.x) / size.x * res), 0, res);
+            int y0 = Mathf.Clamp(Mathf.FloorToInt((area.yMin - pos.z) / size.z * res), 0, res);
+            int y1 = Mathf.Clamp(Mathf.CeilToInt((area.yMax - pos.z) / size.z * res), 0, res);
+            var cleared = new Cleared { Data = td, Terrain = t.name, X = x0, Y = y0, Width = x1 - x0, Height = y1 - y0 };
+            if (cleared.Width <= 0 || cleared.Height <= 0)
+            {
+                detail = "area outside the terrain";
+                return cleared;
+            }
+            IntPtr usedArr = _layers(td.Pointer, x0, y0, cleared.Width, cleared.Height);
+            int[] used = Array.Empty<int>();
+            if (usedArr != IntPtr.Zero)
+            {
+                int count = (int)Marshal.ReadIntPtr(usedArr, LengthOffset).ToInt64();
+                used = new int[count];
+                Marshal.Copy(usedArr + DataOffset, used, 0, count);
+            }
+            int cells = cleared.Width * cleared.Height;
+            foreach (int layer in used)
+            {
+                var saved = new int[cells];
+                if (!Exchange(td, cleared, layer, saved, toWorld: false, out detail)) return null;
+                foreach (int v in saved) cleared.Tufts += v;
+                cleared.Layers.Add((layer, saved));
+            }
+            detail = $"cells x {x0}..{x1} y {y0}..{y1} of {res}, layers {(used.Length == 0 ? "none" : string.Join(",", used))}";
+            return cleared;
+        }
+
+        /// <summary>Puts back what <see cref="Clear"/> took; false with the cause when the terrain is gone or a call fails.</summary>
+        internal static bool Restore(Cleared cleared, out string detail)
+        {
+            detail = "";
+            if (cleared.Data == null)
+            {
+                detail = "terrain data is gone";
+                return false;
+            }
+            foreach (var (layer, cells) in cleared.Layers)
+                if (!Exchange(cleared.Data, cleared, layer, cells, toWorld: true, out detail)) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Reads one layer's cells of the rectangle and writes them back: zeros after copying them into
+        /// <paramref name="cells"/>, or the contents of <paramref name="cells"/> when <paramref name="toWorld"/>.
+        /// </summary>
+        private static bool Exchange(TerrainData td, Cleared c, int layer, int[] cells, bool toWorld, out string detail)
+        {
+            detail = "";
+            IntPtr arr = _get(td.Pointer, c.X, c.Y, c.Width, c.Height, layer);
+            if (arr == IntPtr.Zero)
+            {
+                detail = $"layer {layer} read nothing";
+                return false;
+            }
+            IntPtr handle = IL2CPP.il2cpp_gchandle_new(arr, true);
+            try
+            {
+                long length = Marshal.ReadIntPtr(arr, LengthOffset).ToInt64();
+                if (length != cells.Length)
+                {
+                    detail = $"layer {layer} has {length} cells, expected {cells.Length}";
+                    return false;
+                }
+                IntPtr data = arr + DataOffset;
+                if (toWorld) Marshal.Copy(cells, 0, data, cells.Length);
+                else
+                {
+                    Marshal.Copy(data, cells, 0, cells.Length);
+                    Marshal.Copy(new int[cells.Length], 0, data, cells.Length);
+                }
+                _set(td.Pointer, c.X, c.Y, c.Width, c.Height, layer, arr);
+                return true;
+            }
+            finally
+            {
+                IL2CPP.il2cpp_gchandle_free(handle);
+            }
+        }
+
         /// <summary>
         /// Turns every detail layer of a square detail map clockwise by <paramref name="k"/> quarter turns seen from
         /// above, cell for cell, the same way as the heightmap. Returns the number of tufts moved, or -1 on failure.

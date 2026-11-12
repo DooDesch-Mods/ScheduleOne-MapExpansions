@@ -259,6 +259,13 @@ namespace MapExpansions
         /// stays, while its collider stops the player, who tests every step a little above their head height.
         /// </summary>
         CutCollision,
+
+        /// <summary>
+        /// Takes the grass and bush tufts of each selected main terrain out of the rule's area (x and z), and puts them
+        /// back when the state goes. For a floor laid on the ground, which the tufts would grow through. World states
+        /// only; <see cref="ObjectRule.Name"/> selects the terrain by name, empty for every terrain under the area.
+        /// </summary>
+        ClearDetails,
     }
 
     /// <summary>Selects objects by name in one world, optionally limited to an area.</summary>
