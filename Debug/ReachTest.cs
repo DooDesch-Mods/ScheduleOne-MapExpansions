@@ -26,7 +26,8 @@ namespace MapExpansions.Debug
     /// bounds that its NavMesh path reaches; that check reads a static NavMesh sample cache.
     ///
     /// mxreach code [clear]                       per employee: vanilla reach of every object, expansion tiles summed up
-    /// mxreach place code itemId wing|old [rot]   builds an item on a free tile of the expansion or of the old grid
+    /// mxreach place code itemId wing|old [rot] [grid]   builds an item on a free tile of the expansion or of the old
+    ///                                            tiles, on the property's grid with that index (default 0)
     /// mxreach setup code [wing]                  assigns every bed, pot, drying rack and spawn station to each botanist, a
     ///                                            storage rack as supplies (with wing: one on the expansion tiles, and only
     ///                                            the drying racks on the expansion tiles stay assigned)
@@ -40,7 +41,7 @@ namespace MapExpansions.Debug
             string sub = parts.Length > 1 ? parts[1].ToLowerInvariant() : "";
             switch (sub)
             {
-                case "place" when parts.Length > 4: Place(parts[2], parts[3], parts[4], parts.Length > 5 ? int.Parse(parts[5]) : 0); break;
+                case "place" when parts.Length > 4: Place(parts[2], parts[3], parts[4], parts.Length > 5 ? int.Parse(parts[5]) : 0, parts.Length > 6 ? int.Parse(parts[6]) : 0); break;
                 case "setup" when parts.Length > 2: Setup(parts[2], parts.Length > 3 && parts[3] == "wing"); break;
                 case "stock" when parts.Length > 4: Stock(parts[2], parts[3], int.Parse(parts[4])); break;
                 case "work" when parts.Length > 2: Work(parts[2]); break;
@@ -142,17 +143,17 @@ namespace MapExpansions.Debug
             }
         }
 
-        private static void Place(string code, string itemId, string where, int rotation)
+        private static void Place(string code, string itemId, string where, int rotation, int gridIndex)
         {
             var p = Find(code);
             if (p == null) return;
             var def = Il2CppScheduleOne.Registry.GetItem(itemId);
             if (def == null) { Core.Log.Warning($"[dev] mxreach place: no item '{itemId}'"); return; }
-            var grid = p.Grids.Count > 0 ? p.Grids[0] : null;
-            if (grid == null) { Core.Log.Warning($"[dev] mxreach place: '{code}' has no grid"); return; }
+            var grid = gridIndex >= 0 && gridIndex < p.Grids.Count ? p.Grids[gridIndex] : null;
+            if (grid == null) { Core.Log.Warning($"[dev] mxreach place: '{code}' has no grid {gridIndex} ({p.Grids.Count} grids)"); return; }
             bool wing = where == "wing";
             var candidates = grid.Tiles.ToArray().Where(t => t != null && IsExpansionTile(t) == wing).ToList();
-            if (candidates.Count == 0) { Core.Log.Warning($"[dev] mxreach place: no {(wing ? "expansion" : "old")} tiles on grid 0"); return; }
+            if (candidates.Count == 0) { Core.Log.Warning($"[dev] mxreach place: no {(wing ? "expansion" : "old")} tiles on grid {gridIndex} ({grid.name})"); return; }
             // The game destroys a grid item whose footprint leaves the grid, so every footprint tile, plus a one-tile
             // walkway around it, has to be a free tile of the chosen kind.
             var built0 = def.TryCast<BuildableItemDefinition>()?.BuiltItem?.TryCast<GridItem>();
@@ -169,7 +170,7 @@ namespace MapExpansions.Debug
             if (origin == null) { Core.Log.Warning($"[dev] mxreach place: no free {built0.FootprintX} by {built0.FootprintY} spot with a walkway on the {(wing ? "expansion" : "old")} tiles"); return; }
             var built = NetworkSingleton<BuildManager>.Instance.CreateGridItem(def.GetDefaultInstance(1), grid, new Vector2(origin.x, origin.y), rotation);
             if (built == null) { Core.Log.Error($"[dev] mxreach place: the game did not build '{itemId}'"); return; }
-            Core.Log.Msg($"[dev] mxreach place: built {itemId} on {(wing ? "expansion" : "old")} tile {origin.x},{origin.y} at {built.transform.position}, guid {built.GUID}");
+            Core.Log.Msg($"[dev] mxreach place: built {itemId} on {(wing ? "expansion" : "old")} tile {origin.x},{origin.y} of grid {gridIndex} ({grid.name}, guid {grid.GUID}) at {built.transform.position}, guid {built.GUID}");
         }
 
         private static bool OnExpansion(BuildableItem item) =>
