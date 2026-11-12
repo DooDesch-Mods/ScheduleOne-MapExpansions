@@ -235,6 +235,8 @@ namespace MapExpansions.Lifecycle
                         errors.Add($"state '{state.Id}' declares existing floor without a navigation volume");
                     else if (state.NavigationExistingFloor.Any(f => !ValidBounds(f) || !f.Intersects(state.NavigationBounds.Value)))
                         errors.Add($"state '{state.Id}' existing floor boxes must be valid and lie in the navigation volume");
+                    if (state.WeatherCover.Any(c => !ValidBounds(c)))
+                        errors.Add($"state '{state.Id}' weather cover boxes must be valid");
                     Definitions[(def.Id, state.Id)] = state;
                 }
                 catch (Exception e) { errors.Add($"state '{source.Id}' cannot be resolved: {e.Message}"); }
@@ -356,13 +358,12 @@ namespace MapExpansions.Lifecycle
             // The game's rain and its cover queries read a mask baked without this state's roofs; the world's own
             // colliders answer over the state's volume instead.
             Bounds? cover = state.NavigationBounds;
-            foreach (var p in state.PropertyExtensions)
-                foreach (var box in p.Bounds)
-                {
-                    var grown = cover ?? box;
-                    grown.Encapsulate(box);
-                    cover = grown;
-                }
+            foreach (var box in state.PropertyExtensions.SelectMany(p => p.Bounds).Concat(state.WeatherCover))
+            {
+                var grown = cover ?? box;
+                grown.Encapsulate(box);
+                cover = grown;
+            }
             if (cover.HasValue) World.WeatherCover.AddState(CoverOwner(b, state), cover.Value);
             result.Timing = $"lookup {lookupMs} ms, {fresh.Count} copies {copiesMs - lookupMs} ms, {state.Rules.Count} rules {rulesMs - copiesMs} ms, " +
                             $"properties {propertiesMs - rulesMs} ms, navigation {clock.ElapsedMilliseconds - propertiesMs} ms; kept {carry.Copies.Count} copies, {carry.Properties.Count} extensions";
