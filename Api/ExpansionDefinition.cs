@@ -233,6 +233,8 @@ namespace MapExpansions
         /// <summary>
         /// Cuts the triangles of each selected mesh, renderers and mesh colliders, out of the rule's area; the rest of
         /// the mesh stays. For a backdrop that runs through the other world, such as a ring of distant mountains.
+        /// In a world state, <see cref="ObjectRule.Openings"/> add further areas cut in the same pass: a renderer is cut
+        /// once per state, so one rule covers rooms that a single box cannot cover without cutting what lies between.
         /// </summary>
         Cut,
 
@@ -296,7 +298,10 @@ namespace MapExpansions
         /// <summary>For <see cref="ObjectEffect.ColliderTop"/>: metres the top face moves up, negative for down.</summary>
         public float TopShift { get; set; }
 
-        /// <summary>For <see cref="ObjectEffect.Hollow"/>: doorways left open in the shell, in the same coordinates as <see cref="Area"/>.</summary>
+        /// <summary>
+        /// For <see cref="ObjectEffect.Hollow"/>: doorways left open in the shell. For <see cref="ObjectEffect.Cut"/> in a
+        /// world state: further areas cut together with <see cref="Area"/>. In the same coordinates as <see cref="Area"/>.
+        /// </summary>
         public List<Bounds> Openings { get; private set; } = new();
 
         /// <summary>

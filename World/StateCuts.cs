@@ -55,7 +55,10 @@ namespace MapExpansions.World
             if (part == null) throw new InvalidOperationException("state cut has no main-world index");
             var lease = new Lease { Owner = b };
             int ownedBefore = b.Owned.Count, changed = 0, hidden = 0;
-            var boxes = new[] { new OrientedBox(rule.Area.center, Quaternion.identity, rule.Area.extents) };
+            // A renderer is cut once per state, so further areas of the same rule go into the same pass.
+            var areas = new List<Bounds> { rule.Area };
+            areas.AddRange(rule.Openings.Where(o => o.size != Vector3.zero));
+            var boxes = areas.Select(a => new OrientedBox(a.center, Quaternion.identity, a.extents)).ToArray();
             // Visibility and runtime bounds are not scene geometry readiness. The independent cut tests the actual
             // selected mesh or local collider shape against the area, including inactive client scene objects.
             var selector = rule.Clone();
@@ -100,7 +103,11 @@ namespace MapExpansions.World
                     if (CollidersInUse.Contains(c.Pointer)) throw new InvalidOperationException($"another active state already cuts collider '{MeshCarver.Path(c.transform)}'");
                     if (c.TryCast<BoxCollider>() is BoxCollider box)
                     {
-                        if (SubtractBox(box, rule.Area, lease)) changed++;
+                        // A box minus one box stays a set of boxes; minus two overlapping ones it would need a second pass.
+                        var touched = areas.Where(a => Overlap(box, a, out _, out _)).ToList();
+                        if (touched.Count > 1)
+                            throw new InvalidOperationException($"state cut box '{MeshCarver.Path(box.transform)}' lies in {touched.Count} areas of '{rule.Key}'; a box collider can be cut by one area");
+                        if (touched.Count == 1 && SubtractBox(box, touched[0], lease)) changed++;
                     }
                     else if (c.TryCast<MeshCollider>() is MeshCollider mc)
                     {
@@ -150,19 +157,26 @@ namespace MapExpansions.World
             return go;
         }
 
-        private static bool SubtractBox(BoxCollider source, Bounds area, Lease lease)
+        // The part of the box inside the area, in the box frame.
+        private static bool Overlap(BoxCollider source, Bounds area, out Vector3 lo, out Vector3 hi)
         {
             var t = source.transform;
             var local = new Bounds(t.InverseTransformPoint(area.min), Vector3.zero);
             for (int i = 0; i < 8; i++) local.Encapsulate(t.InverseTransformPoint(new Vector3(
                 (i & 1) == 0 ? area.min.x : area.max.x, (i & 2) == 0 ? area.min.y : area.max.y, (i & 4) == 0 ? area.min.z : area.max.z)));
-            var min = source.center - source.size * 0.5f;
-            var max = source.center + source.size * 0.5f;
-            var lo = Vector3.Max(min, local.min);
-            var hi = Vector3.Min(max, local.max);
+            lo = Vector3.Max(source.center - source.size * 0.5f, local.min);
+            hi = Vector3.Min(source.center + source.size * 0.5f, local.max);
             // The area's corners in the box frame enclose the area for any rotation, so a box outside them is outside the
             // area. Such a box stays untouched, whatever its rotation; a selector by name also reaches boxes far away.
-            if (hi.x - lo.x <= 0.0001f || hi.y - lo.y <= 0.0001f || hi.z - lo.z <= 0.0001f) return false;
+            return hi.x - lo.x > 0.0001f && hi.y - lo.y > 0.0001f && hi.z - lo.z > 0.0001f;
+        }
+
+        private static bool SubtractBox(BoxCollider source, Bounds area, Lease lease)
+        {
+            var t = source.transform;
+            var min = source.center - source.size * 0.5f;
+            var max = source.center + source.size * 0.5f;
+            if (!Overlap(source, area, out var lo, out var hi)) return false;
             // An axis-aligned cut remains rectangular in the box frame only for cardinal rotations.
             foreach (var axis in new[] { t.right, t.up, t.forward })
                 if (Mathf.Max(Mathf.Abs(axis.x), Mathf.Abs(axis.y), Mathf.Abs(axis.z)) < 0.9999f)
