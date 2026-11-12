@@ -246,9 +246,10 @@ namespace MapExpansions.Navigation
                 if (!NavMesh.SamplePosition(outer, out NavMeshHit b, StitchReach, Filter()) || Mathf.Abs(b.position.y - outer.y) > 0.5f || InsideXZ(f, b.position)) continue;
                 if (Physics.Linecast(a.position + Vector3.up * 0.4f, b.position + Vector3.up * 0.4f, Mask, QueryTriggerInteraction.Ignore) ||
                     Physics.Linecast(a.position + Vector3.up * 1.2f, b.position + Vector3.up * 1.2f, Mask, QueryTriggerInteraction.Ignore)) continue;
+                // A floor the bake already runs onto needs no seam there, and it is joined all the same.
+                joined++;
                 if (AlreadyJoined(a.position, b.position, Filter())) continue;
                 result.Links.Add(Source.NavLinks.AddOwned(a.position, b.position, 0.7f, new[] { agent }));
-                joined++;
             }
             return (joined, open);
         }
