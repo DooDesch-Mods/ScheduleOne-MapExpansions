@@ -305,6 +305,7 @@ namespace MapExpansions.Navigation
                         var (joined, open) = Stitch(id, bounds, existingFloor, existingFloor[i], agent, result);
                         string line = $"state nav: '{id}' existing floor {i} {existingFloor[i]} joined to the new floor at {joined} of {open} edge points for agent '{NpcNavigation.AgentName(agent)}' ({agent})";
                         if (joined > 0) Core.Log.Msg(line);
+                        else if (open == 0) Core.Log.Msg(line + "; it has no open edge inside the volume and keeps only the world's walking map");
                         else
                         {
                             Core.Log.Warning(line + "; NPCs on that floor cannot reach the new rooms through it");

@@ -17,8 +17,16 @@ namespace MapExpansions.World
             internal readonly List<(Collider collider, bool enabled, Mesh mesh, bool convex)> Colliders = new();
             internal readonly List<GameObject> Objects = new();
             internal readonly List<Object> Assets = new();
+            /// <summary>Takes the replacements out of the LOD groups they joined, before they are destroyed.</summary>
+            internal readonly List<Action> Undo = new();
             public void Dispose()
             {
+                foreach (var undo in Undo)
+                {
+                    try { undo(); }
+                    catch (Exception e) { Core.Log.Warning($"state cut: taking a replacement out of its LOD group failed: {e.Message}"); }
+                }
+                Undo.Clear();
                 foreach (var go in Objects) if (go != null) { go.SetActive(false); Object.Destroy(go); }
                 Objects.Clear();
                 foreach (var (r, enabled) in Renderers)
@@ -74,11 +82,17 @@ namespace MapExpansions.World
                     if (outcome == MeshCarver.Outcome.Failed) throw new InvalidOperationException($"state cut renderer '{r.name}' failed; see carver cause above");
                     if (outcome == MeshCarver.Outcome.Untouched)
                     { replacement.gameObject.SetActive(false); Object.Destroy(replacement.gameObject); continue; }
+                    // The copy and its patch stand in for the original, so they are drawn only at the original's LOD
+                    // distances; a far-distance proxy box would otherwise cover the building from close up.
+                    int levels = MeshPatch.JoinLod(mr, replacement, b, lease.Undo);
+                    foreach (var piece in replacement.GetComponentsInChildren<MeshRenderer>(true))
+                        if (piece.Pointer != replacement.Pointer) MeshPatch.JoinLod(mr, piece, b, lease.Undo);
                     lease.Renderers.Add((r, r.enabled));
                     RenderersInUse.Add(r.Pointer);
                     r.enabled = false;
                     changed++;
-                    Core.Log.Msg($"state cut: '{b.Id}' '{r.name}' cut {triangles} triangles on independent geometry, original retained");
+                    Core.Log.Msg($"state cut: '{b.Id}' '{r.name}' cut {triangles} triangles on independent geometry, original retained" +
+                                 (levels > 0 ? $", drawn in {levels} LOD levels of its group" : ", no LOD group"));
                 }
                 foreach (var c in part.Colliders)
                 {
@@ -139,10 +153,6 @@ namespace MapExpansions.World
         private static bool SubtractBox(BoxCollider source, Bounds area, Lease lease)
         {
             var t = source.transform;
-            // An axis-aligned cut remains rectangular in the box frame only for cardinal rotations.
-            foreach (var axis in new[] { t.right, t.up, t.forward })
-                if (Mathf.Max(Mathf.Abs(axis.x), Mathf.Abs(axis.y), Mathf.Abs(axis.z)) < 0.9999f)
-                    throw new InvalidOperationException($"state cut box '{source.name}' is not cardinally rotated");
             var local = new Bounds(t.InverseTransformPoint(area.min), Vector3.zero);
             for (int i = 0; i < 8; i++) local.Encapsulate(t.InverseTransformPoint(new Vector3(
                 (i & 1) == 0 ? area.min.x : area.max.x, (i & 2) == 0 ? area.min.y : area.max.y, (i & 4) == 0 ? area.min.z : area.max.z)));
@@ -150,7 +160,13 @@ namespace MapExpansions.World
             var max = source.center + source.size * 0.5f;
             var lo = Vector3.Max(min, local.min);
             var hi = Vector3.Min(max, local.max);
+            // The area's corners in the box frame enclose the area for any rotation, so a box outside them is outside the
+            // area. Such a box stays untouched, whatever its rotation; a selector by name also reaches boxes far away.
             if (hi.x - lo.x <= 0.0001f || hi.y - lo.y <= 0.0001f || hi.z - lo.z <= 0.0001f) return false;
+            // An axis-aligned cut remains rectangular in the box frame only for cardinal rotations.
+            foreach (var axis in new[] { t.right, t.up, t.forward })
+                if (Mathf.Max(Mathf.Abs(axis.x), Mathf.Abs(axis.y), Mathf.Abs(axis.z)) < 0.9999f)
+                    throw new InvalidOperationException($"state cut box '{MeshCarver.Path(t)}' is not cardinally rotated and lies in the cut area");
             lease.Colliders.Add((source, source.enabled, null, false));
             CollidersInUse.Add(source.Pointer);
             void Slab(Vector3 a, Vector3 z)
