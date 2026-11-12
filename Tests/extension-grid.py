@@ -52,8 +52,10 @@ def loft_items(run):
 def check_loft(run, label):
     items, tiles = loft_items(run)
     print("      " + (tiles or "no tile summary"), flush=True)
-    m = re.search(r"(\d+) expansion tiles: (\d+) outside the bounds, (\d+) without a path", tiles or "")
+    m = re.search(r"(\d+) expansion tiles: (\d+) outside the bounds, (\d+) without a path, (\d+) cached on another floor", tiles or "")
     run.check("%s: every expansion tile lies inside the property bounds" % label, bool(m) and int(m.group(2)) == 0, tiles)
+    run.check("%s: every expansion tile has a walking path" % label, bool(m) and int(m.group(3)) == 0, tiles)
+    run.check("%s: no floor sample the game cached lies on another floor" % label, bool(m) and int(m.group(4)) == 0, tiles)
     ids = sorted(i["id"] for i in items)
     run.check("%s: the placed items stand on the loft grid at y %.2f" % (label, LOFT_Y), ids == sorted(ITEMS), ids)
     for i in items:
@@ -77,6 +79,8 @@ def main():
     if not run.check("the extension built a grid of its own", index is not None, line or "no 'built grid' line"):
         return run.summary()
     print("      " + line, flush=True)
+    heat = next((l.strip()[-260:] for l in run.lines(mark) if "heatmap of '%s'" % CODE in l and ("laid out again" in l or "keeps its old" in l)), "")
+    run.check("the heatmap has a region for the new grid", "laid out again for %d grids" % (index + 1) in heat, heat or "no heatmap line")
 
     run.cmd("addemployee botanist %s" % CODE, wait=5.0)
     for item in ITEMS:
@@ -103,6 +107,8 @@ def main():
             time.sleep(5)
             line = grid_line(run.lines(mark))
             run.check("after reload: the loft grid is built again with the same index", grid_index(line) == index, line or "no 'built grid' line")
+            broken = next((l.strip()[-260:] for l in run.lines(mark) if "heatmap of '%s' keeps its old" % CODE in l), "")
+            run.check("after reload: the heatmap took the loft grid", not broken, broken or "no heatmap failure")
             check_loft(run, "after reload")
     return run.summary()
 

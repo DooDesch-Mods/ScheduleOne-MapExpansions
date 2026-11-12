@@ -88,7 +88,10 @@ namespace MapExpansions.Debug
             inBounds = p.DoBoundsContainPoint(at);
             bool cached = NavMeshUtility.SamplePosition(at, out var cachedHit, 2f, -1, true);
             bool fresh = NavMesh.SamplePosition(at, out var freshHit, 2f, -1);
-            stale = cached && fresh && Vector3.Distance(cachedHit.position, freshHit.position) > 0.3f;
+            // The cache answers any query within 0.5 m of a stored one with that one's hit, and an item standing on the
+            // tile pushes a fresh sample aside, so points apart on the same floor are expected. Stale is a hit cached
+            // on another floor, such as the ground under a loft built later.
+            stale = cached && fresh && Mathf.Abs(cachedHit.position.y - freshHit.position.y) > 0.3f;
             reach = e.Movement.CanGetTo(at, 1f, out NavMeshPath _);
             return $"bounds {(inBounds ? "in" : "OUT")}, cached sample {(cached ? cachedHit.position.ToString() : "none")}, " +
                    $"fresh sample {(fresh ? freshHit.position.ToString() : "none")}{(stale ? " (STALE)" : "")}, path {(reach ? "yes" : "NO")}";
@@ -139,7 +142,7 @@ namespace MapExpansions.Debug
                     if (isStale) stale++;
                     if ((!inBounds || !reach || isStale) && firstBad == null) firstBad = $"tile {t.x},{t.y} at {at}: {line}";
                 }
-                Core.Log.Msg($"[dev] mxreach:   {tiles.Count} expansion tiles: {outside} outside the bounds, {unreachable} without a path, {stale} with a stale cached sample" +
+                Core.Log.Msg($"[dev] mxreach:   {tiles.Count} expansion tiles: {outside} outside the bounds, {unreachable} without a path, {stale} cached on another floor" +
                              (firstBad != null ? $"; first: {firstBad}" : ""));
             }
         }
