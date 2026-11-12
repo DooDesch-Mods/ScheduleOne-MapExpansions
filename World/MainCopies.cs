@@ -433,7 +433,7 @@ namespace MapExpansions.World
             if (string.IsNullOrEmpty(d.Onto))
             {
                 at = Matrix4x4.TRS(b.Root.transform.TransformPoint(d.At.Position),
-                    b.Root.transform.rotation * Quaternion.Euler(0f, d.At.Yaw, 0f), Vector3.one * d.Scale);
+                    b.Root.transform.rotation * Quaternion.Euler(0f, d.At.Yaw, 0f) * Quaternion.Euler(d.OntoRotation), Vector3.one * d.Scale);
                 return true;
             }
             var onto = FindInExpansion(b, d.Onto);

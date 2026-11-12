@@ -59,7 +59,11 @@ namespace MapExpansions
         /// <summary>Offset of the frame from <see cref="Onto"/>, in that object's axes.</summary>
         public Vector3 OntoOffset { get; set; }
 
-        /// <summary>Euler angles that turn the frame against <see cref="Onto"/>, in that object's axes.</summary>
+        /// <summary>
+        /// Euler angles that turn the frame against <see cref="Onto"/>, in that object's axes. Without
+        /// <see cref="Onto"/> they turn the frame at <see cref="At"/> after its yaw, which tilts a copy, such as a
+        /// window frame laid down as a sloped glass roof.
+        /// </summary>
         public Vector3 OntoRotation { get; set; }
 
         /// <summary>Scale of the copy against the main world, for an expansion building built smaller.</summary>
