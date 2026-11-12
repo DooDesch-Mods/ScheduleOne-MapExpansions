@@ -148,11 +148,12 @@ namespace MapExpansions.Debug
             if (p == null) return;
             var def = Il2CppScheduleOne.Registry.GetItem(itemId);
             if (def == null) { Core.Log.Warning($"[dev] mxreach place: no item '{itemId}'"); return; }
-            var grid = p.Grids.Count > 0 ? p.Grids[0] : null;
-            if (grid == null) { Core.Log.Warning($"[dev] mxreach place: '{code}' has no grid"); return; }
+            if (p.Grids.Count == 0) { Core.Log.Warning($"[dev] mxreach place: '{code}' has no grid"); return; }
             bool wing = where == "wing";
+            // The first grid that holds tiles of the chosen kind; an expansion can extend any of the property's grids.
+            var grid = p.Grids.ToArray().FirstOrDefault(g => g != null && g.Tiles.ToArray().Any(t => t != null && IsExpansionTile(t) == wing));
+            if (grid == null) { Core.Log.Warning($"[dev] mxreach place: no grid of '{code}' has {(wing ? "expansion" : "old")} tiles"); return; }
             var candidates = grid.Tiles.ToArray().Where(t => t != null && IsExpansionTile(t) == wing).ToList();
-            if (candidates.Count == 0) { Core.Log.Warning($"[dev] mxreach place: no {(wing ? "expansion" : "old")} tiles on grid 0"); return; }
             // The game destroys a grid item whose footprint leaves the grid, so every footprint tile, plus a one-tile
             // walkway around it, has to be a free tile of the chosen kind.
             var built0 = def.TryCast<BuildableItemDefinition>()?.BuiltItem?.TryCast<GridItem>();
