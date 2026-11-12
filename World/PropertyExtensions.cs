@@ -20,6 +20,8 @@ namespace MapExpansions.World
         /// <summary>Removal has started, so the lease no longer stands for its definition and a transition cannot keep it.</summary>
         internal bool Damaged;
         internal readonly List<(Grid grid, Tile tile)> Tiles = new();
+        /// <summary>The grid this extension built for itself, see <see cref="PropertyExtensionDefinition.GridOrigin"/>.</summary>
+        internal Grid OwnGrid;
         internal readonly List<BoxCollider> Boxes = new();
         internal readonly List<(Surface surface, bool ownObject)> Surfaces = new();
         internal readonly List<PropertyDockLease> Docks = new();
@@ -65,6 +67,21 @@ namespace MapExpansions.World
                 }
                 Surfaces.RemoveAt(i);
             }
+            if ((object)OwnGrid != null)
+            {
+                // The tiles go with their grid; the grid leaves the property's list, its GUID and its heatmap region.
+                var own = OwnGrid;
+                if (own != null && Property != null)
+                {
+                    Property.Grids?.Remove(own);
+                    HeatmapTiles.Relayout(Property, $"'{ExtensionId}' removed its own grid");
+                }
+                Tiles.Clear();
+                GuidLeases.Release(own, $"grid of '{ExtensionId}'");
+                if (own != null) { own.gameObject.SetActive(false); Object.Destroy(own.gameObject); }
+                OwnGrid = null;
+                Core.Log.Msg($"property extension: '{ExtensionId}' removed its own grid");
+            }
             Grid tilesGrid = null;
             var removedTiles = new List<(int x, int y)>();
             for (int i = Tiles.Count - 1; i >= 0; i--)
@@ -98,6 +115,7 @@ namespace MapExpansions.World
         {
             foreach (var (surface, _) in Surfaces) GuidLeases.Release(surface, $"surface of '{ExtensionId}'");
             foreach (var dock in Docks) dock.ReleaseGuids();
+            if ((object)OwnGrid != null) GuidLeases.Release(OwnGrid, $"grid of '{ExtensionId}'");
             foreach (var fixture in Fixtures) PropertyFixtures.Unregister(fixture);
             Fixtures.Clear();
         }
@@ -157,6 +175,43 @@ namespace MapExpansions.World
             }
         }
 
+        /// <summary>
+        /// Builds the extension's own grid, still inactive: vanilla's Grid.Awake adds it to the property's grids,
+        /// registers its GUID and reads its tiles, so it runs only once the tiles are registered.
+        /// </summary>
+        private static Grid CreateGrid(string expansion, PropertyExtensionDefinition def, Property prop, Grid baseGrid)
+        {
+            var guid = new Il2CppSystem.Guid(Places.StableGuid(expansion, "grid", def.Id).ToString());
+            GuidLeases.RequireFree(guid, $"grid of '{def.Id}'");
+            var go = new GameObject($"MapExpansions.{expansion}.{def.Id}.Grid");
+            go.SetActive(false);
+            go.transform.SetParent(baseGrid.transform.parent, false);
+            go.transform.localScale = baseGrid.transform.localScale;
+            go.transform.SetPositionAndRotation(def.GridOrigin.Value, baseGrid.transform.rotation);
+            go.layer = baseGrid.gameObject.layer;
+            var grid = go.AddComponent<Grid>();
+            grid._guid = guid.ToString();
+            grid._parentProperty = prop;
+            return grid;
+        }
+
+        private static void ActivateGrid(string expansion, PropertyExtensionDefinition def, Property prop, Grid grid, PropertyExtensionLease lease)
+        {
+            int before = prop.Grids.Count;
+            grid.gameObject.SetActive(true);
+            var guid = new Il2CppSystem.Guid(grid._guid);
+            var registered = Il2Cpp.GUIDManager.GetObject<Grid>(guid);
+            if (registered == null || registered.Pointer != grid.Pointer)
+                throw new InvalidOperationException($"grid of '{def.Id}' GUID registration readback failed");
+            if (prop.Grids.Count != before + 1 || prop.Grids[prop.Grids.Count - 1]?.Pointer != grid.Pointer)
+                throw new InvalidOperationException($"grid of '{def.Id}' is not in the grids of '{def.PropertyCode}'");
+            foreach (var (_, tile) in lease.Tiles)
+                if (grid.GetTile(new Coordinate(tile.x, tile.y))?.Pointer != tile.Pointer)
+                    throw new InvalidOperationException($"tile {tile.x},{tile.y} of the grid of '{def.Id}' registration readback failed");
+            Core.Log.Msg($"property extension: '{expansion}/{def.Id}' built grid {prop.Grids.Count - 1} of '{def.PropertyCode}' at {def.GridOrigin.Value} " +
+                         $"with {lease.Tiles.Count} tiles, GUID {guid}");
+        }
+
         internal static PropertyExtensionLease Apply(string expansion, PropertyExtensionDefinition def)
         {
             Property prop = null;
@@ -171,11 +226,12 @@ namespace MapExpansions.World
             foreach (var fixture in def.Fixtures)
                 foreach (var c in fixture.Tiles)
                     if (listed.Add((c.X, c.Y))) tiles.Add(c);
-            if (tiles.Count > 0)
+            Grid baseGrid = null;
+            if (tiles.Count > 0 || def.GridOrigin.HasValue)
             {
                 if (prop.Grids == null || def.GridIndex < 0 || def.GridIndex >= prop.Grids.Count)
                     throw new InvalidOperationException($"property '{def.PropertyCode}' has no grid {def.GridIndex}");
-                grid = prop.Grids[def.GridIndex];
+                baseGrid = grid = prop.Grids[def.GridIndex];
                 if (grid?.Tiles != null) foreach (var t in grid.Tiles) if (t != null) { template = t; break; }
                 if (template == null || grid._coordinateToTile == null)
                     throw new InvalidOperationException($"property '{def.PropertyCode}' grid {def.GridIndex} has no initialized tile template");
@@ -190,6 +246,8 @@ namespace MapExpansions.World
             int reusedTiles = 0;
             try
             {
+                if (def.GridOrigin.HasValue) grid = lease.OwnGrid = CreateGrid(expansion, def, prop, baseGrid);
+                bool own = (object)lease.OwnGrid != null;
                 foreach (var coord in tiles)
                 {
                     var key = new Coordinate(coord.X, coord.Y);
@@ -205,11 +263,13 @@ namespace MapExpansions.World
                     tile.BuildableOccupants.Clear();
                     tile.OccupantTiles.Clear();
                     grid.RegisterTile(tile);
-                    grid._coordinateToTile[key] = tile;
+                    // An own grid is still inactive; its Awake fills the lookup from the registered pairs.
+                    if (!own) grid._coordinateToTile[key] = tile;
                     go.SetActive(true);
-                    if (grid.GetTile(key)?.Pointer != tile.Pointer)
+                    if (!own && grid.GetTile(key)?.Pointer != tile.Pointer)
                         throw new InvalidOperationException($"tile {coord.X},{coord.Y} registration readback failed");
                 }
+                if (own) ActivateGrid(expansion, def, prop, grid, lease);
                 grid?.SetGridSize();
                 if (grid != null) HeatmapTiles.Set(prop, grid, lease.Tiles.Select(t => (t.tile.x, t.tile.y)).ToList(), true);
                 foreach (var bounds in def.Bounds)

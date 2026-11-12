@@ -21,6 +21,13 @@ namespace MapExpansions
         public string Id { get; set; }
         public string PropertyCode { get; set; }
         public int GridIndex { get; set; }
+        /// <summary>
+        /// When set, the extension builds a grid of its own with its tile (0, 0) at this world point, for a floor at
+        /// another height such as a loft. It is turned like grid <see cref="GridIndex"/>, takes that grid's tile as its
+        /// template, and keeps a GUID fixed by the expansion and extension id, so items placed on it load again. Tiles
+        /// and fixtures then lie on the new grid. Without it they lie on grid <see cref="GridIndex"/>.
+        /// </summary>
+        public Vector3? GridOrigin { get; set; }
         public List<GridCoordinate> Tiles { get; } = new();
         public List<PropertySurfaceDefinition> Surfaces { get; } = new();
         /// <summary>Permanent additional delivery slots. A later state keeps them by repeating this extension unchanged.</summary>

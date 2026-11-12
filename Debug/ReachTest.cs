@@ -26,7 +26,8 @@ namespace MapExpansions.Debug
     /// bounds that its NavMesh path reaches; that check reads a static NavMesh sample cache.
     ///
     /// mxreach code [clear]                       per employee: vanilla reach of every object, expansion tiles summed up
-    /// mxreach place code itemId wing|old [rot]   builds an item on a free tile of the expansion or of the old grid
+    /// mxreach place code itemId wing|old [rot] [grid]   builds an item on a free tile of the expansion or of the old
+    ///                                            tiles, on the property's grid with that index (default 0)
     /// mxreach setup code [wing]                  assigns every bed, pot, drying rack and spawn station to each botanist, a
     ///                                            storage rack as supplies (with wing: one on the expansion tiles, and only
     ///                                            the drying racks on the expansion tiles stay assigned)
@@ -40,7 +41,7 @@ namespace MapExpansions.Debug
             string sub = parts.Length > 1 ? parts[1].ToLowerInvariant() : "";
             switch (sub)
             {
-                case "place" when parts.Length > 4: Place(parts[2], parts[3], parts[4], parts.Length > 5 ? int.Parse(parts[5]) : 0); break;
+                case "place" when parts.Length > 4: Place(parts[2], parts[3], parts[4], parts.Length > 5 ? int.Parse(parts[5]) : 0, parts.Length > 6 ? int.Parse(parts[6]) : 0); break;
                 case "setup" when parts.Length > 2: Setup(parts[2], parts.Length > 3 && parts[3] == "wing"); break;
                 case "stock" when parts.Length > 4: Stock(parts[2], parts[3], int.Parse(parts[4])); break;
                 case "work" when parts.Length > 2: Work(parts[2]); break;
@@ -87,7 +88,10 @@ namespace MapExpansions.Debug
             inBounds = p.DoBoundsContainPoint(at);
             bool cached = NavMeshUtility.SamplePosition(at, out var cachedHit, 2f, -1, true);
             bool fresh = NavMesh.SamplePosition(at, out var freshHit, 2f, -1);
-            stale = cached && fresh && Vector3.Distance(cachedHit.position, freshHit.position) > 0.3f;
+            // The cache answers any query within 0.5 m of a stored one with that one's hit, and an item standing on the
+            // tile pushes a fresh sample aside, so points apart on the same floor are expected. Stale is a hit cached
+            // on another floor, such as the ground under a loft built later.
+            stale = cached && fresh && Mathf.Abs(cachedHit.position.y - freshHit.position.y) > 0.3f;
             reach = e.Movement.CanGetTo(at, 1f, out NavMeshPath _);
             return $"bounds {(inBounds ? "in" : "OUT")}, cached sample {(cached ? cachedHit.position.ToString() : "none")}, " +
                    $"fresh sample {(fresh ? freshHit.position.ToString() : "none")}{(stale ? " (STALE)" : "")}, path {(reach ? "yes" : "NO")}";
@@ -130,29 +134,30 @@ namespace MapExpansions.Debug
                 string firstBad = null;
                 foreach (var t in tiles)
                 {
-                    var at = t.transform.position + new Vector3(Grid.TileSize / 2f, 0f, Grid.TileSize / 2f);
+                    // A tile's cell runs along its grid's axes, which a turned grid points elsewhere than world x and z.
+                    var at = t.transform.position + t.transform.rotation * new Vector3(Grid.TileSize / 2f, 0f, Grid.TileSize / 2f);
                     string line = Probe(p, e, at, out bool inBounds, out bool reach, out bool isStale);
                     if (!inBounds) outside++;
                     if (!reach) unreachable++;
                     if (isStale) stale++;
                     if ((!inBounds || !reach || isStale) && firstBad == null) firstBad = $"tile {t.x},{t.y} at {at}: {line}";
                 }
-                Core.Log.Msg($"[dev] mxreach:   {tiles.Count} expansion tiles: {outside} outside the bounds, {unreachable} without a path, {stale} with a stale cached sample" +
+                Core.Log.Msg($"[dev] mxreach:   {tiles.Count} expansion tiles: {outside} outside the bounds, {unreachable} without a path, {stale} cached on another floor" +
                              (firstBad != null ? $"; first: {firstBad}" : ""));
             }
         }
 
-        private static void Place(string code, string itemId, string where, int rotation)
+        private static void Place(string code, string itemId, string where, int rotation, int gridIndex)
         {
             var p = Find(code);
             if (p == null) return;
             var def = Il2CppScheduleOne.Registry.GetItem(itemId);
             if (def == null) { Core.Log.Warning($"[dev] mxreach place: no item '{itemId}'"); return; }
-            var grid = p.Grids.Count > 0 ? p.Grids[0] : null;
-            if (grid == null) { Core.Log.Warning($"[dev] mxreach place: '{code}' has no grid"); return; }
+            var grid = gridIndex >= 0 && gridIndex < p.Grids.Count ? p.Grids[gridIndex] : null;
+            if (grid == null) { Core.Log.Warning($"[dev] mxreach place: '{code}' has no grid {gridIndex} ({p.Grids.Count} grids)"); return; }
             bool wing = where == "wing";
             var candidates = grid.Tiles.ToArray().Where(t => t != null && IsExpansionTile(t) == wing).ToList();
-            if (candidates.Count == 0) { Core.Log.Warning($"[dev] mxreach place: no {(wing ? "expansion" : "old")} tiles on grid 0"); return; }
+            if (candidates.Count == 0) { Core.Log.Warning($"[dev] mxreach place: no {(wing ? "expansion" : "old")} tiles on grid {gridIndex} ({grid.name})"); return; }
             // The game destroys a grid item whose footprint leaves the grid, so every footprint tile, plus a one-tile
             // walkway around it, has to be a free tile of the chosen kind.
             var built0 = def.TryCast<BuildableItemDefinition>()?.BuiltItem?.TryCast<GridItem>();
@@ -169,7 +174,7 @@ namespace MapExpansions.Debug
             if (origin == null) { Core.Log.Warning($"[dev] mxreach place: no free {built0.FootprintX} by {built0.FootprintY} spot with a walkway on the {(wing ? "expansion" : "old")} tiles"); return; }
             var built = NetworkSingleton<BuildManager>.Instance.CreateGridItem(def.GetDefaultInstance(1), grid, new Vector2(origin.x, origin.y), rotation);
             if (built == null) { Core.Log.Error($"[dev] mxreach place: the game did not build '{itemId}'"); return; }
-            Core.Log.Msg($"[dev] mxreach place: built {itemId} on {(wing ? "expansion" : "old")} tile {origin.x},{origin.y} at {built.transform.position}, guid {built.GUID}");
+            Core.Log.Msg($"[dev] mxreach place: built {itemId} on {(wing ? "expansion" : "old")} tile {origin.x},{origin.y} of grid {gridIndex} ({grid.name}, guid {grid.GUID}) at {built.transform.position}, guid {built.GUID}");
         }
 
         private static bool OnExpansion(BuildableItem item) =>

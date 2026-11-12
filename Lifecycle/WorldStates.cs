@@ -174,6 +174,8 @@ namespace MapExpansions.Lifecycle
                         if (string.IsNullOrEmpty(p.Id) || !extensions.Add(p.Id) || string.IsNullOrEmpty(p.PropertyCode))
                             errors.Add($"state '{state.Id}' property extension needs unique id and property code");
                         if (p.GridIndex < 0) errors.Add($"state '{state.Id}' grid index is negative");
+                        if (p.GridOrigin is Vector3 origin && !(float.IsFinite(origin.x) && float.IsFinite(origin.y) && float.IsFinite(origin.z)))
+                            errors.Add($"state '{state.Id}' extension '{p.Id}' grid origin is not a finite point");
                         if (p.Tiles.Select(x => (x.X, x.Y)).Distinct().Count() != p.Tiles.Count)
                             errors.Add($"state '{state.Id}' repeats tile coordinates");
                         var fixtureIds = new HashSet<string>(StringComparer.Ordinal);

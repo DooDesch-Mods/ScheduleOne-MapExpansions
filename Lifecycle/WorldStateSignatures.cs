@@ -28,7 +28,7 @@ namespace MapExpansions.Lifecycle
 
         internal static string Of(PropertyExtensionDefinition e) => Join(new[]
         {
-            e.Id, e.PropertyCode, e.GridIndex.ToString(CultureInfo.InvariantCulture),
+            e.Id, e.PropertyCode, e.GridIndex.ToString(CultureInfo.InvariantCulture), e.GridOrigin.HasValue ? V(e.GridOrigin.Value) : "-",
             Join(e.Tiles.Select(t => (t.X, t.Y)).OrderBy(t => t.X).ThenBy(t => t.Y).Select(t => FormattableString.Invariant($"{t.X},{t.Y}"))),
             Join(e.Bounds.Select(B)),
             Join(e.Surfaces.Select(s => Join(new[] { s.Id, s.CopyId, s.BoxId, B(s.Bounds), s.SurfaceType.ToString(), Join(s.ValidFaces.Select(f => f.ToString())) }))),
