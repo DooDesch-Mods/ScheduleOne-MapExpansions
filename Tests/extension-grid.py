@@ -42,7 +42,8 @@ def loft_items(run):
     items = []
     for l in log:
         m = re.search(r"mxreach:   (\S+) at \((-?[\d.]+), (-?[\d.]+), (-?[\d.]+)\) on expansion tiles: vanilla reach (yes|NO)", l)
-        if m and abs(float(m.group(3)) - LOFT_Y) < 0.3:
+        # An item's pivot can sit above its feet (a storage rack's by 0.87 m), never below the floor.
+        if m and LOFT_Y - 0.1 <= float(m.group(3)) <= LOFT_Y + 1.5:
             items.append({"id": m.group(1), "reach": m.group(5) == "yes", "line": l.strip()[-220:]})
     tiles = next((l.strip()[-300:] for l in log if re.search(r"\d+ expansion tiles: \d+ outside", l)), "")
     return items, tiles
@@ -80,8 +81,8 @@ def main():
     run.cmd("addemployee botanist %s" % CODE, wait=5.0)
     for item in ITEMS:
         log = run.cmd("mxreach place %s %s wing 0 %d" % (CODE, item, index), wait=2.0)
-        built = pick(log, "mxreach place")
-        run.check("built %s on grid %d" % (item, index), "mxreach place: built " + item in built and "of grid %d" % index in built, built)
+        built = next((l.strip()[-260:] for l in log if "mxreach place: built " + item in l and "of grid %d " % index in l), "")
+        run.check("built %s on grid %d" % (item, index), bool(built), built or pick(log, "mxreach place"))
     check_loft(run, "fresh")
 
     if args.after_reload:

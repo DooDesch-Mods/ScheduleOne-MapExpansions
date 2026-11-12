@@ -131,7 +131,8 @@ namespace MapExpansions.Debug
                 string firstBad = null;
                 foreach (var t in tiles)
                 {
-                    var at = t.transform.position + new Vector3(Grid.TileSize / 2f, 0f, Grid.TileSize / 2f);
+                    // A tile's cell runs along its grid's axes, which a turned grid points elsewhere than world x and z.
+                    var at = t.transform.position + t.transform.rotation * new Vector3(Grid.TileSize / 2f, 0f, Grid.TileSize / 2f);
                     string line = Probe(p, e, at, out bool inBounds, out bool reach, out bool isStale);
                     if (!inBounds) outside++;
                     if (!reach) unreachable++;

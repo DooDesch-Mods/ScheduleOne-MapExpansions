@@ -73,8 +73,8 @@ namespace MapExpansions.World
                 var own = OwnGrid;
                 if (own != null && Property != null)
                 {
-                    HeatmapTiles.Set(Property, own, Tiles.Where(t => t.tile != null).Select(t => (t.tile.x, t.tile.y)).ToList(), false);
                     Property.Grids?.Remove(own);
+                    HeatmapTiles.Relayout(Property, $"'{ExtensionId}' removed its own grid");
                 }
                 Tiles.Clear();
                 GuidLeases.Release(own, $"grid of '{ExtensionId}'");
