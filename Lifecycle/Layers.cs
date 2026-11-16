@@ -339,6 +339,7 @@ namespace MapExpansions.Lifecycle
             if (e["onto"] != null) d.Onto = Str(e, "onto");
             if (e["at"] is JsonNode at)
                 d.At = new LocalPoint(Vec(at["pos"]) ?? d.At.Position, Num(at, "yaw") ?? d.At.Yaw);
+            if (Vec(e["tilt"]) is Vector3 tilt) d.Tilt = tilt;
             if (Vec(e["ontoOffset"]) is Vector3 off) d.OntoOffset = off;
             if (Vec(e["ontoRotation"]) is Vector3 rot) d.OntoRotation = rot;
             if (Num(e, "scale") is float scale) d.Scale = scale;
@@ -445,7 +446,10 @@ namespace MapExpansions.Lifecycle
                 if (d.Exclude.Count > 0) o["exclude"] = new JsonArray(d.Exclude.Select(x => (JsonNode)x).ToArray());
             }
             if (string.IsNullOrEmpty(d.Onto))
+            {
                 o["at"] = new JsonObject { ["pos"] = Vector(d.At.Position), ["yaw"] = Round(d.At.Yaw) };
+                if (d.Tilt != Vector3.zero) o["tilt"] = Vector(d.Tilt);
+            }
             else
             {
                 o["ontoOffset"] = Vector(d.OntoOffset);

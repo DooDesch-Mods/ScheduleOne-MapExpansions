@@ -49,6 +49,13 @@ namespace MapExpansions
         public LocalPoint At { get; set; }
 
         /// <summary>
+        /// Euler angles in degrees that tilt the frame at <see cref="At"/> in its own axes after its yaw, such as a
+        /// handrail laid along a stair of another pitch. Zero keeps the frame upright. Not used when <see cref="Onto"/>
+        /// is set; <see cref="OntoRotation"/> turns that frame.
+        /// </summary>
+        public Vector3 Tilt { get; set; }
+
+        /// <summary>
         /// Path of an object of the expansion's source the frame stands on instead of <see cref="At"/>, such as the
         /// expansion's own static door a working door replaces: "Pawn shop/Metal Glass Door (Static)". The frame takes
         /// its place and its full rotation, tilt included, moved by <see cref="OntoOffset"/> and turned by
