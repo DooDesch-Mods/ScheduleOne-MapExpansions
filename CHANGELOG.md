@@ -4,6 +4,21 @@ All notable changes to MapExpansions are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to Semantic Versioning.
 
+## [1.3.0] - 2026-11-16
+
+### Fixed
+- Co-op: joining a host whose property has an expanded floor or an added loading dock no longer disconnects after
+  25 seconds.
+- Parts of an expanded building no longer vanish or hide the building behind them when seen from close by.
+
+### For mod authors
+- New `PropertyExtensionDefinition.GridOrigin`: an extension builds its own floor grid at another height, with save
+  and load, employee reach and the temperature view.
+- New `CopyDefinition.Tilt`: tilts a copy placed with `At` in its own axes after its yaw, such as a rail along a stair.
+- A world-state `Cut` rule now cuts its `Openings` as further areas in the same pass.
+- A world state no longer fails to apply when a turned object far away stands next to it.
+- `MapExpansionsApi.ApiVersion` is 0.6.0.
+
 ## [1.2.0] - 2026-11-06
 
 ### Added
