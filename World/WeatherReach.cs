@@ -192,19 +192,24 @@ namespace MapExpansions.World
                 _lookupThrows++;
                 if (Time.unscaledTime - _lookupReportedAt < LookupReportSeconds) return null;
                 _lookupReportedAt = Time.unscaledTime;
-                Core.Log.Warning($"weather reach: the game's weather lookup threw {_lookupThrows} time(s) so far, those entities keep their weather for the frame; {LookupState(__instance)}: {__exception.Message.Split('\n')[0].Trim()}");
+                string line = $"weather reach: the game's weather lookup threw {_lookupThrows} time(s) so far, those entities keep their weather for the frame; {LookupState(__instance, out bool tornDown)}: {__exception.Message.Split('\n')[0].Trim()}";
+                // Every listed volume destroyed is the old scene being torn down on a reload; that is expected, not a fault.
+                if (tornDown) Core.Log.Msg(line + " (old scene unloading)");
+                else Core.Log.Warning(line);
                 return null;
             }
         }
 
-        private static string LookupState(EnvironmentManager env)
+        private static string LookupState(EnvironmentManager env, out bool tornDown)
         {
+            tornDown = false;
             try
             {
                 if (env == null) return "the manager is gone";
                 int gone = 0, count = env._activeWeatherVolumes != null ? env._activeWeatherVolumes.Count : -1;
                 for (int i = 0; i < count; i++)
                     if (env._activeWeatherVolumes[i] == null) gone++;
+                tornDown = count > 0 && gone == count;
                 return $"anchor set={env._weatherBoundsAnchor != null}, {gone} of {count} active volume(s) gone";
             }
             catch (Exception e) { return "state unreadable (" + e.Message + ")"; }

@@ -23,6 +23,8 @@ namespace MapExpansions.World
         internal sealed class Part
         {
             public string Key;
+            /// <summary>Expansion, owner and copy id the part belongs to; lamps find their copied switch by these.</summary>
+            public string Expansion, Owner, CopyId;
             public GameObject Template;
             public Vector3 Position;
             public Quaternion Rotation;
@@ -187,7 +189,8 @@ namespace MapExpansions.World
             Built built;
             try
             {
-                built = BuildOne(b, d, owner, lookup ?? LookupFor(new[] { d }), templates, holder);
+                string keyScope = layerOwner.StartsWith("state:", StringComparison.Ordinal) ? StateKeyScope(d) : null;
+                built = BuildOne(b, d, owner, lookup ?? LookupFor(new[] { d }), templates, holder, keyScope);
             }
             catch (Exception e)
             {
@@ -212,11 +215,9 @@ namespace MapExpansions.World
                 }
             }
             All.Add(placed);
-            if (built.Parts.Count > 0)
-            {
-                if (InstanceFinder.IsServer) MelonCoroutines.Start(SpawnWhenNetworked());
-                else Core.Log.Warning($"copies: apply '{b.Id}' {owner} '{d.Id}': this peer is no host; its {built.Parts.Count} networked parts are not spawned");
-            }
+            // The host spawns them once its network runs, which during a load is later than this; a client finds them as
+            // they arrive from the host.
+            if (built.Parts.Count > 0 && _spawnRoutine == null) _spawnRoutine = MelonCoroutines.Start(SpawnWhenNetworked());
             Core.Log.Msg($"copies: apply '{b.Id}' {owner} '{d.Id}': built, {built.Parts.Count} networked parts");
             return placed;
         }
@@ -226,7 +227,7 @@ namespace MapExpansions.World
         {
             if (p == null) return;
             var d = p.Built.Def;
-            int parts = 0;
+            int parts = 0, toHost = 0;
             foreach (var part in p.Built.Parts)
             {
                 Parts.Remove(part);
@@ -235,6 +236,8 @@ namespace MapExpansions.World
                 {
                     // The interop wrapper reads the despawn type as an object; null throws, an empty Nullable means "default".
                     if (InstanceFinder.IsServer && part.Instance.IsSpawned) InstanceFinder.ServerManager.Despawn(part.Instance.gameObject, new Il2CppSystem.Nullable<DespawnType>());
+                    // On a client the part belongs to the host, whose despawn takes it out here as well.
+                    else if (part.Instance.IsSpawned) toHost++;
                     else Object.Destroy(part.Instance.gameObject);
                     parts++;
                 }
@@ -256,7 +259,7 @@ namespace MapExpansions.World
             int assets = p.Built.Assets.Count;
             if (p.Built.Parts.Count == 0) ReleaseAssets(p.Expansion, p.Built.Assets);
             else if (assets > 0) Core.Log.Msg($"copies: revert '{p.Expansion.Id}' {p.LayerOwner} '{d.Id}': {assets} assets stay until teardown; the registered part templates may still draw them");
-            Core.Log.Msg($"copies: revert '{p.Expansion.Id}' {p.LayerOwner} '{d.Id}': taken out, {parts} networked parts removed, {released} batch parts released, {assets - p.Built.Assets.Count} assets released");
+            Core.Log.Msg($"copies: revert '{p.Expansion.Id}' {p.LayerOwner} '{d.Id}': taken out, {parts} networked parts removed ({toHost} left to the host's despawn), {released} batch parts released, {assets - p.Built.Assets.Count} assets released");
         }
 
         private static void ReleaseAssets(BuiltExpansion b, List<Object> assets)
@@ -269,13 +272,16 @@ namespace MapExpansions.World
             assets.Clear();
         }
 
-        private static Built BuildOne(BuiltExpansion b, CopyDefinition d, string owner, MainLookup lookup, Transform templates, Transform holder)
+        /// <param name="keyScope">Middle of the networked parts' keys; null keys them by owner and copy id.</param>
+        /// <param name="reserve">Only the networked parts are wanted: a copy without any is not built, and its lamps follow nothing.</param>
+        private static Built BuildOne(BuiltExpansion b, CopyDefinition d, string owner, MainLookup lookup, Transform templates, Transform holder,
+                                      string keyScope = null, bool reserve = false)
         {
             var assets = new List<Object>();
             int partsBefore = Parts.Count;
             try
             {
-                var built = BuildCopy(b, d, owner, lookup, templates, holder, assets);
+                var built = BuildCopy(b, d, owner, lookup, templates, holder, assets, keyScope, reserve);
                 if (built != null) built.Assets.AddRange(assets);
                 else ReleaseAssets(b, assets);
                 return built;
@@ -289,7 +295,8 @@ namespace MapExpansions.World
             }
         }
 
-        private static Built BuildCopy(BuiltExpansion b, CopyDefinition d, string owner, MainLookup lookup, Transform templates, Transform holder, List<Object> assets)
+        private static Built BuildCopy(BuiltExpansion b, CopyDefinition d, string owner, MainLookup lookup, Transform templates, Transform holder, List<Object> assets,
+                                       string keyScope, bool reserve)
         {
             bool model = !string.IsNullOrEmpty(d.Model), prefab = !string.IsNullOrEmpty(d.Prefab), resource = !string.IsNullOrEmpty(d.Resource);
             if (string.IsNullOrEmpty(d.Id) || (!model && !prefab && !resource && string.IsNullOrEmpty(d.Template)))
@@ -316,6 +323,7 @@ namespace MapExpansions.World
                 Core.Log.Error($"copies: '{b.Id}' {owner} copy '{d.Id}': frame '{d.Frame}' is not in {world}; it is not built");
                 return null;
             }
+            if (reserve && src.GetComponentInChildren<NetworkObject>(true) == null) return new Built { Def = d };
 
             if (!At(b, d, owner, out var at)) return null;
             var frameM = Matrix4x4.TRS(frame.position, frame.rotation, Vector3.one);
@@ -364,7 +372,8 @@ namespace MapExpansions.World
                     Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {lights.Length} native lights, range {d.LightRange?.ToString() ?? "kept"}, intensity {d.LightIntensity?.ToString() ?? "kept"}");
                 }
                 if (d.IndependentMesh) IndependentCopies.Extract(b, src, go, d.OwnMesh, assets);
-                if (surfaces != null) SwitchedLamps.Follow($"'{b.Id}' {owner} '{d.Id}'", go, d.LightSwitch, surfaces);
+                if (surfaces != null && !reserve) SwitchedLamps.Follow($"'{b.Id}' {owner} '{d.Id}'", b.Id, owner, go, d.LightSwitch, surfaces);
+                if (!d.VisualOnly) LocalSwitches(b, d, owner, go);
             }
             catch { Object.DestroyImmediate(go); throw; }
             go.transform.SetPositionAndRotation(pose.GetColumn(3), pose.rotation);
@@ -391,9 +400,9 @@ namespace MapExpansions.World
             {
                 var nob = roots[i];
                 // Copies of different owners may share an id ("door"); the owner keeps their prefab slots apart.
-                var key = $"copy:{b.Id}/{KeyOf(owner)}/{d.Id}/{i}";
+                var key = $"copy:{b.Id}/{keyScope ?? KeyOf(owner) + "/" + d.Id}/{i}";
                 var t = nob.transform;
-                var part = new Part { Key = key, Template = nob.gameObject, Position = t.position, Rotation = t.rotation, Scale = t.lossyScale, ToMain = toMain, Anchors = anchors };
+                var part = new Part { Key = key, Expansion = b.Id, Owner = owner, CopyId = d.Id, Template = nob.gameObject, Position = t.position, Rotation = t.rotation, Scale = t.lossyScale, ToMain = toMain, Anchors = anchors };
                 t.SetParent(templates, true);
                 int nested = SpawnablePrefabs.Detach(nob);
                 SpawnablePrefabs.OpenObserver(nob.GetComponent<NetworkObserver>());
@@ -644,6 +653,166 @@ namespace MapExpansions.World
             Core.Log.Msg($"copies: '{b.Id}' {owner} copy '{d.Id}' leaves the template's own mesh behind ({removed} components)");
         }
 
+        /// <summary>
+        /// A copied wall switch still lists the original's lamps and the switches it toggles along with; clicking the
+        /// copy would switch the original room. Every reference that leaves the copy is dropped before the copy wakes,
+        /// so the switch only drives what stands inside it, or the lamps that follow it by <see cref="CopyDefinition.LightSwitch"/>.
+        /// </summary>
+        private static void LocalSwitches(BuiltExpansion b, CopyDefinition d, string owner, GameObject go)
+        {
+            foreach (var modular in go.GetComponentsInChildren<ModularSwitch>(true))
+            {
+                int lamps = 0, linked = 0;
+                var lights = modular.LightsToControl;
+                if (lights != null)
+                {
+                    var kept = new List<ToggleableLight>();
+                    foreach (var light in lights)
+                    {
+                        if (light != null && light.transform.IsChildOf(go.transform)) kept.Add(light);
+                        else lamps++;
+                    }
+                    if (lamps > 0) modular.LightsToControl = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray<ToggleableLight>(kept.ToArray());
+                }
+                else modular.LightsToControl = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray<ToggleableLight>(0);
+                var sync = modular.SwitchesToSyncWith;
+                if (sync != null)
+                    for (int i = sync.Count - 1; i >= 0; i--)
+                        if (sync[i] == null || !sync[i].transform.IsChildOf(go.transform)) { sync.RemoveAt(i); linked++; }
+                // Unit 1's switch drives its lamps through listeners saved in the scene, not through LightsToControl; a
+                // copy carries those listeners along and would switch the original room's lamps.
+                var events = new List<string>();
+                events.AddRange(OutsideListenersOff(modular.switchedOn, go.transform, "on"));
+                events.AddRange(OutsideListenersOff(modular.switchedOff, go.transform, "off"));
+                Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': switch '{modular.name}' lets go of {lamps} lamps, {linked} linked switches and {events.Count} saved listeners outside the copy" +
+                             (events.Count > 0 ? $" ({string.Join(", ", events)})" : ""));
+            }
+        }
+
+        /// <summary>Turns off every saved listener of an event whose target lies outside the copy; returns what it turned off.</summary>
+        private static List<string> OutsideListenersOff(UnityEngine.Events.UnityEvent evt, Transform root, string which)
+        {
+            var off = new List<string>();
+            if (evt == null) return off;
+            int count = evt.GetPersistentEventCount();
+            for (int i = 0; i < count; i++)
+            {
+                var target = evt.GetPersistentTarget(i);
+                Transform t = null;
+                if (target != null)
+                {
+                    var component = target.TryCast<Component>();
+                    if (component != null) t = component.transform;
+                    else
+                    {
+                        var obj = target.TryCast<GameObject>();
+                        if (obj != null) t = obj.transform;
+                    }
+                }
+                if (t != null && t.IsChildOf(root)) continue;
+                evt.SetPersistentListenerState(i, UnityEngine.Events.UnityEventCallState.Off);
+                off.Add($"{which} {(target != null ? target.name : "missing target")}.{evt.GetPersistentMethodName(i)}");
+            }
+            return off;
+        }
+
+        /// <summary>
+        /// A property door wakes locked to the outside and opens only when its property is bought. A copy spawned into
+        /// a property its player already owns missed that moment, so it is unlocked here, on every peer, as the game's
+        /// own doors are once their property is owned. A copy in a property not yet bought still unlocks on purchase.
+        /// </summary>
+        private static void UnlockOwnedDoors(Part p)
+        {
+            foreach (var door in p.Instance.GetComponentsInChildren<Il2CppScheduleOne.Building.Doors.PropertyDoorController>(true))
+            {
+                var property = door.Property;
+                if (property == null)
+                {
+                    Core.Log.Warning($"copies: networked part '{p.Key}': door '{door.name}' has no property; it opens from inside only");
+                    continue;
+                }
+                if (!property.IsOwned)
+                {
+                    Core.Log.Msg($"copies: networked part '{p.Key}': door '{door.name}' stays locked until '{property.PropertyCode}' is bought");
+                    continue;
+                }
+                door.Unlock();
+                Core.Log.Msg($"copies: networked part '{p.Key}': door '{door.name}' unlocked, '{property.PropertyCode}' is owned");
+            }
+        }
+
+        /// <summary>
+        /// The wall switch of a networked copy, once the host has spawned it and it stands on this peer. Only one state of
+        /// an expansion stands at a time, and a copy carried into the next state keeps the owner it was built under, so
+        /// the owner does not take part.
+        /// </summary>
+        internal static ModularSwitch SwitchOfCopy(string expansion, string copyId)
+        {
+            foreach (var p in Parts)
+            {
+                if (p.Instance == null || p.Expansion != expansion || p.CopyId != copyId) continue;
+                var modular = p.Instance.GetComponentInChildren<ModularSwitch>(true);
+                if (modular != null) return modular;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// The prefab slots of a world state's networked parts belong to the copy's definition, not to the state: a copy
+        /// carried into the next state and the same copy built fresh there share one slot.
+        /// </summary>
+        internal static string StateKeyScope(CopyDefinition d) => $"states/{KeyOf(d.Id)}/{StableHash(WorldStateSignatures.Of(d))}";
+
+        /// <summary>FNV-1a over the text: the same on every peer and every run, unlike <see cref="string.GetHashCode()"/>.</summary>
+        private static string StableHash(string text)
+        {
+            ulong h = 14695981039346656037UL;
+            foreach (char c in text)
+            {
+                h ^= c;
+                h *= 1099511628211UL;
+            }
+            return h.ToString("x16");
+        }
+
+        /// <summary>
+        /// Registers the networked parts of world-state copies before any state is applied. A prefab id is the order of
+        /// registration, and peers apply states in different orders (a client joins straight into the last one).
+        /// Registered here in definition order, each part has the same slot on every peer; applying its state later
+        /// only puts the fresh template into that slot. Nothing is spawned and nothing stays built.
+        /// </summary>
+        internal static int Reserve(BuiltExpansion b, IReadOnlyList<CopyDefinition> defs)
+        {
+            if (defs.Count == 0) return 0;
+            var lookup = LookupFor(defs.ToList());
+            var (templates, holder) = Holders(b);
+            int reserved = 0, copies = 0;
+            foreach (var d in defs)
+            {
+                Built built;
+                try
+                {
+                    built = BuildOne(b, d, "states", lookup, templates, holder, StateKeyScope(d), reserve: true);
+                }
+                catch (Exception e)
+                {
+                    Core.Log.Error($"copies: '{b.Id}' reserving the networked parts of state copy '{d.Id}' failed: {e}");
+                    continue;
+                }
+                if (built == null)
+                {
+                    Core.Log.Error($"copies: '{b.Id}' state copy '{d.Id}' could not be built; its networked parts have no reserved slot");
+                    continue;
+                }
+                if (built.Parts.Count == 0 && built.Local == null) continue;
+                reserved += built.Parts.Count;
+                copies++;
+                Revert(new Placed { Expansion = b, LayerOwner = "reserve", Built = built });
+            }
+            Core.Log.Msg($"copies: '{b.Id}' reserved {reserved} prefab slots for the networked parts of {copies} of {defs.Count} world-state copies");
+            return reserved;
+        }
+
         private static string KeyOf(string owner) =>
             new string(owner.Select(c => char.IsLetterOrDigit(c) || c == '-' ? char.ToLowerInvariant(c) : '-').ToArray()).Trim('-');
 
@@ -815,6 +984,7 @@ namespace MapExpansions.World
         /// </summary>
         private static void SettlePart(Part p)
         {
+            UnlockOwnedDoors(p);
             if (p.ObstacleOf != null)
             {
                 var what = $"networked part '{p.Key}'";

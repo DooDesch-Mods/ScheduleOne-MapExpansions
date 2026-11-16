@@ -58,6 +58,12 @@ namespace MapExpansions
         /// <summary>Release native replication only for the matching revision. The consumer authenticates the acknowledgement.</summary>
         public static bool ConfirmPeerWorldStateAck(int peerId, long revision) => WorldStateReplication.Confirm(peerId, revision);
 
+        /// <summary>
+        /// The joining peer has this revision and is still applying it, so its join is not given up yet. Report it every few
+        /// seconds; the wait restarts with each report, within a total limit from the join. The consumer authenticates it.
+        /// </summary>
+        public static bool ReportPeerWorldStateProgress(int peerId, long revision) => WorldStateReplication.Progress(peerId, revision);
+
         internal static void RaiseWorldStateApplied(string id, string state)
         {
             var handlers = WorldStateApplied;

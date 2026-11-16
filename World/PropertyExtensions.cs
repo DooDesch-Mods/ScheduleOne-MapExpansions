@@ -105,6 +105,7 @@ namespace MapExpansions.World
                 var keep = Property.propertyBoundsColliders.Where(x => x != null && !Boxes.Any(b => b != null && b.Pointer == x.Pointer)).ToArray();
                 Property.propertyBoundsColliders = new Il2CppReferenceArray<BoxCollider>(keep);
             }
+            if (Property != null && Boxes.Count > 0) PropertyExtensions.RefreshAudioZones(Property, Boxes, $"'{ExtensionId}' removed its bounds");
             foreach (var box in Boxes)
                 if (box != null) { box.gameObject.SetActive(false); Object.Destroy(box.gameObject); }
             Boxes.Clear();
@@ -123,6 +124,34 @@ namespace MapExpansions.World
 
     internal static class PropertyExtensions
     {
+        /// <summary>
+        /// The game's audio zone on a property's bounding box caches the box colliders under it once, at its Start, and
+        /// tests the camera against them four times a second. An extension's bounds hang under that box: a zone that
+        /// started after they were added holds them, and throws on every test once they are destroyed; one that started
+        /// before never covers the new rooms. Each change of the bounds sets the cache anew, without the boxes leaving.
+        /// </summary>
+        internal static void RefreshAudioZones(Property prop, ICollection<BoxCollider> leaving, string reason)
+        {
+            if (prop.BoundingBox == null)
+            {
+                Core.Log.Warning($"audio zones of '{prop.PropertyCode}': no bounding box, nothing refreshed ({reason})");
+                return;
+            }
+            int refreshed = 0;
+            foreach (var zone in prop.BoundingBox.GetComponentsInParent<Il2CppScheduleOne.Audio.AudioZoneModifierVolume>(true))
+            {
+                if (zone == null) continue;
+                // A zone that has not started yet caches the colliders itself when it does.
+                if (zone._colliders == null) continue;
+                var colliders = zone.GetComponentsInChildren<BoxCollider>()
+                    .Where(c => c != null && (leaving == null || !leaving.Any(l => l != null && l.Pointer == c.Pointer))).ToArray();
+                zone._colliders = new Il2CppReferenceArray<BoxCollider>(colliders);
+                refreshed++;
+                Core.Log.Msg($"audio zone '{zone.name}' on '{prop.PropertyCode}': {colliders.Length} colliders cached ({reason})");
+            }
+            if (refreshed == 0) Core.Log.Msg($"audio zones of '{prop.PropertyCode}': none started under the bounding box ({reason})");
+        }
+
         private static void AddSurface(string expansion, string extension, Property prop, PropertySurfaceDefinition def, PropertyExtensionLease lease)
         {
             var guid = new Il2CppSystem.Guid(Places.StableGuid(expansion, "surface", extension + "/" + def.Id).ToString());
@@ -312,6 +341,7 @@ namespace MapExpansions.World
                 var boxes = prop.propertyBoundsColliders?.Where(x => x != null).ToList() ?? new List<BoxCollider>();
                 boxes.AddRange(lease.Boxes);
                 prop.propertyBoundsColliders = new Il2CppReferenceArray<BoxCollider>(boxes.ToArray());
+                if (lease.Boxes.Count > 0) RefreshAudioZones(prop, null, $"'{expansion}/{def.Id}' added its bounds");
                 Physics.SyncTransforms();
                 foreach (var bounds in def.Bounds)
                     if (!prop.DoBoundsContainPoint(bounds.center)) throw new InvalidOperationException("property bounds readback failed");

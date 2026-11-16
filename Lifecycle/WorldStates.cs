@@ -297,8 +297,6 @@ namespace MapExpansions.Lifecycle
                 if (placed == null) throw new InvalidOperationException($"state '{state.Id}' copy '{c.Id}' was not built; see copy error above");
                 placed.StateSignature = WorldStateSignatures.Of(c);
                 result.Copies.Add(placed);
-                if (placed.Built.Parts.Count > 0)
-                    throw new InvalidOperationException($"state '{state.Id}' copy '{c.Id}' contains network parts; use visual-only source parts");
             }
             long copiesMs = clock.ElapsedMilliseconds;
 
@@ -353,6 +351,28 @@ namespace MapExpansions.Lifecycle
             if (cover.HasValue) World.WeatherCover.AddState(CoverOwner(b, state), cover.Value);
             result.Timing = $"lookup {lookupMs} ms, {fresh.Count} copies {copiesMs - lookupMs} ms, {state.Rules.Count} rules {rulesMs - copiesMs} ms, " +
                             $"properties {propertiesMs - rulesMs} ms, navigation {clock.ElapsedMilliseconds - propertiesMs} ms; kept {carry.Copies.Count} copies, {carry.Properties.Count} extensions";
+        }
+
+        /// <summary>
+        /// Reserves the prefab slots of every networked copy any of the expansion's states can build, in definition order,
+        /// so that host and clients give them the same ids whichever states they apply in which order.
+        /// </summary>
+        internal static void ReserveNetworkParts(BuiltExpansion b)
+        {
+            var copies = new List<CopyDefinition>();
+            var scopes = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var source in b.Definition.WorldStates)
+            {
+                if (source == null || !Definitions.TryGetValue((b.Id, source.Id), out var state))
+                {
+                    Core.Log.Warning($"world state: '{b.Id}' state '{source?.Id}' is not resolved; its networked copies get no reserved slot");
+                    continue;
+                }
+                foreach (var c in state.Copies)
+                    if (!c.VisualOnly && string.IsNullOrEmpty(c.Prefab) && scopes.Add(World.MainCopies.StateKeyScope(c))) copies.Add(c);
+            }
+            if (copies.Count == 0) return;
+            World.MainCopies.Reserve(b, copies);
         }
 
         private static string CoverOwner(BuiltExpansion b, WorldStateDefinition state) => $"'{b.Id}' world state {state.Id}";

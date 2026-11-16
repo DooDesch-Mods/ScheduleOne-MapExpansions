@@ -62,5 +62,23 @@ namespace MapExpansions.Tests
             Check.False(gate.Require(8, 126));
             Check.False(gate.Expire(130));
         }
+        public static void ProgressKeepsAJoinPastTheQuietLimitButNotPastTheCap()
+        {
+            var slow = new PeerWorldStateAck(200);
+            Check.True(slow.Require(7, 200));
+            Check.False(slow.Progress(6, 210));
+            Check.True(slow.Progress(7, 220));
+            Check.False(slow.Expire(225));
+            Check.False(slow.Expire(244.9));
+            Check.True(slow.Expire(245));
+            var steady = new PeerWorldStateAck(300);
+            Check.True(steady.Require(7, 300));
+            for (double t = 310; t < 480; t += 10) { Check.True(steady.Progress(7, t)); Check.False(steady.Expire(t)); }
+            Check.True(steady.Expire(480));
+            var done = new PeerWorldStateAck(500);
+            Check.True(done.Require(7, 500));
+            Check.True(done.Confirm(7));
+            Check.False(done.Progress(7, 501));
+        }
     }
 }

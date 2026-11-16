@@ -55,6 +55,19 @@ namespace MapExpansions.Lifecycle
             Core.Log.Msg($"world state replication: peer {peerId} confirmed revision {revision}; native replication released");
             return true;
         }
+        internal static bool Progress(int peerId, long revision)
+        {
+            if (!Gates.TryGetValue(peerId, out var gate))
+            { Core.Log.Warning($"world state replication: progress {revision} from peer {peerId} without a join gate"); return false; }
+            bool first = gate.Ack.LastProgress < 0;
+            if (!gate.Ack.Progress(revision, Now))
+            {
+                Core.Log.Msg($"world state replication: progress {revision} from peer {peerId} ignored (pending {gate.Ack.Revision}, confirmed={gate.Ack.Confirmed}, timedOut={gate.Ack.TimedOut})");
+                return false;
+            }
+            if (first) Core.Log.Msg($"world state replication: peer {peerId} is applying revision {gate.Ack.Revision}; its join wait restarts with each report");
+            return true;
+        }
         internal static void Reset()
         {
             int held = Gates.Values.Sum(g => g.Held.Count) + Orphaned.Count + Released.Count;
@@ -137,7 +150,8 @@ namespace MapExpansions.Lifecycle
         {
             string cause = gate.LastFailure ?? (gate.Ack.Revision < 0 ? "the consumer never required a revision for this peer" : "the peer did not acknowledge the snapshot");
             Core.Log.Error($"world state replication: disconnecting peer {peer} during its join: no acknowledgement of revision {gate.Ack.Revision} after " +
-                           $"{now - gate.Ack.Started:0.00}s (limit {PeerWorldStateAck.TimeoutSeconds}s), {gate.Requests} snapshot requests, {gate.Held.Count} native tasks held; cause: {cause}");
+                           $"{now - gate.Ack.Started:0.00}s (limit {PeerWorldStateAck.TimeoutSeconds}s without word, {PeerWorldStateAck.JoinCapSeconds}s in total), " +
+                           $"last progress {(gate.Ack.LastProgress < 0 ? "never" : $"{now - gate.Ack.LastProgress:0.0}s ago")}, {gate.Requests} snapshot requests, {gate.Held.Count} native tasks held; cause: {cause}");
             gate.Connection.Disconnect(true);
         }
 
