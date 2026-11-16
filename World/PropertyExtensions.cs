@@ -161,7 +161,16 @@ namespace MapExpansions.World
                 surface.SurfaceType = def.SurfaceType == PropertySurfaceKind.Roof ? Surface.ESurfaceType.Roof : Surface.ESurfaceType.Wall;
                 surface.ValidFaces = new Il2CppSystem.Collections.Generic.List<Surface.EFace>();
                 foreach (var face in def.ValidFaces) surface.ValidFaces.Add((Surface.EFace)(int)face);
-                go.SetActive(true);
+                // Surface registers itself only in Awake, and a joining client builds this before the game switches the
+                // property root on. An own surface object wakes at the scene root and then goes back under the property.
+                if (ownObject && !prop.gameObject.activeInHierarchy)
+                {
+                    go.transform.SetParent(null, true);
+                    go.SetActive(true);
+                    go.transform.SetParent(prop.transform, true);
+                    Core.Log.Msg($"property surface: '{expansion}/{extension}/{def.Id}' woke at the scene root; property '{prop.PropertyCode}' is inactive now");
+                }
+                else go.SetActive(true);
                 var registered = Il2Cpp.GUIDManager.GetObject<Surface>(guid);
                 if (registered == null || registered.Pointer != surface.Pointer || surface.ParentProperty?.Pointer != prop.Pointer)
                     throw new InvalidOperationException($"surface '{def.Id}' registration readback failed");
@@ -177,7 +186,7 @@ namespace MapExpansions.World
 
         /// <summary>
         /// Builds the extension's own grid, still inactive: vanilla's Grid.Awake adds it to the property's grids,
-        /// registers its GUID and reads its tiles, so it runs only once the tiles are registered.
+        /// registers its GUID and reads its tiles, so it runs only once the tiles are registered (ActivateGrid).
         /// </summary>
         private static Grid CreateGrid(string expansion, PropertyExtensionDefinition def, Property prop, Grid baseGrid)
         {
@@ -198,7 +207,20 @@ namespace MapExpansions.World
         private static void ActivateGrid(string expansion, PropertyExtensionDefinition def, Property prop, Grid grid, PropertyExtensionLease lease)
         {
             int before = prop.Grids.Count;
+            // The property can be inactive here: a joining client gets the host's world states before the game switches
+            // the property root on, and vanilla culling switches the base grid's parent off while the player is far away.
+            // Under an inactive parent Grid.Awake would not run. Neither Grid.Awake nor Tile.Awake looks up the
+            // hierarchy (the parent property is set), so the grid wakes at the scene root and then goes back under the
+            // base grid's parent, where it is switched on and off with the base grid.
+            var home = grid.transform.parent;
+            bool asleep = home != null && !home.gameObject.activeInHierarchy;
+            grid.transform.SetParent(null, true);
             grid.gameObject.SetActive(true);
+            if (!grid.gameObject.activeInHierarchy)
+                throw new InvalidOperationException($"grid of '{def.Id}' did not wake at the scene root");
+            grid.transform.SetParent(home, true);
+            if (asleep)
+                Core.Log.Msg($"property extension: grid of '{expansion}/{def.Id}' woke at the scene root; its parent '{home.name}' is inactive now and wakes with the base grid");
             var guid = new Il2CppSystem.Guid(grid._guid);
             var registered = Il2Cpp.GUIDManager.GetObject<Grid>(guid);
             if (registered == null || registered.Pointer != grid.Pointer)

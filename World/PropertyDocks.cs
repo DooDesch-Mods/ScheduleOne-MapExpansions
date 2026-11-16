@@ -158,8 +158,16 @@ namespace MapExpansions.World
                 docks.Add(dock);
                 property.LoadingDocks = new Il2CppReferenceArray<LoadingDock>(docks.ToArray());
                 lease.Attached = true;
+                // A joining client gets the host's world states before the game switches the property root on, and
+                // LoadingDock, ParkingLot and ParkingSpot register themselves only in Awake. They look up nothing above
+                // the copy, so the dock wakes at the scene root and then goes back under the property.
+                bool asleep = !property.gameObject.activeInHierarchy;
+                root.transform.SetParent(null, true);
                 copy.SetActive(true);
                 root.SetActive(true);
+                root.transform.SetParent(property.transform, true);
+                if (asleep)
+                    Core.Log.Msg($"property dock: '{expansion}/{extension}/{def.Id}' woke at the scene root; property '{property.PropertyCode}' is inactive now and wakes the dock with it");
                 if (Il2Cpp.GUIDManager.GetObject<LoadingDock>(dockGuid)?.Pointer != dock.Pointer ||
                     Il2Cpp.GUIDManager.GetObject<ParkingLot>(lotGuid)?.Pointer != parking.Pointer ||
                     property.LoadingDocks[def.Index]?.Pointer != dock.Pointer || dock.ParentProperty?.Pointer != property.Pointer || parking.ParkingSpots.Count != spots.Length)
