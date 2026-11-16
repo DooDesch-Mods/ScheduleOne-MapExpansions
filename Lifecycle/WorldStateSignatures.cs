@@ -24,7 +24,7 @@ namespace MapExpansions.Lifecycle
             V(c.OntoOffset), V(c.OntoRotation), N(c.Scale), c.OwnMesh.ToString(), c.IndependentMesh.ToString(), c.TemplateSide.ToString(),
             c.Model, c.Collider.ToString(), c.Prefab, c.Obstacle?.ToString(), c.Added.ToString(), Join(c.Exclude),
             Join(c.Boxes.Select(b => Join(new[] { b.Id, b.Kind.ToString(), B(b.Box), b.Material, N(b.TileMetres) }))),
-        });
+        }) + (c.Tilt == Vector3.zero ? "" : Separator + "tilt " + V(c.Tilt));
 
         internal static string Of(PropertyExtensionDefinition e) => Join(new[]
         {

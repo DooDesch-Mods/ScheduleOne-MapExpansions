@@ -174,12 +174,13 @@ namespace MapExpansions.Editor
         internal readonly struct Pose
         {
             public readonly LocalPoint At;
-            public readonly Vector3 OntoOffset, OntoRotation;
+            public readonly Vector3 Tilt, OntoOffset, OntoRotation;
             public readonly float Scale;
 
             public Pose(CopyDefinition d)
             {
                 At = d.At;
+                Tilt = d.Tilt;
                 OntoOffset = d.OntoOffset;
                 OntoRotation = d.OntoRotation;
                 Scale = d.Scale;
@@ -188,6 +189,7 @@ namespace MapExpansions.Editor
             public void Write(CopyDefinition d)
             {
                 d.At = At;
+                d.Tilt = Tilt;
                 d.OntoOffset = OntoOffset;
                 d.OntoRotation = OntoRotation;
                 d.Scale = Scale;

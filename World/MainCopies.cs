@@ -432,8 +432,7 @@ namespace MapExpansions.World
             at = Matrix4x4.identity;
             if (string.IsNullOrEmpty(d.Onto))
             {
-                at = Matrix4x4.TRS(b.Root.transform.TransformPoint(d.At.Position),
-                    b.Root.transform.rotation * Quaternion.Euler(0f, d.At.Yaw, 0f), Vector3.one * d.Scale);
+                at = Matrix4x4.TRS(b.Root.transform.TransformPoint(d.At.Position), AtRotation(b, d), Vector3.one * d.Scale);
                 return true;
             }
             var onto = FindInExpansion(b, d.Onto);
@@ -878,7 +877,7 @@ namespace MapExpansions.World
             if (string.IsNullOrEmpty(d.Onto))
             {
                 pos = b.Root.transform.TransformPoint(d.At.Position);
-                rot = b.Root.transform.rotation * Quaternion.Euler(0f, d.At.Yaw, 0f);
+                rot = AtRotation(b, d);
                 return true;
             }
             var onto = FindInExpansion(b, d.Onto);
@@ -893,16 +892,24 @@ namespace MapExpansions.World
             return true;
         }
 
+        /// <summary>The frame's rotation at <see cref="CopyDefinition.At"/>: its yaw, then its tilt in its own axes.</summary>
+        private static Quaternion AtRotation(BuiltExpansion b, CopyDefinition d) =>
+            b.Root.transform.rotation * Quaternion.Euler(0f, d.At.Yaw, 0f) * Quaternion.Euler(d.Tilt);
+
         /// <summary>
         /// Writes a world pose of the frame into the definition. A copy placed by <see cref="CopyDefinition.At"/> keeps
-        /// only the turn around the vertical axis, as <see cref="LocalPoint"/> holds no more.
+        /// its turn around the vertical axis in <see cref="LocalPoint"/> and the rest in <see cref="CopyDefinition.Tilt"/>.
         /// </summary>
         internal static bool SetFramePose(BuiltExpansion b, CopyDefinition d, Vector3 pos, Quaternion rot, float scale)
         {
             if (string.IsNullOrEmpty(d.Onto))
             {
                 var local = Quaternion.Inverse(b.Root.transform.rotation) * rot;
-                d.At = new LocalPoint(b.Root.transform.InverseTransformPoint(pos), Mathf.Repeat(local.eulerAngles.y, 360f));
+                float yaw = Mathf.Repeat(local.eulerAngles.y, 360f);
+                d.At = new LocalPoint(b.Root.transform.InverseTransformPoint(pos), yaw);
+                var tilt = Quaternion.Inverse(Quaternion.Euler(0f, yaw, 0f)) * local;
+                // An upright pose keeps Tilt at zero, so the layer file stays as it was.
+                d.Tilt = Quaternion.Angle(tilt, Quaternion.identity) < .01f ? Vector3.zero : tilt.eulerAngles;
             }
             else
             {
