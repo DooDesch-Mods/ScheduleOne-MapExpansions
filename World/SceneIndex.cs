@@ -112,6 +112,19 @@ namespace MapExpansions.World
         public static bool Matches(Transform t, string name, string parent) =>
             t.name.StartsWith(name, StringComparison.OrdinalIgnoreCase) && (parent == null || HasAncestor(t, parent));
 
+        /// <summary>
+        /// True when the transform or one of its ancestors matches the rule by name and the transform stands in the
+        /// area. For instanced world objects such as map trees, whose renderers report bounds tens of metres wide and
+        /// would select every neighbour.
+        /// </summary>
+        public static bool MatchesByPosition(Transform t, ObjectRule rule, Bounds worldArea)
+        {
+            for (var p = t; p != null; p = p.parent)
+                if (Matches(p, rule.Name, rule.Parent))
+                    return rule.Area.size == Vector3.zero || worldArea.Contains(t.position);
+            return false;
+        }
+
         /// <summary>True when the transform or one of its ancestors matches the rule.</summary>
         public static bool MatchesSelfOrAncestor(Transform t, ObjectRule rule, Bounds worldArea)
         {

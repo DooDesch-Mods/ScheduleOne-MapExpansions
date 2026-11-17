@@ -22,6 +22,12 @@ namespace MapExpansions
         /// these, an NPC standing there can end up on the state's copy of the floor with no way back to the world.
         /// </summary>
         public List<Bounds> NavigationExistingFloor { get; } = new();
+        /// <summary>
+        /// World-space volumes under a roof of this state that has no floor or navigation of its own, such as a carport.
+        /// The game's rain mask knows nothing of the roof; inside these volumes the roof's colliders decide instead.
+        /// <see cref="NavigationBounds"/> and the property extensions' bounds count as cover without this list.
+        /// </summary>
+        public List<Bounds> WeatherCover { get; } = new();
         /// <summary>Exact registered agent names this state must support. Empty requires every registered profile.</summary>
         public List<string> NavigationAgents { get; } = new();
         /// <summary>An embedded editor layer containing copies, rules and boxes for this state.</summary>

@@ -69,6 +69,11 @@ namespace MapExpansions.World
                     Cut(b, index, part, rule, area, offColliders, rule.Effect == ObjectEffect.Cut);
                     continue;
                 }
+                if (rule.Effect == ObjectEffect.ClearDetails)
+                {
+                    Core.Log.Error($"rules: '{b.Id}' {rule}: clearing details only works in a world state; nothing is cleared");
+                    continue;
+                }
                 if (rule.Effect == ObjectEffect.CloseHoles)
                 {
                     if (area.size == Vector3.zero)
@@ -95,12 +100,19 @@ namespace MapExpansions.World
                 bool noCollision = rule.Effect != ObjectEffect.Hide;
                 var rec = new Record { ExpansionId = b.Id, Rule = rule };
                 Records.Add(rec);
+                var instanced = new List<Vector3>();
                 if (hide)
                     foreach (var r in part.Renderers)
                     {
                         if (r == null || !SceneIndex.MatchesSelfOrAncestor(r.transform, rule, area)) continue;
+                        // An instanced object's bounds reach far beyond it, so its place decides; its instanced copy,
+                        // drawn from afar, goes with it.
+                        bool isInstanced = InstancedObjects.IsInstanced(r);
+                        if (isInstanced && !SceneIndex.MatchesByPosition(r.transform, rule, area)) continue;
                         if (Take(rec, r, r.enabled, v => r.enabled = v)) renderers++;
+                        if (isInstanced) instanced.Add(r.transform.position);
                     }
+                if (instanced.Count > 0) rec.Instanced = InstancedObjects.Hold(instanced, $"{b.Id} {rule}");
                 // A removed car's headlights would still light up the walls it stood in front of.
                 if (hide)
                     foreach (var l in part.Lights)
@@ -199,6 +211,8 @@ namespace MapExpansions.World
             public ObjectRule Rule;
             public readonly List<IntPtr> Keys = new();
             public readonly HashSet<IntPtr> BodyKeys = new();
+            /// <summary>Instanced copies the rule holds out of the draw.</summary>
+            public InstancedObjects.Holding Instanced;
         }
 
         private static readonly Dictionary<IntPtr, BodyHold> BodyHolds = new();
@@ -391,6 +405,7 @@ namespace MapExpansions.World
                 BodyHolds.Remove(key);
             }
             if (bodies > 0) Physics.SyncTransforms();
+            InstancedObjects.Release(rec.Instanced);
             Records.Remove(rec);
             string line = $"rules: revert '{b.Id}' {rule}: {back} components on again, {rec.Keys.Count - back} stay as other rules or the world keep them";
             if (rec.BodyKeys.Count > 0) line += $", {bodies} rigidbodies restored";
@@ -438,6 +453,7 @@ namespace MapExpansions.World
 
         internal static void Clear()
         {
+            InstancedObjects.ReleaseAll();
             BodyHolds.Clear();
             Holds.Clear();
             Records.Clear();

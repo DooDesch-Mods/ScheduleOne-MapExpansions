@@ -17,6 +17,7 @@ namespace MapExpansions.Lifecycle
             internal WorldStateDefinition State;
             internal readonly List<ObjectRule> Rules = new();
             internal readonly List<StateCuts.Lease> Cuts = new();
+            internal readonly List<StateDetails.Lease> Details = new();
             internal readonly List<ObjectMoves.Lease> Moves = new();
             internal readonly List<MainCopies.Placed> Copies = new();
             internal readonly List<PropertyExtensionLease> Properties = new();
@@ -82,6 +83,15 @@ namespace MapExpansions.Lifecycle
                     }
                     catch (Exception e) { errors.Add(e); }
                 }
+                for (int i = Details.Count - 1; i >= 0; i--)
+                {
+                    try
+                    {
+                        Details[i].Dispose();
+                        Details.RemoveAt(i);
+                    }
+                    catch (Exception e) { errors.Add(e); }
+                }
                 for (int i = Cuts.Count - 1; i >= 0; i--)
                 {
                     try
@@ -143,7 +153,7 @@ namespace MapExpansions.Lifecycle
                     var ruleIds = new HashSet<string>();
                     foreach (var rule in state.Rules)
                     {
-                        if (!ObjectRules.CanRevert(rule.Effect) && rule.Effect is not (ObjectEffect.Cut or ObjectEffect.CutCollision)) errors.Add($"state '{state.Id}' uses irreversible rule {rule.Effect}");
+                        if (!ObjectRules.CanRevert(rule.Effect) && rule.Effect is not (ObjectEffect.Cut or ObjectEffect.CutCollision or ObjectEffect.ClearDetails)) errors.Add($"state '{state.Id}' uses irreversible rule {rule.Effect}");
                         if (rule.Side != WorldSide.Main) errors.Add($"state '{state.Id}' rule must select the main world");
                         rule.Key = string.IsNullOrEmpty(rule.Id) ? rule.MadeId() : rule.Id;
                         if (!ruleIds.Add(rule.Key)) errors.Add($"state '{state.Id}' repeats rule '{rule.Key}'");
@@ -227,6 +237,8 @@ namespace MapExpansions.Lifecycle
                         errors.Add($"state '{state.Id}' declares existing floor without a navigation volume");
                     else if (state.NavigationExistingFloor.Any(f => !ValidBounds(f) || !f.Intersects(state.NavigationBounds.Value)))
                         errors.Add($"state '{state.Id}' existing floor boxes must be valid and lie in the navigation volume");
+                    if (state.WeatherCover.Any(c => !ValidBounds(c)))
+                        errors.Add($"state '{state.Id}' weather cover boxes must be valid");
                     Definitions[(def.Id, state.Id)] = state;
                 }
                 catch (Exception e) { errors.Add($"state '{source.Id}' cannot be resolved: {e.Message}"); }
@@ -312,6 +324,11 @@ namespace MapExpansions.Lifecycle
                     result.Cuts.Add(StateCuts.Apply(b, BuildPipeline.Index, r, offColliders));
                     continue;
                 }
+                if (r.Effect == ObjectEffect.ClearDetails)
+                {
+                    result.Details.Add(StateDetails.Apply(b, BuildPipeline.Index, r, $"'{b.Id}/{state.Id}' rule '{r.Key}'"));
+                    continue;
+                }
                 result.Rules.Add(r);
                 ObjectRules.ApplyState(b, BuildPipeline.Index, r, offColliders, mainNearby);
                 if (ObjectRules.AppliedTargets(b.Id, r) == 0)
@@ -343,13 +360,12 @@ namespace MapExpansions.Lifecycle
             // The game's rain and its cover queries read a mask baked without this state's roofs; the world's own
             // colliders answer over the state's volume instead.
             Bounds? cover = state.NavigationBounds;
-            foreach (var p in state.PropertyExtensions)
-                foreach (var box in p.Bounds)
-                {
-                    var grown = cover ?? box;
-                    grown.Encapsulate(box);
-                    cover = grown;
-                }
+            foreach (var box in state.PropertyExtensions.SelectMany(p => p.Bounds).Concat(state.WeatherCover))
+            {
+                var grown = cover ?? box;
+                grown.Encapsulate(box);
+                cover = grown;
+            }
             if (cover.HasValue) World.WeatherCover.AddState(CoverOwner(b, state), cover.Value);
             result.Timing = $"lookup {lookupMs} ms, {fresh.Count} copies {copiesMs - lookupMs} ms, {state.Rules.Count} rules {rulesMs - copiesMs} ms, " +
                             $"properties {propertiesMs - rulesMs} ms, navigation {clock.ElapsedMilliseconds - propertiesMs} ms; kept {carry.Copies.Count} copies, {carry.Properties.Count} extensions";
@@ -509,6 +525,7 @@ namespace MapExpansions.Lifecycle
             Active.Clear();
             UnplacedDormantLogged.Clear();
             StateCuts.Reset();
+            StateDetails.Reset();
             ColliderKeepAlive.Reset();
         }
 
