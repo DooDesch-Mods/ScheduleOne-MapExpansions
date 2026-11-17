@@ -24,6 +24,36 @@ namespace MapExpansions.Source
         private static readonly List<(Vector3 a, Vector3 b, float width)> Ends = new();
         private static int _crossings;
 
+        // Crossings per NPC: the first one is logged, then only a burst that looks like a walk in a loop.
+        private const int BurstCrossings = 10;
+        private const float BurstSeconds = 60f;
+        private sealed class Tally { internal float WindowStart; internal int InWindow; internal int Total; internal bool Warned; }
+        private static readonly Dictionary<string, Tally> Tallies = new();
+
+        private static void Record(string npc, Vector3 from, Vector3 to)
+        {
+            _crossings++;
+            if (!Tallies.TryGetValue(npc, out var tally))
+            {
+                Tallies[npc] = tally = new Tally { WindowStart = Time.time };
+                Core.Log.Msg($"nav link: {npc} crossed a seam for the first time ({from} -> {to})");
+            }
+            tally.Total++;
+            if (Time.time - tally.WindowStart > BurstSeconds)
+            {
+                tally.WindowStart = Time.time;
+                tally.InWindow = 0;
+                tally.Warned = false;
+            }
+            tally.InWindow++;
+            if (tally.InWindow >= BurstCrossings && !tally.Warned)
+            {
+                tally.Warned = true;
+                Core.Log.Warning($"nav link: {npc} crossed seams {tally.InWindow} times in {Time.time - tally.WindowStart:0} s " +
+                                 $"(last {from} -> {to}, {tally.Total} in total); it may be walking back and forth");
+            }
+        }
+
         public static int Count => Ends.Count;
 
         public static void Add(Vector3 a, Vector3 b, float width, IEnumerable<int> agentTypes)
@@ -155,8 +185,10 @@ namespace MapExpansions.Source
                     if ((t.position - end).sqrMagnitude < 0.0025f)
                     {
                         agent.CompleteOffMeshLink();
-                        _crossings++;
-                        Core.Log.Msg($"nav link: {__instance.gameObject.name} crossed a seam ({_crossings} crossings)");
+                        Record(__instance.gameObject.name, link.startPos, link.endPos);
+#if DEBUG
+                        Core.Log.Msg($"nav link: {__instance.gameObject.name} crossed a seam {link.startPos} -> {link.endPos} toward {agent.destination}, path {agent.pathStatus}, {agent.path?.corners?.Length ?? 0} corners ({_crossings} crossings)");
+#endif
                     }
                     return false;
                 }
