@@ -28,6 +28,12 @@ namespace MapExpansions.Debug
     /// mxfog [feature|volumetric] on|off the screen fog render feature, the volumetric fog, or both
     /// mxcover [sound on|off|enclosures] weather cover at the camera and its sound; sound off compares the unmuffled
     ///                                 rain, enclosures lists the game's enclosure boxes nearby
+    /// mxcover audio                   every audio zone and the colliders it cached, destroyed ones named
+    /// mxcoplanar x1 y1 z1 x2 y2 z2 [filter] surfaces in one plane that overlap and flicker against each other; a filter
+    ///                                    ("a|b") also lists the vanilla pairs among its renderers
+    /// mxtangents x1 y1 z1 x2 y2 z2    our own meshes in a world box without tangents (normal maps draw frayed on them)
+    /// mxgrid code [check]             a property's grids with their tiles' extent; check probes every outer edge
+    /// mxgrid code at x y z            which tile of each grid lies under a world point
     /// mxbox x0 y0 z0 x1 y1 z1 [filter] renderers and colliders whose bounds meet a world box, with their paths
     /// mxwall x0 y0 z0 x1 y1 z1 [loose] | off  a Default-layer box no property owns (loose: with a free Rigidbody)
     /// mxline ax az bx bz [step] [y]   every surface a ray down from height y (80) meets, sampled along a line
@@ -50,7 +56,8 @@ namespace MapExpansions.Debug
     /// mxarrest                        arrest the local player where they stand, as the police would
     /// mxshop [id|close]               list the shops, pick a shop's seller choice, or close every shop screen
     /// mxbuy code                      buy a listing through Ray's dialogue handler, as his confirmation would
-    /// mxdoors x y z [radius] [open]   working doors, knock doors and door renderers near a point; open tries each working door as the player
+    /// mxdoors x y z [radius] [open|close]   working doors, knock doors and door renderers near a point; open or close uses each working door's outside handle as the player
+    /// mxswitch x y z [radius] [on|off]   wall switches near a point with their state and lamps; on or off flips each of them
     /// mxnav ...                       NPC navigation tests, see NavTest
     /// mxveh ...                       vehicle navigation tests, see VehicleTest
     /// mxpayphone [ring|answer|end]    pay phones and their call state, see PayPhoneTest
@@ -147,6 +154,11 @@ namespace MapExpansions.Debug
                         }
                         break;
                     case "mxcover" when parts.Length > 1 && parts[1] == "enclosures": Enclosures(); break;
+                    case "mxcover" when parts.Length > 1 && parts[1] == "audio": AudioZones(); break;
+                    case "mxcoplanar" when parts.Length > 6: Coplanar(V(parts, 1), V(parts, 4), parts.Length > 7 ? parts[7] : ""); break;
+                    case "mxtangents" when parts.Length > 6: Tangents(V(parts, 1), V(parts, 4)); break;
+                    case "mxgrid" when parts.Length > 4 && parts[2] == "at": GridAt(parts[1], V(parts, 3)); break;
+                    case "mxgrid" when parts.Length > 1: GridEdges(parts[1], parts.Length > 2 && parts[2] == "check"); break;
                     case "mxcover" when parts.Length > 2 && parts[1] == "sound":
                         World.WeatherCover.MuffleSound = parts[2] == "on";
                         Core.Log.Msg($"[dev] mxcover sound: muffling under a roof {(World.WeatherCover.MuffleSound ? "on" : "off")}");
@@ -170,7 +182,8 @@ namespace MapExpansions.Debug
                     case "mxdeal" when parts.Length > 2: Deal(parts[1], string.Join(" ", parts, 2, parts.Length - 2)); break;
                     case "mxdealcheck" when parts.Length > 1: DealCheck(parts[1]); break;
                     case "mxbuy" when parts.Length > 1: World.RealtorListings.Buy(parts[1]); break;
-                    case "mxdoors" when parts.Length > 3: Doors(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 8f, parts.Length > 5 && parts[5] == "open"); break;
+                    case "mxdoors" when parts.Length > 3: Doors(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 8f, parts.Length > 5 ? parts[5] : ""); break;
+                    case "mxswitch" when parts.Length > 3: Switches(V(parts, 1), parts.Length > 4 ? F(parts[4]) : 3f, parts.Length > 5 ? parts[5] : ""); break;
                     case "mxnav": NavTest.Handle(parts); break;
                     case "mxreach": ReachTest.Handle(parts); break;
                     case "mxveh": VehicleTest.Handle(parts); break;
@@ -579,7 +592,7 @@ namespace MapExpansions.Debug
         /// Every working door, knock door and door renderer within a radius, so doubled, dead or unreachable doors show.
         /// With open, each working door the player may use is opened from outside the way its handle does.
         /// </summary>
-        private static void Doors(Vector3 c, float radius, bool open)
+        private static void Doors(Vector3 c, float radius, string action)
         {
             int n = 0;
             foreach (var d in Object.FindObjectsOfType<Il2CppScheduleOne.Doors.DoorController>(true))
@@ -591,10 +604,19 @@ namespace MapExpansions.Debug
                 Core.Log.Msg($"[dev] mxdoors working '{PathOf(d.transform, 6)}' {d.GetIl2CppType().Name} at {d.transform.position}: active {d.gameObject.activeInHierarchy}, " +
                              $"enabled {d.enabled}, spawned {d.IsSpawned}, access {d.PlayerAccess}, player may open {can}{(can ? "" : $" ({reason})")}, open {d.IsOpen}, handles {ints}, " +
                              $"player blocker {(d.PlayerBlocker == null ? "none" : d.PlayerBlocker.enabled ? "up" : "down")}");
-                if (open && can && !d.IsOpen)
+                bool wantOpen = action == "open";
+                if ((wantOpen || action == "close") && d.IsOpen != wantOpen)
                 {
-                    d.ExteriorHandleInteracted();
-                    Core.Log.Msg($"[dev] mxdoors opened '{d.name}' from outside: open {d.IsOpen}");
+                    // A networked copy's registered template waits inactive; only the door in the world is used.
+                    if (!d.gameObject.activeInHierarchy)
+                        Core.Log.Msg($"[dev] mxdoors leaves the inactive '{d.name}' alone");
+                    else if (!can)
+                        Core.Log.Warning($"[dev] mxdoors cannot {action} '{d.name}': the player may not use it ({reason})");
+                    else
+                    {
+                        d.ExteriorHandleInteracted();
+                        Core.Log.Msg($"[dev] mxdoors used the outside handle of '{d.name}' to {action} it: open {d.IsOpen}");
+                    }
                 }
             }
             foreach (var s in Object.FindObjectsOfType<Il2CppScheduleOne.Doors.StaticDoor>(true))
@@ -611,6 +633,62 @@ namespace MapExpansions.Debug
                 Core.Log.Msg($"[dev] mxdoors renderer '{PathOf(r.transform, 6)}': {B(r.bounds)}");
             }
             Core.Log.Msg($"[dev] mxdoors {n} doors within {radius} m of {c}");
+        }
+
+        private static void Switches(Vector3 c, float radius, string action)
+        {
+            int n = 0;
+            foreach (var w in Object.FindObjectsOfType<Il2CppScheduleOne.Misc.ModularSwitch>(true))
+            {
+                if (w == null || Vector3.Distance(w.transform.position, c) > radius) continue;
+                n++;
+                // How many of its lamps are lit tells whether another circuit's switch reached them.
+                int lit = 0;
+                if (w.LightsToControl != null)
+                    foreach (var lamp in w.LightsToControl)
+                        if (lamp != null && lamp.isOn) lit++;
+                // A vanilla room switch like Unit 1's drives its lamps through saved listeners (FluroBar.TurnOn), not
+                // LightsToControl; their lamps count separately. A copy turns such listeners off, but the targets stay listed.
+                int listenerLamps = 0, listenerLit = 0;
+                if (w.switchedOn != null)
+                    for (int i = 0; i < w.switchedOn.GetPersistentEventCount(); i++)
+                    {
+                        var target = w.switchedOn.GetPersistentTarget(i);
+                        if (target == null) continue;
+                        var light = target.TryCast<Il2CppScheduleOne.Misc.ToggleableLight>();
+                        if (light == null)
+                        {
+                            var component = target.TryCast<Component>();
+                            var obj = component != null ? component.gameObject : target.TryCast<GameObject>();
+                            if (obj != null) light = obj.GetComponent<Il2CppScheduleOne.Misc.ToggleableLight>();
+                        }
+                        if (light == null) continue;
+                        listenerLamps++;
+                        if (light.isOn) listenerLit++;
+                    }
+                Core.Log.Msg($"[dev] mxswitch '{PathOf(w.transform, 6)}' at {w.transform.position}: active {w.gameObject.activeInHierarchy}, spawned {w.IsSpawned}, " +
+                             $"on {w.isOn}, lamps {w.LightsToControl?.Length ?? -1}, lit {lit}, linked switches {w.SwitchesToSyncWith?.Count ?? -1}, " +
+                             $"saved listeners on {w.switchedOn?.GetPersistentEventCount() ?? -1} off {w.switchedOff?.GetPersistentEventCount() ?? -1}, " +
+                             $"listener lamps {listenerLamps} lit {listenerLit}");
+                if (action != "on" && action != "off") continue;
+                if (!w.gameObject.activeInHierarchy)
+                {
+                    // A networked copy's registered template waits inactive; only the switch in the world is clicked.
+                    Core.Log.Msg($"[dev] mxswitch leaves the inactive '{w.name}' alone");
+                    continue;
+                }
+                if (w.isOn == (action == "on"))
+                {
+                    Core.Log.Msg($"[dev] mxswitch '{w.name}' is {action} already");
+                    continue;
+                }
+                // The player's click: a server RPC that switches it on every peer.
+                w.Interacted();
+                Core.Log.Msg($"[dev] mxswitch clicked '{w.name}' {action}: on {w.isOn}");
+            }
+            if (action != "" && action != "on" && action != "off")
+                Core.Log.Warning($"[dev] mxswitch: '{action}' is neither on nor off; nothing was switched");
+            Core.Log.Msg($"[dev] mxswitch {n} switches within {radius} m of {c}");
         }
 
         private static string PathOf(Transform t, int depth = 5)
@@ -644,6 +722,287 @@ namespace MapExpansions.Debug
             Physics.SyncTransforms();
             _walls.Add(go);
             Core.Log.Msg($"[dev] mxwall placed {(loose ? "loose" : "static")} wall {B(box)}; {_walls.Count} dev walls");
+        }
+
+        /// <summary>
+        /// Every audio zone modifier and the box colliders it cached at Start. A cached collider that was destroyed since
+        /// makes the game's Refresh throw four times a second; this names the modifier and which of its entries died.
+        /// </summary>
+        private static void AudioZones()
+        {
+            int n = 0, dead = 0;
+            foreach (var m in Object.FindObjectsOfType<Il2CppScheduleOne.Audio.AudioZoneModifierVolume>(true))
+            {
+                if (m == null) continue;
+                n++;
+                var cached = m._colliders;
+                var parts = new List<string>();
+                int gone = 0;
+                if (cached != null)
+                    for (int i = 0; i < cached.Length; i++)
+                    {
+                        var c = cached[i];
+                        if (c == null) { gone++; parts.Add($"#{i} destroyed"); }
+                        else parts.Add($"#{i} '{PathOf(c.transform)}' {(c.gameObject.activeInHierarchy ? "active" : "inactive")}");
+                    }
+                dead += gone;
+                var log = $"[dev] mxcover audio '{PathOf(m.transform, 8)}' active {m.gameObject.activeInHierarchy}, id {m.GetInstanceID()}, cached {(cached == null ? "none (Start not run)" : cached.Length.ToString())}, destroyed {gone}: {string.Join("; ", parts)}";
+                if (gone > 0) Core.Log.Warning(log); else Core.Log.Msg(log);
+            }
+            Core.Log.Msg($"[dev] mxcover audio: {n} modifiers, {dead} destroyed cached colliders");
+        }
+
+        private struct Tri
+        {
+            public Vector3 A, B, C, N;
+            public float D;
+            public int R;
+            public Bounds Box;
+        }
+
+        /// <summary>
+        /// Pairs of triangles of enabled mesh renderers in a world box that lie in one plane, face the same way and overlap
+        /// by more than 2 mm: the surfaces that flicker against each other. One line per pair of renderers.
+        /// </summary>
+        private static void Coplanar(Vector3 a, Vector3 c, string filter)
+        {
+            const float planeGap = .004f, inset = .002f;
+            // "a|b" takes the renderers whose path holds any of the parts.
+            var filters = filter.Split('|', StringSplitOptions.RemoveEmptyEntries);
+            var box = new Bounds();
+            box.SetMinMax(Vector3.Min(a, c), Vector3.Max(a, c));
+            var names = new List<string>();
+            var lodOf = new List<IntPtr>();
+            var partOf = new List<IntPtr>();
+            var tris = new List<Tri>();
+            foreach (var mr in Object.FindObjectsOfType<MeshRenderer>(false))
+            {
+                if (mr == null || !mr.enabled || mr.forceRenderingOff || !mr.bounds.Intersects(box)) continue;
+                if (mr.shadowCastingMode == UnityEngine.Rendering.ShadowCastingMode.ShadowsOnly) continue;
+                var path = PathOf(mr.transform, 8);
+                if (filters.Length > 0 && !filters.Any(f => path.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0)) continue;
+                var mesh = World.MeshCarver.BuildBack(mr, "mxcoplanar");
+                if (mesh == null)
+                {
+                    Core.Log.Warning($"[dev] mxcoplanar '{path}': no triangles could be read");
+                    continue;
+                }
+                int r = names.Count;
+                names.Add(path);
+                var lod = mr.GetComponentInParent<LODGroup>();
+                lodOf.Add(lod != null ? lod.Pointer : IntPtr.Zero);
+                var part = PartOf(mr.transform);
+                partOf.Add(part != null ? part.Pointer : IntPtr.Zero);
+                var verts = mesh.vertices;
+                var toWorld = mr.transform.localToWorldMatrix;
+                for (int s = 0; s < mesh.subMeshCount; s++)
+                {
+                    var idx = mesh.GetTriangles(s);
+                    for (int t = 0; t + 2 < idx.Length; t += 3)
+                    {
+                        var p = toWorld.MultiplyPoint3x4(verts[idx[t]]);
+                        var q = toWorld.MultiplyPoint3x4(verts[idx[t + 1]]);
+                        var w = toWorld.MultiplyPoint3x4(verts[idx[t + 2]]);
+                        var n = Vector3.Cross(q - p, w - p);
+                        if (n.sqrMagnitude < 1e-10f) continue;
+                        n.Normalize();
+                        var tb = new Bounds(p, Vector3.zero);
+                        tb.Encapsulate(q);
+                        tb.Encapsulate(w);
+                        if (!tb.Intersects(box)) continue;
+                        tris.Add(new Tri { A = p, B = q, C = w, N = n, D = Vector3.Dot(n, p), R = r, Box = tb });
+                    }
+                }
+                Object.Destroy(mesh);
+            }
+            // Facing the same way within about 1.5 degrees.
+            var groups = tris.GroupBy(t => (Mathf.RoundToInt(t.N.x * 40), Mathf.RoundToInt(t.N.y * 40), Mathf.RoundToInt(t.N.z * 40)));
+            var pairs = new Dictionary<(int, int), (int count, Tri sample)>();
+            foreach (var g in groups)
+            {
+                var list = g.OrderBy(t => t.D).ToList();
+                for (int i = 0; i < list.Count; i++)
+                    for (int j = i + 1; j < list.Count && list[j].D - list[i].D < planeGap; j++)
+                    {
+                        var u = list[i];
+                        var v = list[j];
+                        if (Vector3.Dot(u.N, v.N) < .9995f) continue;
+                        var ub = u.Box;
+                        ub.Expand(planeGap);
+                        if (!ub.Intersects(v.Box)) continue;
+                        if (u.R == v.R) continue;
+                        // LOD levels of one object never draw together, and the faces inside one placed part are the
+                        // model's own.
+                        if (lodOf[u.R] != IntPtr.Zero && lodOf[u.R] == lodOf[v.R]) continue;
+                        if (partOf[u.R] != IntPtr.Zero && partOf[u.R] == partOf[v.R]) continue;
+                        if (!Overlap(u, v, inset)) continue;
+                        var key = (Math.Min(u.R, v.R), Math.Max(u.R, v.R));
+                        pairs[key] = pairs.TryGetValue(key, out var had) ? (had.count + 1, had.sample) : (1, u);
+                    }
+            }
+            int ours = 0, logged = 0;
+            foreach (var kv in pairs.OrderByDescending(kv => kv.Value.count))
+            {
+                string first = names[kv.Key.Item1], second = names[kv.Key.Item2];
+                bool mine = first.Contains("MapExpansions") || second.Contains("MapExpansions");
+                // Vanilla against vanilla is the map's own and only counted, unless a filter asks for those renderers.
+                if (!mine && filters.Length == 0) continue;
+                if (mine) ours++;
+                if (logged++ >= 80) continue;
+                var s = kv.Value.sample;
+                var centre = (s.A + s.B + s.C) / 3f;
+                string line = $"triangle pairs, normal {s.N.ToString("0.00")} at {centre.ToString("0.000")}: '{first}' | '{second}'";
+                if (mine) Core.Log.Warning($"[dev] mxcoplanar ours {kv.Value.count} {line}");
+                else Core.Log.Msg($"[dev] mxcoplanar vanilla {kv.Value.count} {line}");
+            }
+            Core.Log.Msg($"[dev] mxcoplanar {B(box)} '{filter}': {names.Count} renderers, {tris.Count} triangles, {pairs.Count} overlapping pairs, {ours} with a MapExpansions part");
+        }
+
+        // The placed part a renderer belongs to: a panel, a lining or a cut piece by its own name, a copy as the child of
+        // its expansion's Copies node, a moved or added part as the child of a MapExpansions node. Null for the map's own.
+        private static Transform PartOf(Transform t)
+        {
+            for (var c = t; c != null; c = c.parent)
+            {
+                if (c.name.StartsWith("MapExpansions.Panel", StringComparison.Ordinal) || c.name.StartsWith("MapExpansions.Lining", StringComparison.Ordinal)) return c;
+                var parent = c.parent;
+                if (parent != null && (parent.name == "Copies" || parent.name.StartsWith("MapExpansions.", StringComparison.Ordinal))) return c;
+            }
+            return null;
+        }
+
+        // Two triangles in one plane overlap by more than the inset when no edge direction of either separates them.
+        private static bool Overlap(Tri u, Tri v, float inset)
+        {
+            var axisU = (u.B - u.A).normalized;
+            var axisV = Vector3.Cross(u.N, axisU);
+            Vector2 P(Vector3 x) => new(Vector3.Dot(x - u.A, axisU), Vector3.Dot(x - u.A, axisV));
+            var first = new[] { P(u.A), P(u.B), P(u.C) };
+            var second = new[] { P(v.A), P(v.B), P(v.C) };
+            foreach (var poly in new[] { first, second })
+                for (int e = 0; e < 3; e++)
+                {
+                    var edge = poly[(e + 1) % 3] - poly[e];
+                    var normal = new Vector2(-edge.y, edge.x).normalized;
+                    float minA = float.MaxValue, maxA = float.MinValue, minB = float.MaxValue, maxB = float.MinValue;
+                    foreach (var p in first) { float d = Vector2.Dot(p, normal); minA = Mathf.Min(minA, d); maxA = Mathf.Max(maxA, d); }
+                    foreach (var p in second) { float d = Vector2.Dot(p, normal); minB = Mathf.Min(minB, d); maxB = Mathf.Max(maxB, d); }
+                    if (maxA - inset <= minB || maxB - inset <= minA) return false;
+                }
+            return true;
+        }
+
+        // The game's tile edge; the interop type exposes it as a property, not a constant.
+        private const float GridTile = .5f;
+
+        private static Il2CppScheduleOne.Property.Property PropertyByCode(string code)
+        {
+            foreach (var x in Il2CppScheduleOne.Property.Property.Properties)
+                if (x != null && string.Equals(x.PropertyCode, code, StringComparison.OrdinalIgnoreCase)) return x;
+            Core.Log.Warning($"[dev] mxgrid: no property has the code '{code}'");
+            return null;
+        }
+
+        /// <summary>Which tile of each of the property's grids lies under a world point, and whether it exists.</summary>
+        private static void GridAt(string code, Vector3 point)
+        {
+            var p = PropertyByCode(code);
+            if (p == null) return;
+            for (int i = 0; i < p.Grids.Count; i++)
+            {
+                var g = p.Grids[i];
+                var local = g.transform.InverseTransformPoint(point);
+                int x = Mathf.RoundToInt(local.x / GridTile), y = Mathf.RoundToInt(local.z / GridTile);
+                var tile = g.GetTile(new Il2CppScheduleOne.Tiles.Coordinate(x, y));
+                Core.Log.Msg($"[dev] mxgrid at {point.ToString("0.00")}: grid {i} '{g.name}' tile {x},{y} {(tile != null ? "exists" : "missing")}, height above grid {local.y:0.00}");
+            }
+        }
+
+        /// <summary>
+        /// Each grid of a property with its tiles' world extent. With check, every outer edge of every grid's tiles is
+        /// probed: a wall or railing must stand on the grid line (from 2 cm into the tile to 1 cm outside), and an edge
+        /// without one must be where the floor ends or where another grid's tiles go on. One line per failing edge and a
+        /// PASS or FAIL line per grid.
+        /// </summary>
+        private static void GridEdges(string code, bool check)
+        {
+            const float size = GridTile, inside = .2f, reach = .45f, wallHeight = .3f;
+            var p = PropertyByCode(code);
+            if (p == null) return;
+            int failedGrids = 0;
+            for (int gi = 0; gi < p.Grids.Count; gi++)
+            {
+                var g = p.Grids[gi];
+                var t = g.transform;
+                var set = new HashSet<(int, int)>();
+                foreach (var tile in g.Tiles) if (tile != null) set.Add((tile.x, tile.y));
+                var extent = new Bounds(t.position, Vector3.zero);
+                foreach (var (x, y) in set)
+                {
+                    // A tile is centred on its coordinate.
+                    extent.Encapsulate(t.TransformPoint(new Vector3((x - .5f) * size, 0, (y - .5f) * size)));
+                    extent.Encapsulate(t.TransformPoint(new Vector3((x + .5f) * size, 0, (y + .5f) * size)));
+                }
+                var firstTile = g.Tiles.Count > 0 ? g.Tiles[0] : null;
+                var firstCollider = firstTile != null ? firstTile.GetComponentInChildren<Collider>() : null;
+                Core.Log.Msg($"[dev] mxgrid {code} grid {gi} '{g.name}': {set.Count} tiles, origin {t.position.ToString("0.000")}, yaw {t.eulerAngles.y:0}, " +
+                             $"tiles x {extent.min.x:0.000}..{extent.max.x:0.000} z {extent.min.z:0.000}..{extent.max.z:0.000}" +
+                             (firstCollider != null ? $", tile {firstTile.x},{firstTile.y} collider x {firstCollider.bounds.min.x:0.000}..{firstCollider.bounds.max.x:0.000} z {firstCollider.bounds.min.z:0.000}..{firstCollider.bounds.max.z:0.000}" : ""));
+                if (!check) continue;
+                int edges = 0, failed = 0, walls = 0, shared = 0, open = 0;
+                foreach (var (x, y) in set)
+                    foreach (var (dx, dy) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
+                    {
+                        if (set.Contains((x + dx, y + dy))) continue;
+                        edges++;
+                        var localMid = new Vector3((x + dx * .5f) * size, 0, (y + dy * .5f) * size);
+                        var mid = t.TransformPoint(localMid);
+                        var outward = t.TransformDirection(new Vector3(dx, 0, dy)).normalized;
+                        string where = $"tile {x},{y} edge {(dx != 0 ? (dx > 0 ? "+x" : "-x") : (dy > 0 ? "+y" : "-y"))} at {mid.ToString("0.000")}";
+                        if (CoveredByOtherGrid(p, gi, mid + outward * (size / 2f)))
+                        {
+                            shared++;
+                            continue;
+                        }
+                        var from = mid - outward * inside + Vector3.up * wallHeight;
+                        if (Physics.Raycast(from, outward, out var hit, reach, ~0, QueryTriggerInteraction.Ignore))
+                        {
+                            walls++;
+                            float off = hit.distance - inside;
+                            if (off > .01f || off < -.02f)
+                            {
+                                failed++;
+                                Core.Log.Warning($"[dev] mxgrid {code} grid {gi} {where}: wall '{PathOf(hit.collider.transform, 6)}' {off * 100f:0.0} cm {(off > 0 ? "beyond" : "inside")} the grid line");
+                            }
+                            continue;
+                        }
+                        open++;
+                        var probe = mid + outward * .05f + Vector3.up * .5f;
+                        if (Physics.Raycast(probe, Vector3.down, out var floor, .7f, ~0, QueryTriggerInteraction.Ignore) && Mathf.Abs(floor.point.y - mid.y) < .08f)
+                        {
+                            failed++;
+                            Core.Log.Warning($"[dev] mxgrid {code} grid {gi} {where}: floor '{PathOf(floor.collider.transform, 6)}' goes on past the grid line without a wall");
+                        }
+                    }
+                bool pass = failed == 0;
+                if (!pass) failedGrids++;
+                Core.Log.Msg($"[dev] mxgrid {code} grid {gi} '{g.name}' {(pass ? "PASS" : "FAIL")}: {edges} outer edges, {walls} at a wall, {shared} shared with another grid, {open} open, {failed} off the line");
+            }
+            if (check) Core.Log.Msg($"[dev] mxgrid {code} check: {p.Grids.Count} grids, {failedGrids} failed");
+        }
+
+        private static bool CoveredByOtherGrid(Il2CppScheduleOne.Property.Property p, int own, Vector3 point)
+        {
+            for (int i = 0; i < p.Grids.Count; i++)
+            {
+                if (i == own) continue;
+                var g = p.Grids[i];
+                var local = g.transform.InverseTransformPoint(point);
+                if (Mathf.Abs(local.y) > .1f) continue;
+                int x = Mathf.RoundToInt(local.x / GridTile), y = Mathf.RoundToInt(local.z / GridTile);
+                if (g.GetTile(new Il2CppScheduleOne.Tiles.Coordinate(x, y)) != null) return true;
+            }
+            return false;
         }
 
         /// <summary>The game's weather enclosure boxes within 40 m of the camera, and whether the camera is inside each.</summary>
@@ -1026,6 +1385,49 @@ namespace MapExpansions.Debug
                 Core.Log.Msg($"[dev] mxlod no group: '{PathOf(r.transform, 4)}' enabled {r.enabled} visible {r.isVisible} batched {r.isPartOfStaticBatch}");
             }
             Core.Log.Msg($"[dev] mxlod: {groups} LOD groups within {radius} m of {c}");
+        }
+
+        /// <summary>
+        /// Our own meshes in a world box that have no tangents. A normal-mapped material on such a mesh bends its normals
+        /// at random on faces along z and drops the relief on faces along x.
+        /// </summary>
+        private static void Tangents(Vector3 a, Vector3 c)
+        {
+            var box = new Bounds();
+            box.SetMinMax(Vector3.Min(a, c), Vector3.Max(a, c));
+            int ours = 0, missing = 0, unreadable = 0;
+            foreach (var mr in Object.FindObjectsOfType<MeshRenderer>(false))
+            {
+                if (mr == null || !mr.enabled || !mr.bounds.Intersects(box) || PartOf(mr.transform) == null) continue;
+                var path = PathOf(mr.transform, 8);
+                var mf = mr.GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null)
+                {
+                    Core.Log.Warning($"[dev] mxtangents '{path}': no mesh");
+                    continue;
+                }
+                ours++;
+                if (!mesh.isReadable)
+                {
+                    unreadable++;
+                    Core.Log.Msg($"[dev] mxtangents '{path}': mesh '{mesh.name}' is not readable");
+                    continue;
+                }
+                var tangents = mesh.tangents;
+                bool none = tangents == null || tangents.Length == 0 || tangents.All(t => t.x == 0f && t.y == 0f && t.z == 0f);
+                if (!none) continue;
+                var uv = mesh.uv;
+                if (uv == null || uv.Length == 0)
+                {
+                    // Tangents follow the texture coordinates; a mesh without them samples one texel and has no ribs to fray.
+                    Core.Log.Msg($"[dev] mxtangents '{path}': mesh '{mesh.name}' has no texture coordinates");
+                    continue;
+                }
+                missing++;
+                Core.Log.Warning($"[dev] mxtangents none '{path}': mesh '{mesh.name}', {mesh.vertexCount} vertices");
+            }
+            Core.Log.Msg($"[dev] mxtangents {B(box)}: {ours} renderers of ours, {missing} without tangents, {unreadable} not readable");
         }
 
         private static void Mats(Vector3 c, float radius)

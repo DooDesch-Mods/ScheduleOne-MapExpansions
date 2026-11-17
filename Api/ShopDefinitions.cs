@@ -39,6 +39,8 @@ namespace MapExpansions
         /// <summary>
         /// Path of a main-world ModularSwitch. The copy's lamps and their glowing surfaces then follow that switch on
         /// every peer, starting from its current state; a visual-only copy has no lamp script the switch could reach.
+        /// "copy:&lt;id&gt;" names a networked copy of a ModularSwitch in the same world state instead (VisualOnly=false),
+        /// so a new room gets a wall switch of its own; the lamps follow it once the host has spawned it.
         /// </summary>
         public string LightSwitch { get; set; }
 

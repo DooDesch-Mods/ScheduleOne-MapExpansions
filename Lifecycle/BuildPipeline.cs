@@ -110,6 +110,7 @@ namespace MapExpansions.Lifecycle
                     Properties.Build(b);
                     PoliceStations.Build(b);
                     MainCopies.Build(b, b.Definition.Copies, "expansion", Layers.ExpansionOwner);
+                    WorldStates.ReserveNetworkParts(b);
                     Shops.Build(b);
                     PayPhones.Build(b);
                     Registry.SetState(b.Id, ExpansionState.Placed);

@@ -988,6 +988,9 @@ namespace MapExpansions.World
             for (int i = 0; i < tris.Count; i++)
                 mesh.SetTriangles(tris[i].ToArray(), i);
             mesh.RecalculateNormals();
+            // The walls' materials carry a normal map. Without tangents it bends the normals of walls that face along z
+            // at random, which shows as frayed dark ribs; walls along x lose their relief instead.
+            mesh.RecalculateTangents();
             mesh.RecalculateBounds();
             var go = new GameObject(name);
             go.layer = box.gameObject.layer;

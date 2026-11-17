@@ -70,7 +70,13 @@ class Run:
 
     def cmd(self, command, wait=1.0, show=False):
         mark = self.mark()
-        self.g.call("run_console_command", {"command": command, "capture": False})
+        try:
+            self.g.call("run_console_command", {"command": command, "capture": False})
+        except TimeoutError as e:
+            # The main thread was still busy after 12 s (a sleep cycle or a state with a navigation bake on a loaded
+            # machine); the command stays queued and runs. The checks that follow read its log lines.
+            print("WARN  %r hitched past the bridge timeout, waiting 20 s more: %s" % (command, e), flush=True)
+            time.sleep(20)
         time.sleep(wait + 0.5)
         out = [l for l in self.lines(mark) if "[MapExpansions]" in l or "[Based]" in l or "Console" in l]
         if show:
