@@ -4,6 +4,24 @@ All notable changes to MapExpansions are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to Semantic Versioning.
 
+## [1.4.0] - 2026-11-17
+
+### Added
+- New rooms of an expansion can have their own wall switch, synced in co-op.
+- The ambient sound of a property covers its new rooms.
+
+### Fixed
+- Co-op: a friend joining while a large build applies no longer times out.
+- Co-op: a joining player no longer misses parts of a copied building, such as a sliding door, that the host sees.
+- Walls of new rooms no longer look frayed or speckled under light.
+
+### For mod authors
+- New `ObjectEffect.ClearDetails` clears grass and bush tufts from a rule's area; `Remove` now also takes map trees.
+- New `WorldStateDefinition.WeatherCover`: volumes under a roof without a floor, such as a carport, keep the rain out.
+- `LightSwitch = "copy:<id>"` makes a copy's lamps follow a networked switch copy in the same world state.
+- New `MapExpansionsApi.ReportPeerWorldStateProgress` keeps a join alive while the peer still applies a large state.
+- `MapExpansionsApi.ApiVersion` is 0.7.0.
+
 ## [1.3.0] - 2026-11-16
 
 ### Fixed
