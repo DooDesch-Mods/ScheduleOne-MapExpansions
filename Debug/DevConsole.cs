@@ -29,7 +29,8 @@ namespace MapExpansions.Debug
     /// mxcover [sound on|off|enclosures] weather cover at the camera and its sound; sound off compares the unmuffled
     ///                                 rain, enclosures lists the game's enclosure boxes nearby
     /// mxcover audio                   every audio zone and the colliders it cached, destroyed ones named
-    /// mxcoplanar x1 y1 z1 x2 y2 z2 [filter] surfaces in one plane that overlap and flicker against each other
+    /// mxcoplanar x1 y1 z1 x2 y2 z2 [filter] surfaces in one plane that overlap and flicker against each other; a filter
+    ///                                    ("a|b") also lists the vanilla pairs among its renderers
     /// mxgrid code [check]             a property's grids with their tiles' extent; check probes every outer edge
     /// mxgrid code at x y z            which tile of each grid lies under a world point
     /// mxbox x0 y0 z0 x1 y1 z1 [filter] renderers and colliders whose bounds meet a world box, with their paths
@@ -644,9 +645,29 @@ namespace MapExpansions.Debug
                 if (w.LightsToControl != null)
                     foreach (var lamp in w.LightsToControl)
                         if (lamp != null && lamp.isOn) lit++;
+                // A vanilla room switch like Unit 1's drives its lamps through saved listeners (FluroBar.TurnOn), not
+                // LightsToControl; their lamps count separately. A copy turns such listeners off, but the targets stay listed.
+                int listenerLamps = 0, listenerLit = 0;
+                if (w.switchedOn != null)
+                    for (int i = 0; i < w.switchedOn.GetPersistentEventCount(); i++)
+                    {
+                        var target = w.switchedOn.GetPersistentTarget(i);
+                        if (target == null) continue;
+                        var light = target.TryCast<Il2CppScheduleOne.Misc.ToggleableLight>();
+                        if (light == null)
+                        {
+                            var component = target.TryCast<Component>();
+                            var obj = component != null ? component.gameObject : target.TryCast<GameObject>();
+                            if (obj != null) light = obj.GetComponent<Il2CppScheduleOne.Misc.ToggleableLight>();
+                        }
+                        if (light == null) continue;
+                        listenerLamps++;
+                        if (light.isOn) listenerLit++;
+                    }
                 Core.Log.Msg($"[dev] mxswitch '{PathOf(w.transform, 6)}' at {w.transform.position}: active {w.gameObject.activeInHierarchy}, spawned {w.IsSpawned}, " +
                              $"on {w.isOn}, lamps {w.LightsToControl?.Length ?? -1}, lit {lit}, linked switches {w.SwitchesToSyncWith?.Count ?? -1}, " +
-                             $"saved listeners on {w.switchedOn?.GetPersistentEventCount() ?? -1} off {w.switchedOff?.GetPersistentEventCount() ?? -1}");
+                             $"saved listeners on {w.switchedOn?.GetPersistentEventCount() ?? -1} off {w.switchedOff?.GetPersistentEventCount() ?? -1}, " +
+                             $"listener lamps {listenerLamps} lit {listenerLit}");
                 if (action != "on" && action != "off") continue;
                 if (!w.gameObject.activeInHierarchy)
                 {
@@ -744,6 +765,8 @@ namespace MapExpansions.Debug
         private static void Coplanar(Vector3 a, Vector3 c, string filter)
         {
             const float planeGap = .004f, inset = .002f;
+            // "a|b" takes the renderers whose path holds any of the parts.
+            var filters = filter.Split('|', StringSplitOptions.RemoveEmptyEntries);
             var box = new Bounds();
             box.SetMinMax(Vector3.Min(a, c), Vector3.Max(a, c));
             var names = new List<string>();
@@ -755,7 +778,7 @@ namespace MapExpansions.Debug
                 if (mr == null || !mr.enabled || mr.forceRenderingOff || !mr.bounds.Intersects(box)) continue;
                 if (mr.shadowCastingMode == UnityEngine.Rendering.ShadowCastingMode.ShadowsOnly) continue;
                 var path = PathOf(mr.transform, 8);
-                if (filter.Length > 0 && path.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                if (filters.Length > 0 && !filters.Any(f => path.IndexOf(f, StringComparison.OrdinalIgnoreCase) >= 0)) continue;
                 var mesh = World.MeshCarver.BuildBack(mr, "mxcoplanar");
                 if (mesh == null)
                 {
@@ -820,13 +843,15 @@ namespace MapExpansions.Debug
             {
                 string first = names[kv.Key.Item1], second = names[kv.Key.Item2];
                 bool mine = first.Contains("MapExpansions") || second.Contains("MapExpansions");
-                // Vanilla against vanilla is the map's own and only counted.
-                if (!mine) continue;
-                ours++;
+                // Vanilla against vanilla is the map's own and only counted, unless a filter asks for those renderers.
+                if (!mine && filters.Length == 0) continue;
+                if (mine) ours++;
                 if (logged++ >= 80) continue;
                 var s = kv.Value.sample;
                 var centre = (s.A + s.B + s.C) / 3f;
-                Core.Log.Warning($"[dev] mxcoplanar ours {kv.Value.count} triangle pairs, normal {s.N.ToString("0.00")} at {centre.ToString("0.000")}: '{first}' | '{second}'");
+                string line = $"triangle pairs, normal {s.N.ToString("0.00")} at {centre.ToString("0.000")}: '{first}' | '{second}'";
+                if (mine) Core.Log.Warning($"[dev] mxcoplanar ours {kv.Value.count} {line}");
+                else Core.Log.Msg($"[dev] mxcoplanar vanilla {kv.Value.count} {line}");
             }
             Core.Log.Msg($"[dev] mxcoplanar {B(box)} '{filter}': {names.Count} renderers, {tris.Count} triangles, {pairs.Count} overlapping pairs, {ours} with a MapExpansions part");
         }
