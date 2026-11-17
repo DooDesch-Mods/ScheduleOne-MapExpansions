@@ -197,8 +197,24 @@ namespace MapExpansions.Debug
                 var config = b.configuration;
                 if (config == null) { Core.Log.Warning($"[dev] mxreach setup: botanist {b.FirstName} has no configuration yet"); continue; }
                 int added = 0;
+                // A botanist takes only as many objects as it may have pots. With wing, the racks on the expansion go in
+                // first, and assigned objects elsewhere make room for them.
+                var wingRacks = wingSupplies ? p.BuildableItems.ToArray().Where(i => i?.TryCast<DryingRack>() != null && OnExpansion(i)).ToList() : new();
+                foreach (var rack in wingRacks)
+                {
+                    if (config.Assigns.SelectedObjects.Contains(rack)) continue;
+                    var spare = config.Assigns.SelectedObjects.ToArray().FirstOrDefault(i => i != null && !OnExpansion(i));
+                    if (config.Assigns.SelectedObjects.Count >= config.Assigns.MaxItems && spare != null)
+                    {
+                        config.Assigns.RemoveItem(spare);
+                        Core.Log.Msg($"[dev] mxreach setup: {b.FirstName} gave up {Name(spare)} at {spare.transform.position} to make room for the expansion's drying rack");
+                    }
+                    config.Assigns.AddItem(rack);
+                    added++;
+                }
                 foreach (var item in p.BuildableItems)
                 {
+                    if (config.Assigns.SelectedObjects.Count >= config.Assigns.MaxItems) break;
                     if (item == null || item.TryCast<GrowContainer>() == null && item.TryCast<MushroomSpawnStation>() == null && item.TryCast<DryingRack>() == null) continue;
                     if (config.Assigns.SelectedObjects.Contains(item)) continue;
                     config.Assigns.AddItem(item);

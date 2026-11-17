@@ -30,6 +30,7 @@ namespace MapExpansions.Lifecycle
             state.NavigationProbes.AddRange(source.NavigationProbes);
             state.NavigationAgents.AddRange(source.NavigationAgents);
             state.NavigationExistingFloor.AddRange(source.NavigationExistingFloor);
+            state.WeatherCover.AddRange(source.WeatherCover);
             return state;
         }
     }

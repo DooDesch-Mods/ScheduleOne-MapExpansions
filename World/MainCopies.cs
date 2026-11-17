@@ -345,6 +345,7 @@ namespace MapExpansions.World
             go.name = src.name;
             try
             {
+                if (d.VisualOnly && !InstanceFinder.IsServer) WakeUnspawned(b, d, owner, src, go);
                 // The lamp's own switch also sets its glowing material, which stripping would freeze at the original's current state.
                 if (d.LightsOn.HasValue)
                     foreach (var lamp in go.GetComponentsInChildren<ToggleableLight>(true)) lamp.isOn = d.LightsOn.Value;
@@ -815,6 +816,32 @@ namespace MapExpansions.World
 
         private static string KeyOf(string owner) =>
             new string(owner.Select(c => char.IsLetterOrDigit(c) || c == '-' ? char.ToLowerInvariant(c) : '-').ToArray()).Trim('-');
+
+        /// FishNet holds a scene object inactive on a client until the host's spawn message for it arrives. A visual copy
+        /// taken before that would keep the part switched off for good (a house's sliding door copied while the client
+        /// joins), so the copy wakes every part that is off only because its original has not been spawned yet.
+        private static void WakeUnspawned(BuiltExpansion b, CopyDefinition d, string owner, Transform src, GameObject go)
+        {
+            var originals = src.GetComponentsInChildren<NetworkObject>(true);
+            var copies = go.GetComponentsInChildren<NetworkObject>(true);
+            if (originals.Length == 0) return;
+            if (originals.Length != copies.Length)
+            {
+                Core.Log.Warning($"copies: '{b.Id}' {owner} '{d.Id}': {copies.Length} networked objects in the copy against {originals.Length} in the original; " +
+                                 "parts the client has not spawned yet stay as they are");
+                return;
+            }
+            int woken = 0;
+            for (int i = 0; i < originals.Length; i++)
+            {
+                var o = originals[i];
+                if (o == null || o.IsSpawned || o.gameObject.activeSelf || copies[i] == null) continue;
+                copies[i].gameObject.SetActive(true);
+                woken++;
+            }
+            if (woken > 0)
+                Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {woken} parts of the original wait for their spawn on this client; switched on in the copy");
+        }
 
         private static bool HasNetworkedAncestor(NetworkObject n, Transform top)
         {
