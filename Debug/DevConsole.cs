@@ -1417,6 +1417,13 @@ namespace MapExpansions.Debug
                 var tangents = mesh.tangents;
                 bool none = tangents == null || tangents.Length == 0 || tangents.All(t => t.x == 0f && t.y == 0f && t.z == 0f);
                 if (!none) continue;
+                var uv = mesh.uv;
+                if (uv == null || uv.Length == 0)
+                {
+                    // Tangents follow the texture coordinates; a mesh without them samples one texel and has no ribs to fray.
+                    Core.Log.Msg($"[dev] mxtangents '{path}': mesh '{mesh.name}' has no texture coordinates");
+                    continue;
+                }
                 missing++;
                 Core.Log.Warning($"[dev] mxtangents none '{path}': mesh '{mesh.name}', {mesh.vertexCount} vertices");
             }

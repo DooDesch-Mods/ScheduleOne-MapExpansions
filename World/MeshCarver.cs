@@ -261,6 +261,9 @@ namespace MapExpansions.World
                 back.SetTriangles(arr, s, false);
             }
             back.RecalculateNormals();
+            // A normal-mapped material needs tangents; without them the relief frays on faces along z. The source's own
+            // are not read, Unity's from the copied texture coordinates serve.
+            if (uv != null) back.RecalculateTangents();
             back.RecalculateBounds();
             return back;
         }
