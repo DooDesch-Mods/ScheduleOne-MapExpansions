@@ -4,6 +4,11 @@ All notable changes to MapExpansions are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to Semantic Versioning.
 
+## [1.4.1] - 2026-11-17
+
+### Fixed
+- The log no longer gets a line every time a worker walks between the old and the new floor of an expansion.
+
 ## [1.4.0] - 2026-11-17
 
 ### Added
