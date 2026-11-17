@@ -345,6 +345,7 @@ namespace MapExpansions.World
             go.name = src.name;
             try
             {
+                WakeColliders(b, d, owner, src, go);
                 if (d.VisualOnly && !InstanceFinder.IsServer) WakeUnspawned(b, d, owner, src, go);
                 // The lamp's own switch also sets its glowing material, which stripping would freeze at the original's current state.
                 if (d.LightsOn.HasValue)
@@ -816,6 +817,36 @@ namespace MapExpansions.World
 
         private static string KeyOf(string owner) =>
             new string(owner.Select(c => char.IsLetterOrDigit(c) || c == '-' ? char.ToLowerInvariant(c) : '-').ToArray()).Trim('-');
+
+        /// The original's colliders can be off for reasons that do not belong to the copy: the game's collider groups
+        /// switch them off while the player is more than 30 m away, and a world state's rule or cut holds them off where
+        /// its replacement stands. A copy taken in that moment would keep them off for good (an upper floor without a
+        /// ceiling to stop the rain and without walls), so every such collider of the copy is switched on.
+        private static void WakeColliders(BuiltExpansion b, CopyDefinition d, string owner, Transform src, GameObject go)
+        {
+            var from = src.GetComponentsInChildren<Collider>(true);
+            var to = go.GetComponentsInChildren<Collider>(true);
+            if (from.Length != to.Length)
+            {
+                Core.Log.Warning($"copies: '{b.Id}' {owner} '{d.Id}': {from.Length} colliders on the original, {to.Length} on the copy; colliders the original has off stay off");
+                return;
+            }
+            var groups = ColliderKeepAlive.GroupMembers();
+            int off = 0, group = 0, rule = 0, cut = 0;
+            for (int i = 0; i < from.Length; i++)
+            {
+                if (from[i] == null || to[i] == null || to[i].enabled) continue;
+                off++;
+                var key = from[i].Pointer;
+                if (ObjectRules.HoldsOff(key)) rule++;
+                else if (StateCuts.HoldsOff(key)) cut++;
+                else if (groups.Contains(key)) group++;
+                else continue;
+                to[i].enabled = true;
+            }
+            int woke = group + rule + cut;
+            Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {from.Length} colliders, {off} off on the original, {woke} switched on in the copy (collider group {group}, rule {rule}, cut {cut}), {off - woke} off in vanilla stay off");
+        }
 
         /// FishNet holds a scene object inactive on a client until the host's spawn message for it arrives. A visual copy
         /// taken before that would keep the part switched off for good (a house's sliding door copied while the client

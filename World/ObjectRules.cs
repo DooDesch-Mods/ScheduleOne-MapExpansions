@@ -276,6 +276,9 @@ namespace MapExpansions.World
             return boxes;
         }
 
+        /// <summary>Whether a rule switched this component off while it was on.</summary>
+        internal static bool HoldsOff(IntPtr component) => Holds.TryGetValue(component, out var h) && h.Ours;
+
         /// <summary>Counts the rule as holding the component off and switches it off. True when it was on.</summary>
         private static bool Take(Record rec, Component target, bool enabled, Action<bool> set)
         {
