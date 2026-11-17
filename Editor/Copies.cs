@@ -16,8 +16,9 @@ namespace MapExpansions.Editor
         internal static MainCopies.Placed Find(string keyOrId)
         {
             if (string.IsNullOrEmpty(keyOrId)) return null;
+            // A bare id can name copies of several owners; the edit target state's copy comes first.
             return All().FirstOrDefault(p => Key(p) == keyOrId)
-                   ?? All().FirstOrDefault(p => p.Built.Def.Id == keyOrId);
+                   ?? All().Where(p => p.Built.Def.Id == keyOrId).OrderByDescending(StateEdits.IsTarget).FirstOrDefault();
         }
 
         /// <summary>Copies whose statically batched renderers were already reported, so the log names each once.</summary>

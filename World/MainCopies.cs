@@ -1128,10 +1128,11 @@ namespace MapExpansions.World
         {
             var b = p.Expansion;
             var d = p.Built.Def;
-            string owner = p.LayerOwner == Lifecycle.Layers.ExpansionOwner ? "expansion" : $"shop '{p.LayerOwner.Substring(5)}'";
+            string owner = Lifecycle.Layers.OwnerLabel(p.LayerOwner);
             Revert(p);
             var placed = ApplyOne(b, d, owner, p.LayerOwner);
             if (placed == null) Core.Log.Error($"copies: rebuild ({why}) of '{b.Id}' '{d.Id}' failed; the copy is missing until the world is rebuilt");
+            Lifecycle.WorldStates.ReplaceCopy(p, placed);
             return placed;
         }
 

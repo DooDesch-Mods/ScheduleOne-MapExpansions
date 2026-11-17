@@ -462,8 +462,7 @@ namespace MapExpansions.Editor
             }
         }
 
-        private static string OwnerLabel(string layerOwner) =>
-            layerOwner == Layers.ExpansionOwner ? "expansion" : $"shop '{layerOwner.Substring(5)}'";
+        private static string OwnerLabel(string layerOwner) => Layers.OwnerLabel(layerOwner);
 
         /// <summary>Puts a definition into its list and builds it; the layer writes it in full.</summary>
         private static bool AddCopy(CopyRef r, CopyDefinition d, int index, Membership m, string why)
@@ -482,7 +481,11 @@ namespace MapExpansions.Editor
             list.Insert(Mathf.Clamp(index, 0, list.Count), d);
             m.Write(Layers.StateOf(r.Expansion), r);
             Saving.MarkDirty(r.Expansion);
-            return MainCopies.ApplyOne(r.Built, d, OwnerLabel(r.Owner), r.Owner) != null;
+            var placed = MainCopies.ApplyOne(r.Built, d, OwnerLabel(r.Owner), r.Owner);
+            if (placed == null) return false;
+            // A copy added to a standing state leaves with it when the state changes.
+            WorldStates.TrackCopy(placed);
+            return true;
         }
 
         private static (CopyDefinition def, int index) TakeCopy(CopyRef r, Membership after, string why)
@@ -499,6 +502,7 @@ namespace MapExpansions.Editor
             if (p != null)
             {
                 Selection.Remove(r.Key);
+                WorldStates.UntrackCopy(p);
                 MainCopies.Revert(p);
             }
             list.Remove(d);

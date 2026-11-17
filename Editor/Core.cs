@@ -95,6 +95,7 @@ namespace MapExpansions.Editor
             EditorMode.SceneGone();
             if (Saving.HasChanges) Saving.Draft("leaving the world");
             Saving.Forget("the world unloaded");
+            StateEdits.Forget("the world unloaded");
             Edits.Forget("the world unloaded");
             AreaEdits.Forget();
             AreaEdits.ForgetMaterials();

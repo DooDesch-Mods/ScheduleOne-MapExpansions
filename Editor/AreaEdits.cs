@@ -155,8 +155,7 @@ namespace MapExpansions.Editor
             public override void Undo() => PutBox(Box, Before, LayerBefore, RemovedBefore, "undo");
         }
 
-        private static string OwnerLabel(string layerOwner) =>
-            layerOwner == Layers.ExpansionOwner ? "expansion" : $"shop '{layerOwner.Substring(5)}'";
+        private static string OwnerLabel(string layerOwner) => Layers.OwnerLabel(layerOwner);
 
         private static bool PutBox(AreaRef a, BoxDefinition value, bool inLayer, bool removed, string why)
         {

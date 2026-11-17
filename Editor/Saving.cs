@@ -131,6 +131,8 @@ namespace MapExpansions.Editor
 
         internal static bool HasChanges => Dirty.Count > 0;
 
+        internal static bool HasChangesFor(string expansionId) => Dirty.Contains(expansionId);
+
         /// <summary>Folder of the drafts: unsaved layers, written in the background so a crash loses little.</summary>
         internal static string DraftFolder => Path.Combine(MelonLoader.Utils.MelonEnvironment.UserDataDirectory, "MapExpansionsEditor", "drafts");
 

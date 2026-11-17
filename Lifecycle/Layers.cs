@@ -48,9 +48,14 @@ namespace MapExpansions.Lifecycle
             /// <summary>Gameplay points by kind and key, see <see cref="PointKinds"/>.</summary>
             public readonly HashSet<(string kind, string id)> Points = new();
             public readonly HashSet<(string kind, string id)> RemovedPoints = new();
+            /// <summary>Rules of world states by state id and key; a state's copies and boxes have the owner <c>state:&lt;id&gt;</c>.</summary>
+            public readonly HashSet<(string state, string id)> StateRules = new();
+            public readonly HashSet<(string state, string id)> RemovedStateRules = new();
+            /// <summary>State sections that could not be laid over their state; saving writes them back unchanged.</summary>
+            public readonly Dictionary<string, JsonObject> RawStates = new(StringComparer.Ordinal);
 
             public int Count => Copies.Count + RemovedCopies.Count + Rules.Count + RemovedRules.Count + Boxes.Count + RemovedBoxes.Count +
-                                Points.Count + RemovedPoints.Count;
+                                Points.Count + RemovedPoints.Count + StateRules.Count + RemovedStateRules.Count;
         }
 
         /// <summary>The layer state of each expansion as of its last build, changed by the editor until it saves.</summary>
@@ -63,6 +68,7 @@ namespace MapExpansions.Lifecycle
         /// <summary>Whether a copy of the code definition has a box with this id.</summary>
         internal static bool IsCodeBox(string expansionId, string owner, string copy, string id)
         {
+            if (StateOfOwner(owner) is string stateId) return IsCodeStateBox(expansionId, stateId, copy, id);
             if (!Code.TryGetValue(expansionId, out var c)) return false;
             var list = owner == ExpansionOwner ? c.Copies : c.ShopCopies.TryGetValue(owner, out var l) ? l : null;
             return list?.FirstOrDefault(x => x.Id == copy)?.Boxes.Any(x => x.Id == id) == true;
@@ -123,14 +129,12 @@ namespace MapExpansions.Lifecycle
             var state = new State();
             States[def.Id] = state;
             var (json, from) = Read(def);
-            if (json == null)
-            {
-                Core.Log.Msg($"layer: '{def.Id}' has no layer; the code definition is built alone");
-                return;
-            }
-            var root = Parse(def, json, from);
-            if (root == null) return;
-            ApplyNode(def, root, state, from);
+            JsonNode root = null;
+            if (json == null) Core.Log.Msg($"layer: '{def.Id}' has no layer; the code definition is built alone");
+            else root = Parse(def, json, from);
+            if (root != null) ApplyNode(def, root, state, from);
+            // The states follow the layer the world is built with, as the base entries do.
+            WorldStates.Reresolve(def, root, state, "world build");
         }
 
         /// <summary>Parses and checks a layer; null when it cannot be used, with the reason logged.</summary>
@@ -155,13 +159,20 @@ namespace MapExpansions.Lifecycle
             return root;
         }
 
-        private static void ApplyNode(ExpansionDefinition def, JsonNode root, State state, string from, bool strict = false)
+        /// <param name="code">What counts as code when telling changed from new copies; the definition's snapshot when null.</param>
+        private static void ApplyNode(ExpansionDefinition def, JsonNode root, State state, string from, bool strict = false, CodeEntries code = null)
         {
             var notes = new List<string>();
+            code ??= Code[def.Id];
 
             // Copies, per owner list.
             // Models and prefabs are copies made from something else than a template; one list holds all three.
             var copyEntries = Array(root, "copies").Concat(Array(root, "models")).Concat(Array(root, "prefabs")).Select(e => (owner: Str(e, "owner") ?? ExpansionOwner, e)).ToList();
+            // A state's entries live in its section under "states"; an owner naming a state here would change the state
+            // behind its own resolution.
+            foreach (var group in copyEntries.Where(x => StateOfOwner(x.owner) != null).GroupBy(x => x.owner))
+                notes.Add($"{group.Count()} copies of owner '{group.Key}', whose place is the state's section under \"states\"");
+            copyEntries.RemoveAll(x => StateOfOwner(x.owner) != null);
             foreach (var group in copyEntries.GroupBy(x => x.owner, StringComparer.Ordinal))
             {
                 var list = CopyList(def, group.Key);
@@ -177,7 +188,6 @@ namespace MapExpansions.Lifecycle
                     e => NewCopy(e));
                 list.Clear();
                 list.AddRange(merged.Items);
-                var code = Code[def.Id];
                 foreach (var key in merged.Layered)
                 {
                     var entry = group.Last(x => Str(x.e, "id") == key).e;
@@ -212,6 +222,9 @@ namespace MapExpansions.Lifecycle
 
             // Boxes, per copy.
             var boxEntries = Array(root, "boxes").Select(e => (owner: Str(e, "owner") ?? ExpansionOwner, copy: Str(e, "copy"), e)).ToList();
+            foreach (var group in boxEntries.Where(x => StateOfOwner(x.owner) != null).GroupBy(x => x.owner))
+                notes.Add($"{group.Count()} boxes of owner '{group.Key}', whose place is the state's section under \"states\"");
+            boxEntries.RemoveAll(x => StateOfOwner(x.owner) != null);
             foreach (var group in boxEntries.GroupBy(x => (x.owner, x.copy)))
             {
                 var copy = CopyList(def, group.Key.owner)?.FirstOrDefault(c => c.Id == group.Key.copy);
@@ -255,6 +268,7 @@ namespace MapExpansions.Lifecycle
         internal static List<CopyDefinition> CopyList(ExpansionDefinition def, string owner)
         {
             if (owner == ExpansionOwner) return def.Copies;
+            if (StateOfOwner(owner) is string stateId) return WorldStates.Definition(def.Id, stateId)?.Copies;
             if (owner != null && owner.StartsWith("shop:", StringComparison.Ordinal))
                 return def.Shops.FirstOrDefault(s => s.Id == owner.Substring(5))?.Copies;
             return null;
@@ -509,6 +523,7 @@ namespace MapExpansions.Lifecycle
             var prefabs = new List<JsonObject>();
             foreach (var (owner, id) in state.Copies)
             {
+                if (StateOfOwner(owner) != null) continue;
                 var d = CopyList(def, owner)?.FirstOrDefault(c => c.Id == id);
                 if (d == null)
                 {
@@ -518,7 +533,7 @@ namespace MapExpansions.Lifecycle
                 var to = !string.IsNullOrEmpty(d.Model) ? models : !string.IsNullOrEmpty(d.Prefab) ? prefabs : copies;
                 to.Add(CopyEntry(owner, d, state.AddedCopies.Contains((owner, id))));
             }
-            copies.AddRange(state.RemovedCopies.Select(k => new JsonObject { ["id"] = k.id, ["owner"] = k.owner, ["removed"] = true }));
+            copies.AddRange(state.RemovedCopies.Where(k => StateOfOwner(k.owner) == null).Select(k => new JsonObject { ["id"] = k.id, ["owner"] = k.owner, ["removed"] = true }));
 
             var rules = new List<JsonObject>();
             foreach (var key in state.Rules)
@@ -536,6 +551,7 @@ namespace MapExpansions.Lifecycle
             var boxes = new List<JsonObject>();
             foreach (var (owner, copy, id) in state.Boxes)
             {
+                if (StateOfOwner(owner) != null) continue;
                 var b = CopyList(def, owner)?.FirstOrDefault(c => c.Id == copy)?.Boxes.FirstOrDefault(x => x.Id == id);
                 if (b == null)
                 {
@@ -544,7 +560,7 @@ namespace MapExpansions.Lifecycle
                 }
                 boxes.Add(BoxEntry(owner, copy, b));
             }
-            boxes.AddRange(state.RemovedBoxes.Select(k => new JsonObject { ["id"] = k.id, ["owner"] = k.owner, ["copy"] = k.copy, ["removed"] = true }));
+            boxes.AddRange(state.RemovedBoxes.Where(k => StateOfOwner(k.owner) == null).Select(k => new JsonObject { ["id"] = k.id, ["owner"] = k.owner, ["copy"] = k.copy, ["removed"] = true }));
 
             var root = new JsonObject { ["format"] = Format, ["expansion"] = def.Id };
             root["copies"] = Sorted(copies, "owner", "id");
@@ -553,6 +569,7 @@ namespace MapExpansions.Lifecycle
             if (rules.Count > 0) root["rules"] = Sorted(rules, "id");
             if (boxes.Count > 0) root["boxes"] = Sorted(boxes, "owner", "copy", "id");
             WritePoints(def, state, root);
+            WriteStates(def, state, root);
             // Indented output uses the platform line end; the file keeps one line end everywhere.
             return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }).Replace("\r\n", "\n") + "\n";
         }
