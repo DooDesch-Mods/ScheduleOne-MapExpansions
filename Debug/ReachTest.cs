@@ -282,6 +282,18 @@ namespace MapExpansions.Debug
                 }
             foreach (var item in doomed)
             {
+                // Vanilla refuses to pick up or destroy an item in use (Pot.CanBeDestroyed), so a player can never take a
+                // pot from under a Botanist mid-action. Removing it anyway kills the action's coroutine and freezes the worker.
+                if (Il2CppType.Of<IUsable>().IsAssignableFrom(item.GetIl2CppType()))
+                {
+                    var usable = new IUsable(item.Pointer);
+                    if (usable.IsInUse)
+                    {
+                        Core.Log.Msg($"[dev] mxreach clear: skipping {Name(item)} at {item.transform.position}, in use by " +
+                                     $"{(usable.NPCUserObject != null ? usable.NPCUserObject.name : usable.PlayerUserObject != null ? usable.PlayerUserObject.name : "someone")}");
+                        continue;
+                    }
+                }
                 Core.Log.Msg($"[dev] mxreach clear: removing {Name(item)} at {item.transform.position}");
                 try
                 {
@@ -616,6 +628,43 @@ namespace MapExpansions.Debug
             Core.Log.Msg($"[dev] mxreach path: {e.FirstName} raw path to {hit.position}: {path.status}, {corners.Length} corners: {string.Join(" ", list)}");
             bool startHit = NavMesh.SamplePosition(agent.transform.position, out var start, 1f, filter);
             Core.Log.Msg($"[dev] mxreach path: {e.FirstName} NavMesh under the agent: {(startHit ? start.position + $" ({Vector3.Distance(start.position, agent.transform.position):0.00} m)" : "none within 1 m")}");
+            GrowTarget(e, p);
+            var cached = m._pathCache?.Paths;
+            if (cached != null)
+            {
+                Core.Log.Msg($"[dev] mxreach path: {e.FirstName} path cache holds {cached.Count} paths");
+                foreach (var c in cached)
+                {
+                    var cc = c.Path?.corners;
+                    if ((c.Start - m.FootPosition).sqrMagnitude < 4f || (c.End - m.FootPosition).sqrMagnitude < 4f)
+                        Core.Log.Msg($"[dev] mxreach path: {e.FirstName} cached {c.Start} -> {c.End}, status {c.Path?.status}, {cc?.Length ?? 0} corners, last {(cc != null && cc.Length > 0 ? cc[cc.Length - 1].ToString() : "-")}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// The pot or supplies a Botanist's grow behaviour walks to: its state, and per access point whether it lies in the
+        /// property bounds (GetReachableAccessPoint skips the others), whether CanGetTo answers yes, and the reachable pick.
+        /// </summary>
+        private static void GrowTarget(Employee e, Property p)
+        {
+            var grow = e.Behaviour?.activeBehaviour?.TryCast<Il2CppScheduleOne.NPCs.Behaviour.GrowContainerBehaviour>();
+            if (grow == null) { Core.Log.Msg($"[dev] mxreach path: {e.FirstName} has no active grow behaviour"); return; }
+            var pot = grow._growContainer;
+            Core.Log.Msg($"[dev] mxreach path: {e.FirstName} grow state {grow._currentState}, container {(pot != null ? pot.transform.position.ToString() : "none")}");
+            if (pot == null) return;
+            var entity = Il2CppType.Of<ITransitEntity>().IsAssignableFrom(pot.GetIl2CppType()) ? new ITransitEntity(pot.Pointer) : null;
+            var points = entity?.AccessPoints;
+            if (points == null) { Core.Log.Msg($"[dev] mxreach path: {e.FirstName} container has no access points"); return; }
+            foreach (var t in points)
+            {
+                if (t == null) { Core.Log.Msg($"[dev] mxreach path: {e.FirstName} access point null"); continue; }
+                Core.Log.Msg($"[dev] mxreach path: {e.FirstName} access point {t.position}, in bounds {p.DoBoundsContainPoint(t.position)}, " +
+                             $"can get to {e.Movement.CanGetTo(t.position, 1f)}, {Vector3.Distance(e.transform.position, t.position):0.00} m away");
+            }
+            var pick = NavMeshUtility.GetReachableAccessPoint(entity, e);
+            Core.Log.Msg($"[dev] mxreach path: {e.FirstName} reachable access point {(pick != null ? pick.position.ToString() : "none")}, " +
+                         $"at container {NavMeshUtility.IsAtTransitEntity(entity, e, 0.4f)}");
         }
 
         private static void Work(string code)
