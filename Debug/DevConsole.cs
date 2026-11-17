@@ -31,6 +31,7 @@ namespace MapExpansions.Debug
     /// mxcover audio                   every audio zone and the colliders it cached, destroyed ones named
     /// mxcoplanar x1 y1 z1 x2 y2 z2 [filter] surfaces in one plane that overlap and flicker against each other; a filter
     ///                                    ("a|b") also lists the vanilla pairs among its renderers
+    /// mxtangents x1 y1 z1 x2 y2 z2    our own meshes in a world box without tangents (normal maps draw frayed on them)
     /// mxgrid code [check]             a property's grids with their tiles' extent; check probes every outer edge
     /// mxgrid code at x y z            which tile of each grid lies under a world point
     /// mxbox x0 y0 z0 x1 y1 z1 [filter] renderers and colliders whose bounds meet a world box, with their paths
@@ -155,6 +156,7 @@ namespace MapExpansions.Debug
                     case "mxcover" when parts.Length > 1 && parts[1] == "enclosures": Enclosures(); break;
                     case "mxcover" when parts.Length > 1 && parts[1] == "audio": AudioZones(); break;
                     case "mxcoplanar" when parts.Length > 6: Coplanar(V(parts, 1), V(parts, 4), parts.Length > 7 ? parts[7] : ""); break;
+                    case "mxtangents" when parts.Length > 6: Tangents(V(parts, 1), V(parts, 4)); break;
                     case "mxgrid" when parts.Length > 4 && parts[2] == "at": GridAt(parts[1], V(parts, 3)); break;
                     case "mxgrid" when parts.Length > 1: GridEdges(parts[1], parts.Length > 2 && parts[2] == "check"); break;
                     case "mxcover" when parts.Length > 2 && parts[1] == "sound":
@@ -1383,6 +1385,42 @@ namespace MapExpansions.Debug
                 Core.Log.Msg($"[dev] mxlod no group: '{PathOf(r.transform, 4)}' enabled {r.enabled} visible {r.isVisible} batched {r.isPartOfStaticBatch}");
             }
             Core.Log.Msg($"[dev] mxlod: {groups} LOD groups within {radius} m of {c}");
+        }
+
+        /// <summary>
+        /// Our own meshes in a world box that have no tangents. A normal-mapped material on such a mesh bends its normals
+        /// at random on faces along z and drops the relief on faces along x.
+        /// </summary>
+        private static void Tangents(Vector3 a, Vector3 c)
+        {
+            var box = new Bounds();
+            box.SetMinMax(Vector3.Min(a, c), Vector3.Max(a, c));
+            int ours = 0, missing = 0, unreadable = 0;
+            foreach (var mr in Object.FindObjectsOfType<MeshRenderer>(false))
+            {
+                if (mr == null || !mr.enabled || !mr.bounds.Intersects(box) || PartOf(mr.transform) == null) continue;
+                var path = PathOf(mr.transform, 8);
+                var mf = mr.GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null)
+                {
+                    Core.Log.Warning($"[dev] mxtangents '{path}': no mesh");
+                    continue;
+                }
+                ours++;
+                if (!mesh.isReadable)
+                {
+                    unreadable++;
+                    Core.Log.Msg($"[dev] mxtangents '{path}': mesh '{mesh.name}' is not readable");
+                    continue;
+                }
+                var tangents = mesh.tangents;
+                bool none = tangents == null || tangents.Length == 0 || tangents.All(t => t.x == 0f && t.y == 0f && t.z == 0f);
+                if (!none) continue;
+                missing++;
+                Core.Log.Warning($"[dev] mxtangents none '{path}': mesh '{mesh.name}', {mesh.vertexCount} vertices");
+            }
+            Core.Log.Msg($"[dev] mxtangents {B(box)}: {ours} renderers of ours, {missing} without tangents, {unreadable} not readable");
         }
 
         private static void Mats(Vector3 c, float radius)
