@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using HarmonyLib;
 using Il2CppScheduleOne.Persistence;
 using Il2CppScheduleOne.Persistence.Datas;
@@ -137,6 +138,125 @@ namespace MapExpansions.Lifecycle
         internal static bool IsApplied(string id) => BuildPipeline.Get(id) != null && !Failures.ContainsKey(id) &&
             (Desired(id) == null ? !Active.ContainsKey(id) : Active.TryGetValue(id, out var a) && !a.Broken && a.State.Id == Desired(id));
 
+        /// <summary>The state as it is built now: code, its embedded layer and the expansion layer's section.</summary>
+        internal static WorldStateDefinition Definition(string id, string stateId) =>
+            stateId != null && Definitions.TryGetValue((id, stateId), out var d) ? d : null;
+
+        /// <summary>The id of the state that stands whole in the world, or null.</summary>
+        internal static string ActiveState(string id) => Active.TryGetValue(id, out var a) && !a.Broken ? a.State.Id : null;
+
+        /// <summary>
+        /// Resolves every state of <paramref name="def"/> again with its section in <paramref name="root"/> and records
+        /// the section's entries in <paramref name="record"/>. A state whose section breaks a rule keeps its previous
+        /// form; the section stays in the layer as it is written. What stands in the world changes only on the next apply.
+        /// </summary>
+        /// <param name="live">The world stands already, so networked parts were reserved with the previous forms.</param>
+        /// <returns>How many states kept their previous form because their section broke a rule.</returns>
+        internal static int Reresolve(ExpansionDefinition def, JsonNode root, Layers.State record, string why, bool live = false)
+        {
+            var sectionIds = Layers.StateSectionIds(root).ToList();
+            if (def.WorldStates.Count == 0)
+            {
+                if (sectionIds.Count > 0)
+                    Core.Log.Warning($"layer ({why}): '{def.Id}' has sections for states {string.Join(", ", sectionIds)} but no world states; they are left out");
+                return 0;
+            }
+            var known = new HashSet<string>(def.WorldStates.Where(s => s != null).Select(s => s.Id), StringComparer.Ordinal);
+            foreach (var unknown in sectionIds.Where(x => !known.Contains(x)))
+            {
+                Core.Log.Warning($"layer ({why}): '{def.Id}' has a section for state '{unknown}', which the expansion does not have; it stays in the layer unused");
+                if (record != null) record.RawStates[unknown] = Layers.CloneSection(Layers.StateSection(root, unknown));
+            }
+            var permanentDocks = new Dictionary<(string extension, string dock), (string property, int index)>();
+            int laid = 0, kept = 0;
+            foreach (var source in def.WorldStates)
+            {
+                if (source == null) continue;
+                if (!Definitions.TryGetValue((def.Id, source.Id), out var previous))
+                {
+                    Core.Log.Warning($"layer ({why}): '{def.Id}' state '{source.Id}' did not pass validation; its section is not read");
+                    continue;
+                }
+                var section = Layers.StateSection(root, source.Id);
+                if (record != null) Layers.ForgetState(record, source.Id);
+                var got = new Layers.State();
+                var problems = new List<string>();
+                WorldStateDefinition state = null;
+                try
+                {
+                    state = Layers.ResolveState(def, source, section, got);
+                    CheckState(def, state, problems, permanentDocks);
+                }
+                catch (Exception e) { problems.Add(e.Message); }
+                if (problems.Count > 0)
+                {
+                    kept++;
+                    Core.Log.Error($"layer ({why}): '{def.Id}' state '{source.Id}' with its layer section breaks the rules of a state, so it keeps its previous form: {string.Join("; ", problems)}");
+                    if (section != null && record != null) record.RawStates[source.Id] = Layers.CloneSection(section);
+                    continue;
+                }
+                if (live) WarnNetworkChange(def.Id, state);
+                Definitions[(def.Id, source.Id)] = state;
+                if (record != null) Layers.Merge(record, got);
+                if (section != null) laid++;
+            }
+            if (laid > 0 || kept > 0 || sectionIds.Count > 0)
+                Core.Log.Msg($"layer ({why}): '{def.Id}' states resolved, {laid} with a layer section, {kept} kept their previous form");
+            return kept;
+        }
+
+        /// <summary>Key scopes of the networked state copies reserved at the last world build, per expansion.</summary>
+        private static readonly Dictionary<string, HashSet<string>> ReservedScopes = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// A networked state copy whose form changed gets a key no peer reserved when the world was built. The host and
+        /// its clients agree on it again only after each of them builds the world with the same layer.
+        /// </summary>
+        private static void WarnNetworkChange(string id, WorldStateDefinition next)
+        {
+            ReservedScopes.TryGetValue(id, out var reserved);
+            foreach (var c in next.Copies)
+            {
+                if (c.VisualOnly || !string.IsNullOrEmpty(c.Prefab)) continue;
+                if (reserved != null && reserved.Contains(World.MainCopies.StateKeyScope(c))) continue;
+                Core.Log.Warning($"world state: '{id}/{next.Id}' networked copy '{c.Id}' changed while the world stands; in co-op every peer needs the same layer and a new world build before its parts match");
+            }
+        }
+
+        /// <summary>
+        /// Lays the state sections of <paramref name="json"/> over the expansion's states and builds the standing state
+        /// again from them. Entries outside the sections are not read here; they wait for the next world build.
+        /// </summary>
+        internal static bool Restate(string id, string json, string from, string why, out string error)
+        {
+            error = null;
+            var b = BuildPipeline.Get(id);
+            if (b == null)
+            {
+                error = $"world state ({why}): '{id}' is not built";
+                Core.Log.Error(error);
+                return false;
+            }
+            var root = Layers.Parse(b.Definition, json, from);
+            if (root == null)
+            {
+                error = $"world state ({why}): the layer of '{id}' from {from} cannot be read; the states stay as they are";
+                Core.Log.Error(error);
+                return false;
+            }
+            int kept = Reresolve(b.Definition, root, Layers.StateOf(id), why, live: true);
+            string broken = kept > 0 ? $"{kept} states kept their previous form, see the error above" : null;
+            if (!Active.ContainsKey(id))
+            {
+                Core.Log.Msg($"world state ({why}): '{id}' is dormant; the new forms are built when a state is applied");
+                error = broken;
+                return broken == null;
+            }
+            if (!Reapply(id, why, out error)) return false;
+            error = broken;
+            return broken == null;
+        }
+
         internal static IEnumerable<string> Validate(ExpansionDefinition def)
         {
             var errors = new List<string>();
@@ -150,100 +270,108 @@ namespace MapExpansions.Lifecycle
                 try
                 {
                     var state = Layers.ResolveState(def, source);
-                    var ruleIds = new HashSet<string>();
-                    foreach (var rule in state.Rules)
-                    {
-                        if (!ObjectRules.CanRevert(rule.Effect) && rule.Effect is not (ObjectEffect.Cut or ObjectEffect.CutCollision or ObjectEffect.ClearDetails)) errors.Add($"state '{state.Id}' uses irreversible rule {rule.Effect}");
-                        if (rule.Side != WorldSide.Main) errors.Add($"state '{state.Id}' rule must select the main world");
-                        rule.Key = string.IsNullOrEmpty(rule.Id) ? rule.MadeId() : rule.Id;
-                        if (!ruleIds.Add(rule.Key)) errors.Add($"state '{state.Id}' repeats rule '{rule.Key}'");
-                    }
-                    var copyIds = new HashSet<string>();
-                    foreach (var copy in state.Copies)
-                    {
-                        if (string.IsNullOrEmpty(copy.Id) || !copyIds.Add(copy.Id)) errors.Add($"state '{state.Id}' has a missing or repeated copy id");
-                        if (!string.IsNullOrEmpty(copy.Resource) && !copy.VisualOnly) errors.Add($"state '{state.Id}' resource copies require VisualOnly=true");
-                        if (!string.IsNullOrEmpty(copy.Prefab)) errors.Add($"state '{state.Id}' prefabs require a network lifecycle and cannot be switched locally");
-                        if (copy.TemplateSide != WorldSide.Main) errors.Add($"state '{state.Id}' copy must use the main world");
-                    }
-                    var moveIds = new HashSet<string>(StringComparer.Ordinal);
-                    foreach (var move in state.Moves)
-                    {
-                        if (move == null || string.IsNullOrEmpty(move.Id) || !moveIds.Add(move.Id)) errors.Add($"state '{state.Id}' has a missing or repeated move id");
-                        else if (string.IsNullOrEmpty(move.Path)) errors.Add($"state '{state.Id}' move '{move.Id}' needs a path");
-                    }
-                    // Box id to "is a block", per copy a surface can stand on. A state's copy goes before the expansion's.
-                    var bindable = new Dictionary<string, IReadOnlyDictionary<string, bool>>(StringComparer.Ordinal);
-                    foreach (var copy in state.Copies.Concat(def.Copies))
-                        if (!string.IsNullOrEmpty(copy.Id) && !bindable.ContainsKey(copy.Id))
-                            bindable[copy.Id] = copy.Boxes.GroupBy(x => x.Id ?? "").ToDictionary(g => g.Key, g => g.First().Kind == BoxKind.Block);
-                    var extensions = new HashSet<string>();
-                    var dockSlots = new HashSet<(string property, int index)>();
-                    foreach (var p in state.PropertyExtensions)
-                    {
-                        if (string.IsNullOrEmpty(p.Id) || !extensions.Add(p.Id) || string.IsNullOrEmpty(p.PropertyCode))
-                            errors.Add($"state '{state.Id}' property extension needs unique id and property code");
-                        if (p.GridIndex < 0) errors.Add($"state '{state.Id}' grid index is negative");
-                        if (p.GridOrigin is Vector3 origin && !(float.IsFinite(origin.x) && float.IsFinite(origin.y) && float.IsFinite(origin.z)))
-                            errors.Add($"state '{state.Id}' extension '{p.Id}' grid origin is not a finite point");
-                        if (p.Tiles.Select(x => (x.X, x.Y)).Distinct().Count() != p.Tiles.Count)
-                            errors.Add($"state '{state.Id}' repeats tile coordinates");
-                        var fixtureIds = new HashSet<string>(StringComparer.Ordinal);
-                        foreach (var fixture in p.Fixtures)
-                        {
-                            if (fixture == null || string.IsNullOrEmpty(fixture.Id) || !fixtureIds.Add(fixture.Id))
-                                errors.Add($"state '{state.Id}' extension '{p.Id}' has a missing or repeated fixture id");
-                            else if (string.IsNullOrEmpty(fixture.Path)) errors.Add($"state '{state.Id}' fixture '{fixture.Id}' needs a path");
-                            else if (fixture.Tiles.Count == 0 || fixture.Tiles.Select(x => (x.X, x.Y)).Distinct().Count() != fixture.Tiles.Count)
-                                errors.Add($"state '{state.Id}' fixture '{fixture.Id}' needs at least one tile and no repeated coordinate");
-                        }
-                        var surfaces = new HashSet<string>();
-                        foreach (var surface in p.Surfaces)
-                        {
-                            if (string.IsNullOrEmpty(surface.Id) || !surfaces.Add(surface.Id) || surface.ValidFaces.Count == 0)
-                                errors.Add($"state '{state.Id}' surface needs unique id and valid faces");
-                            if (string.IsNullOrEmpty(surface.CopyId) && !ValidBounds(surface.Bounds))
-                                errors.Add($"state '{state.Id}' standalone surface '{surface.Id}' has invalid bounds");
-                            var binding = WorldStatePlan.SurfaceBindingError(surface.Id, surface.CopyId, surface.BoxId, bindable);
-                            if (binding != null) errors.Add($"state '{state.Id}' {binding}");
-                        }
-                        foreach (var bounds in p.Bounds)
-                            if (!ValidBounds(bounds)) errors.Add($"state '{state.Id}' has invalid property bounds");
-                        var dockIds = new HashSet<string>(StringComparer.Ordinal);
-                        foreach (var dock in p.Docks)
-                        {
-                            foreach (var cause in PropertyDocks.Validate(dock)) errors.Add($"state '{state.Id}' property '{p.PropertyCode}': {cause}");
-                            if (dock != null && !PropertyDocks.HasPlacement(dock))
-                                Core.Log.Warning($"validate: '{def.Id}' state '{state.Id}' dock '{dock.Id}' has no At yet; applying the state fails until it is set");
-                            if (dock != null && (!dockIds.Add(dock.Id ?? "") || !dockSlots.Add((p.PropertyCode, dock.Index))))
-                                errors.Add($"state '{state.Id}' repeats a dock ID or permanent property slot");
-                            if (dock != null && !string.IsNullOrEmpty(dock.Id))
-                            {
-                                var key = (p.Id, dock.Id);
-                                var slot = (p.PropertyCode, dock.Index);
-                                if (permanentDocks.TryGetValue(key, out var prior) && prior != slot)
-                                    errors.Add($"state '{state.Id}' changes the permanent slot of dock '{p.Id}/{dock.Id}'");
-                                else permanentDocks[key] = slot;
-                            }
-                        }
-                    }
-                    if (state.NavigationAgents.Any(string.IsNullOrWhiteSpace) || state.NavigationAgents.Distinct(StringComparer.Ordinal).Count() != state.NavigationAgents.Count)
-                        errors.Add($"state '{state.Id}' navigation agent names must be non-empty and unique");
-                    if (state.NavigationAgents.Count > 0 && !state.NavigationBounds.HasValue)
-                        errors.Add($"state '{state.Id}' declares navigation agents without a navigation volume");
-                    if (state.NavigationBounds.HasValue && (!ValidBounds(state.NavigationBounds.Value) || state.NavigationProbes.Count < 2))
-                        errors.Add($"state '{state.Id}' navigation needs valid bounds and at least two doorway probes");
-                    if (state.NavigationExistingFloor.Count > 0 && !state.NavigationBounds.HasValue)
-                        errors.Add($"state '{state.Id}' declares existing floor without a navigation volume");
-                    else if (state.NavigationExistingFloor.Any(f => !ValidBounds(f) || !f.Intersects(state.NavigationBounds.Value)))
-                        errors.Add($"state '{state.Id}' existing floor boxes must be valid and lie in the navigation volume");
-                    if (state.WeatherCover.Any(c => !ValidBounds(c)))
-                        errors.Add($"state '{state.Id}' weather cover boxes must be valid");
+                    CheckState(def, state, errors, permanentDocks);
                     Definitions[(def.Id, state.Id)] = state;
                 }
                 catch (Exception e) { errors.Add($"state '{source.Id}' cannot be resolved: {e.Message}"); }
             }
             return errors;
+        }
+
+        /// <summary>Checks one resolved state; each problem goes into <paramref name="errors"/>.</summary>
+        /// <param name="permanentDocks">Dock slots of the states checked before; a dock keeps its slot in every state.</param>
+        private static void CheckState(ExpansionDefinition def, WorldStateDefinition state, List<string> errors,
+            Dictionary<(string extension, string dock), (string property, int index)> permanentDocks)
+        {
+            var ruleIds = new HashSet<string>();
+            foreach (var rule in state.Rules)
+            {
+                if (!ObjectRules.CanRevert(rule.Effect) && rule.Effect is not (ObjectEffect.Cut or ObjectEffect.CutCollision or ObjectEffect.ClearDetails)) errors.Add($"state '{state.Id}' uses irreversible rule {rule.Effect}");
+                if (rule.Side != WorldSide.Main) errors.Add($"state '{state.Id}' rule must select the main world");
+                rule.Key = string.IsNullOrEmpty(rule.Id) ? rule.MadeId() : rule.Id;
+                if (!ruleIds.Add(rule.Key)) errors.Add($"state '{state.Id}' repeats rule '{rule.Key}'");
+            }
+            var copyIds = new HashSet<string>();
+            foreach (var copy in state.Copies)
+            {
+                if (string.IsNullOrEmpty(copy.Id) || !copyIds.Add(copy.Id)) errors.Add($"state '{state.Id}' has a missing or repeated copy id");
+                if (!string.IsNullOrEmpty(copy.Resource) && !copy.VisualOnly) errors.Add($"state '{state.Id}' resource copies require VisualOnly=true");
+                if (!string.IsNullOrEmpty(copy.Prefab)) errors.Add($"state '{state.Id}' prefabs require a network lifecycle and cannot be switched locally");
+                if (copy.TemplateSide != WorldSide.Main) errors.Add($"state '{state.Id}' copy must use the main world");
+            }
+            var moveIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var move in state.Moves)
+            {
+                if (move == null || string.IsNullOrEmpty(move.Id) || !moveIds.Add(move.Id)) errors.Add($"state '{state.Id}' has a missing or repeated move id");
+                else if (string.IsNullOrEmpty(move.Path)) errors.Add($"state '{state.Id}' move '{move.Id}' needs a path");
+            }
+            // Box id to "is a block", per copy a surface can stand on. A state's copy goes before the expansion's.
+            var bindable = new Dictionary<string, IReadOnlyDictionary<string, bool>>(StringComparer.Ordinal);
+            foreach (var copy in state.Copies.Concat(def.Copies))
+                if (!string.IsNullOrEmpty(copy.Id) && !bindable.ContainsKey(copy.Id))
+                    bindable[copy.Id] = copy.Boxes.GroupBy(x => x.Id ?? "").ToDictionary(g => g.Key, g => g.First().Kind == BoxKind.Block);
+            var extensions = new HashSet<string>();
+            var dockSlots = new HashSet<(string property, int index)>();
+            foreach (var p in state.PropertyExtensions)
+            {
+                if (string.IsNullOrEmpty(p.Id) || !extensions.Add(p.Id) || string.IsNullOrEmpty(p.PropertyCode))
+                    errors.Add($"state '{state.Id}' property extension needs unique id and property code");
+                if (p.GridIndex < 0) errors.Add($"state '{state.Id}' grid index is negative");
+                if (p.GridOrigin is Vector3 origin && !(float.IsFinite(origin.x) && float.IsFinite(origin.y) && float.IsFinite(origin.z)))
+                    errors.Add($"state '{state.Id}' extension '{p.Id}' grid origin is not a finite point");
+                if (p.Tiles.Select(x => (x.X, x.Y)).Distinct().Count() != p.Tiles.Count)
+                    errors.Add($"state '{state.Id}' repeats tile coordinates");
+                var fixtureIds = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var fixture in p.Fixtures)
+                {
+                    if (fixture == null || string.IsNullOrEmpty(fixture.Id) || !fixtureIds.Add(fixture.Id))
+                        errors.Add($"state '{state.Id}' extension '{p.Id}' has a missing or repeated fixture id");
+                    else if (string.IsNullOrEmpty(fixture.Path)) errors.Add($"state '{state.Id}' fixture '{fixture.Id}' needs a path");
+                    else if (fixture.Tiles.Count == 0 || fixture.Tiles.Select(x => (x.X, x.Y)).Distinct().Count() != fixture.Tiles.Count)
+                        errors.Add($"state '{state.Id}' fixture '{fixture.Id}' needs at least one tile and no repeated coordinate");
+                }
+                var surfaces = new HashSet<string>();
+                foreach (var surface in p.Surfaces)
+                {
+                    if (string.IsNullOrEmpty(surface.Id) || !surfaces.Add(surface.Id) || surface.ValidFaces.Count == 0)
+                        errors.Add($"state '{state.Id}' surface needs unique id and valid faces");
+                    if (string.IsNullOrEmpty(surface.CopyId) && !ValidBounds(surface.Bounds))
+                        errors.Add($"state '{state.Id}' standalone surface '{surface.Id}' has invalid bounds");
+                    var binding = WorldStatePlan.SurfaceBindingError(surface.Id, surface.CopyId, surface.BoxId, bindable);
+                    if (binding != null) errors.Add($"state '{state.Id}' {binding}");
+                }
+                foreach (var bounds in p.Bounds)
+                    if (!ValidBounds(bounds)) errors.Add($"state '{state.Id}' has invalid property bounds");
+                var dockIds = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var dock in p.Docks)
+                {
+                    foreach (var cause in PropertyDocks.Validate(dock)) errors.Add($"state '{state.Id}' property '{p.PropertyCode}': {cause}");
+                    if (dock != null && !PropertyDocks.HasPlacement(dock))
+                        Core.Log.Warning($"validate: '{def.Id}' state '{state.Id}' dock '{dock.Id}' has no At yet; applying the state fails until it is set");
+                    if (dock != null && (!dockIds.Add(dock.Id ?? "") || !dockSlots.Add((p.PropertyCode, dock.Index))))
+                        errors.Add($"state '{state.Id}' repeats a dock ID or permanent property slot");
+                    if (dock != null && !string.IsNullOrEmpty(dock.Id))
+                    {
+                        var key = (p.Id, dock.Id);
+                        var slot = (p.PropertyCode, dock.Index);
+                        if (permanentDocks.TryGetValue(key, out var prior) && prior != slot)
+                            errors.Add($"state '{state.Id}' changes the permanent slot of dock '{p.Id}/{dock.Id}'");
+                        else permanentDocks[key] = slot;
+                    }
+                }
+            }
+            if (state.NavigationAgents.Any(string.IsNullOrWhiteSpace) || state.NavigationAgents.Distinct(StringComparer.Ordinal).Count() != state.NavigationAgents.Count)
+                errors.Add($"state '{state.Id}' navigation agent names must be non-empty and unique");
+            if (state.NavigationAgents.Count > 0 && !state.NavigationBounds.HasValue)
+                errors.Add($"state '{state.Id}' declares navigation agents without a navigation volume");
+            if (state.NavigationBounds.HasValue && (!ValidBounds(state.NavigationBounds.Value) || state.NavigationProbes.Count < 2))
+                errors.Add($"state '{state.Id}' navigation needs valid bounds and at least two doorway probes");
+            if (state.NavigationExistingFloor.Count > 0 && !state.NavigationBounds.HasValue)
+                errors.Add($"state '{state.Id}' declares existing floor without a navigation volume");
+            else if (state.NavigationExistingFloor.Any(f => !ValidBounds(f) || !f.Intersects(state.NavigationBounds.Value)))
+                errors.Add($"state '{state.Id}' existing floor boxes must be valid and lie in the navigation volume");
+            if (state.WeatherCover.Any(c => !ValidBounds(c)))
+                errors.Add($"state '{state.Id}' weather cover boxes must be valid");
         }
 
         private static bool ValidBounds(Bounds b) => b.size.x > 0f && b.size.y > 0f && b.size.z > 0f &&
@@ -387,6 +515,7 @@ namespace MapExpansions.Lifecycle
                 foreach (var c in state.Copies)
                     if (!c.VisualOnly && string.IsNullOrEmpty(c.Prefab) && scopes.Add(World.MainCopies.StateKeyScope(c))) copies.Add(c);
             }
+            ReservedScopes[b.Id] = scopes;
             if (copies.Count == 0) return;
             World.MainCopies.Reserve(b, copies);
         }
@@ -401,11 +530,12 @@ namespace MapExpansions.Lifecycle
             return false;
         }
 
-        private static bool Apply(string id, string stateId, out string error)
+        /// <param name="force">Builds the state again also when it stands already, after its definition changed.</param>
+        private static bool Apply(string id, string stateId, out string error, bool force = false)
         {
             error = null;
             Active.TryGetValue(id, out var previous);
-            if (previous == null ? stateId == null : !previous.Broken && previous.State.Id == stateId)
+            if (!force && (previous == null ? stateId == null : !previous.Broken && previous.State.Id == stateId))
             {
                 Selections[id] = stateId;
                 Failures.Remove(id);
@@ -489,6 +619,61 @@ namespace MapExpansions.Lifecycle
                 Failures[id] = error;
                 Core.Log.Error(error);
             }
+        }
+
+        /// <summary>
+        /// Takes the standing state down and builds it from its current definition. Copies and extensions whose form did
+        /// not change stay, as in any transition. Nothing an extension mod registered needs to be registered again.
+        /// </summary>
+        internal static bool Reapply(string id, string why, out string error)
+        {
+            if (!Active.TryGetValue(id, out var standing))
+            {
+                error = $"world state ({why}): '{id}' has no applied state to rebuild";
+                Core.Log.Error(error);
+                return false;
+            }
+            string stateId = standing.State.Id;
+            Core.Log.Msg($"world state ({why}): rebuilding '{id}/{stateId}' from its current definition");
+            return Apply(id, stateId, out error, force: true);
+        }
+
+        /// <summary>A copy the editor added to a standing state: it leaves with the state.</summary>
+        internal static void TrackCopy(MainCopies.Placed p)
+        {
+            var stateId = Layers.StateOfOwner(p?.LayerOwner);
+            if (stateId == null) return;
+            if (!Active.TryGetValue(p.Expansion.Id, out var a) || a.State.Id != stateId)
+            {
+                Core.Log.Warning($"world state: copy '{p.Built.Def.Id}' of '{p.Expansion.Id}/{stateId}' was built while that state does not stand; a state change does not remove it");
+                return;
+            }
+            if (a.Copies.Contains(p)) return;
+            p.StateSignature = WorldStateSignatures.Of(p.Built.Def);
+            a.Copies.Add(p);
+        }
+
+        /// <summary>A copy the editor took out of a standing state: the state no longer removes it.</summary>
+        internal static void UntrackCopy(MainCopies.Placed p)
+        {
+            if (Layers.StateOfOwner(p?.LayerOwner) == null) return;
+            if (Active.TryGetValue(p.Expansion.Id, out var a)) a.Copies.Remove(p);
+        }
+
+        /// <summary>A state copy was built again in place: the state holds the new one.</summary>
+        internal static void ReplaceCopy(MainCopies.Placed old, MainCopies.Placed now)
+        {
+            var stateId = Layers.StateOfOwner(old?.LayerOwner);
+            if (stateId == null || !Active.TryGetValue(old.Expansion.Id, out var a)) return;
+            int i = a.Copies.IndexOf(old);
+            if (i < 0) return;
+            if (now == null)
+            {
+                a.Copies.RemoveAt(i);
+                return;
+            }
+            now.StateSignature = old.StateSignature;
+            a.Copies[i] = now;
         }
 
         internal static bool ApplyPending()

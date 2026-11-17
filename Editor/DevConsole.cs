@@ -8,7 +8,7 @@ namespace MapExpansions.Editor
 {
     /// <summary>
     /// Console commands that drive the editor without a mouse, for automated checks. Debug builds only.
-    /// <c>mapedit open|close|state|select &lt;id&gt;|pick x y|move dx dy dz|save|target &lt;expansion&gt; &lt;file&gt;|cam x y z yaw pitch|look &lt;id&gt; [m]|
+    /// <c>mapedit open|close|state [&lt;expansion&gt; [&lt;state&gt;]]|restate|reload|boxes &lt;copy&gt;|boxmove dx dy dz|staterule &lt;key&gt; ...|select &lt;id&gt;|pick x y|move dx dy dz|save|target &lt;expansion&gt; &lt;file&gt;|cam x y z yaw pitch|look &lt;id&gt; [m]|
     /// fly dx dy dz seconds|hit x y|uiclick x y [frames]|batch &lt;name&gt;|viewmodel|hold &lt;slot&gt;</c>.
     /// </summary>
     internal static class DevConsole
@@ -49,7 +49,14 @@ namespace MapExpansions.Editor
                 {
                     case "open": EditorMode.Open("console"); break;
                     case "close": EditorMode.Close("console"); break;
+                    case "state" when p.Length > 3: StateEdits.Enter(p[2], p[3], "console"); break;
+                    case "state" when p.Length == 3: StateEdits.Describe(p[2]); break;
                     case "state": Core.Log.Msg($"[dev] state: {Panel.State()}"); break;
+                    case "restate": StateEdits.Restate(p.Length > 2 ? p[2] : null, "console"); break;
+                    case "reload": StateEdits.Reload(p.Length > 2 ? p[2] : null, "console"); break;
+                    case "boxes" when p.Length > 2: StateEdits.Boxes(p[2]); break;
+                    case "boxmove" when p.Length > 4: StateEdits.BoxMove(new Vector3(F(p[2]), F(p[3]), F(p[4])), "console"); break;
+                    case "staterule" when p.Length > 3: StateEdits.Rule(p[2], p.Skip(3).ToArray(), "console"); break;
                     case "select" when p.Length > 2:
                         var keys = new List<string>();
                         foreach (var id in p.Skip(2))
@@ -216,7 +223,7 @@ namespace MapExpansions.Editor
                         Core.Log.Msg($"[dev] areas: selected {Areas.Current?.ToString() ?? "none"}; {AreaEdits.PendingCount} rules wait, {AreaEdits.StaleCount} stale");
                         break;
                     default:
-                        Core.Log.Warning($"[dev] unknown or incomplete: '{sig}'. Use mapedit open|close|state|select <id>...|pick x y [add]|frame x0 y0 x1 y1|move dx dy dz|turn deg|scale s|undo|redo|dup|del|drop|focus|play|resume|draft|mode m|snap grid|turn|edges on|off|sel|save|target <expansion> <file>|cam x y z yaw pitch|look <id> [m]|fly dx dy dz s|hit x y|uiclick x y [frames]|batch <name>|viewmodel|hold <slot>|count|rules [text]|rule apply|revert <key>|copy apply|revert <expansion/owner/id>|area <key>|areahandles|areaset x0 y0 z0 x1 y1 z1|newrule [effect]|newbox panel|block|newopening|effect <effect>|material <name>|materials [text]|apply|walk dx dz metres|areas");
+                        Core.Log.Warning($"[dev] unknown or incomplete: '{sig}'. Use mapedit open|close|state [<expansion> [<state>|dormant]]|restate [expansion]|reload [expansion]|boxes <copy>|boxmove dx dy dz|staterule <key> area x0 y0 z0 x1 y1 z1|del|select <id>...|pick x y [add]|frame x0 y0 x1 y1|move dx dy dz|turn deg|scale s|undo|redo|dup|del|drop|focus|play|resume|draft|mode m|snap grid|turn|edges on|off|sel|save|target <expansion> <file>|cam x y z yaw pitch|look <id> [m]|fly dx dy dz s|hit x y|uiclick x y [frames]|batch <name>|viewmodel|hold <slot>|count|rules [text]|rule apply|revert <key>|copy apply|revert <expansion/owner/id>|area <key>|areahandles|areaset x0 y0 z0 x1 y1 z1|newrule [effect]|newbox panel|block|newopening|effect <effect>|material <name>|materials [text]|apply|walk dx dz metres|areas");
                         break;
                 }
             }
