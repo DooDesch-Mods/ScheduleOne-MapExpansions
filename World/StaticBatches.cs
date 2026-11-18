@@ -76,7 +76,13 @@ namespace MapExpansions.World
                 return;
             }
             var key = (mesh.Pointer, mr.subMeshStartIndex);
-            if (Drawn.TryGetValue(key, out var first) && first.Copy != null && first.Copy != copy)
+            if (Drawn.TryGetValue(key, out var first) && first.Copy != null && first.Copy != copy && first.Name == name)
+            {
+                // A networked copy is spawned anew when its state comes back; the old instance under the same key is on
+                // its way out and draws nothing once the new one stands.
+                Core.Log.Msg($"copies: '{name}' takes over its part of '{mesh.name}' (renderer '{mr.name}', submesh {mr.subMeshStartIndex}) from its previous instance");
+            }
+            else if (Drawn.TryGetValue(key, out first) && first.Copy != null && first.Copy != copy)
             {
                 Core.Log.Warning($"copies: '{name}' and '{first.Name}' draw the same part of '{mesh.name}' (renderer '{mr.name}', " +
                                  $"submesh {mr.subMeshStartIndex}); while both are in view one of them is missing. Copy them from different originals.");

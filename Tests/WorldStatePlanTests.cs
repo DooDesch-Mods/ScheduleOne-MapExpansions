@@ -35,7 +35,18 @@ namespace MapExpansions.Tests
             var copies = new[] { new Plan.Copy("wing", "w"), new Plan.Copy("props", "p") };
             var plan = Plan.Plan(new[] { Ext("floor", "a", "wing") }, copies, new[] { Ext("floor", "a", "wing") }, copies);
             Check.True(plan.Extensions.SetEquals(new[] { "floor" }));
-            Check.True(plan.Copies.SetEquals(new[] { "wing" }), "only the carrier stays");
+            Check.True(plan.Copies.SetEquals(new[] { "wing", "props" }), "the carrier and the unchanged props stay");
+        }
+
+        public static void AnUnchangedCopyStaysAndAChangedOrLeavingOneDoesNot()
+        {
+            var plan = Plan.Plan(
+                Array.Empty<Plan.Extension>(),
+                new[] { new Plan.Copy("table", "t"), new Plan.Copy("shell", "s"), new Plan.Copy("rail", "r") },
+                Array.Empty<Plan.Extension>(),
+                new[] { new Plan.Copy("table", "t"), new Plan.Copy("shell", "s2"), new Plan.Copy("lamp", "l") });
+            Check.True(plan.Copies.SetEquals(new[] { "table" }));
+            Check.Eq(0, plan.Extensions.Count);
         }
 
         public static void AChangedCarrierRebuildsTheExtension()

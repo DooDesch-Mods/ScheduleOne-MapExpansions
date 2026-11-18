@@ -69,9 +69,9 @@ namespace MapExpansions.World
                     Cut(b, index, part, rule, area, offColliders, rule.Effect == ObjectEffect.Cut);
                     continue;
                 }
-                if (rule.Effect == ObjectEffect.ClearDetails)
+                if (rule.Effect is ObjectEffect.ClearDetails or ObjectEffect.Paint)
                 {
-                    Core.Log.Error($"rules: '{b.Id}' {rule}: clearing details only works in a world state; nothing is cleared");
+                    Core.Log.Error($"rules: '{b.Id}' {rule}: {rule.Effect} only works in a world state; nothing is changed");
                     continue;
                 }
                 if (rule.Effect == ObjectEffect.CloseHoles)
@@ -275,6 +275,9 @@ namespace MapExpansions.World
             Core.Log.Msg($"rules: revert '{b.Id}' {rule}: {shells} shells taken out, {boxes} boxes solid again, {rec.Assets.Count} lining meshes released (out of their collider groups unless a world state restores them)");
             return boxes;
         }
+
+        /// <summary>Whether a rule switched this component off while it was on.</summary>
+        internal static bool HoldsOff(IntPtr component) => Holds.TryGetValue(component, out var h) && h.Ours;
 
         /// <summary>Counts the rule as holding the component off and switches it off. True when it was on.</summary>
         private static bool Take(Record rec, Component target, bool enabled, Action<bool> set)

@@ -19,6 +19,7 @@ namespace MapExpansions.Lifecycle
             internal readonly List<ObjectRule> Rules = new();
             internal readonly List<StateCuts.Lease> Cuts = new();
             internal readonly List<StateDetails.Lease> Details = new();
+            internal readonly List<StatePaint.Lease> Paints = new();
             internal readonly List<ObjectMoves.Lease> Moves = new();
             internal readonly List<MainCopies.Placed> Copies = new();
             internal readonly List<PropertyExtensionLease> Properties = new();
@@ -93,8 +94,18 @@ namespace MapExpansions.Lifecycle
                     }
                     catch (Exception e) { errors.Add(e); }
                 }
+                for (int i = Paints.Count - 1; i >= 0; i--)
+                {
+                    try
+                    {
+                        Paints[i].Dispose();
+                        Paints.RemoveAt(i);
+                    }
+                    catch (Exception e) { errors.Add(e); }
+                }
                 for (int i = Cuts.Count - 1; i >= 0; i--)
                 {
+                    if (carry.Cuts.Contains(Cuts[i])) continue;
                     try
                     {
                         Cuts[i].Dispose();
@@ -113,6 +124,8 @@ namespace MapExpansions.Lifecycle
                     }
                     catch (Exception e) { errors.Add(e); }
                 }
+                // A kept cut still holds its source colliders off, so they stay out of their groups for the next state.
+                DetachedColliders.ExceptWith(carry.HeldColliders);
                 try { ColliderKeepAlive.Restore(DetachedColliders); }
                 catch (Exception e) { errors.Add(e); }
                 Physics.SyncTransforms();
@@ -126,6 +139,9 @@ namespace MapExpansions.Lifecycle
             internal static readonly Carried Nothing = new();
             internal readonly List<PropertyExtensionLease> Properties = new();
             internal readonly List<MainCopies.Placed> Copies = new();
+            internal readonly List<StateCuts.Lease> Cuts = new();
+            /// <summary>Source colliders the kept cuts switched off.</summary>
+            internal readonly HashSet<IntPtr> HeldColliders = new();
         }
 
         private static readonly Dictionary<string, string> Selections = new(StringComparer.Ordinal);
@@ -286,7 +302,7 @@ namespace MapExpansions.Lifecycle
             var ruleIds = new HashSet<string>();
             foreach (var rule in state.Rules)
             {
-                if (!ObjectRules.CanRevert(rule.Effect) && rule.Effect is not (ObjectEffect.Cut or ObjectEffect.CutCollision or ObjectEffect.ClearDetails)) errors.Add($"state '{state.Id}' uses irreversible rule {rule.Effect}");
+                if (!ObjectRules.CanRevert(rule.Effect) && rule.Effect is not (ObjectEffect.Cut or ObjectEffect.CutCollision or ObjectEffect.ClearDetails or ObjectEffect.Paint)) errors.Add($"state '{state.Id}' uses irreversible rule {rule.Effect}");
                 if (rule.Side != WorldSide.Main) errors.Add($"state '{state.Id}' rule must select the main world");
                 rule.Key = string.IsNullOrEmpty(rule.Id) ? rule.MadeId() : rule.Id;
                 if (!ruleIds.Add(rule.Key)) errors.Add($"state '{state.Id}' repeats rule '{rule.Key}'");
@@ -408,6 +424,21 @@ namespace MapExpansions.Lifecycle
             var carry = new Carried();
             carry.Properties.AddRange(previous.Properties.Where(p => plan.Extensions.Contains(p.ExtensionId)));
             carry.Copies.AddRange(previous.Copies.Where(c => plan.Copies.Contains(c.Built.Def.Id)));
+            // Cutting the same walls again took about half a second per rule on every night of a build stage. A cut
+            // touches only main-world geometry and hangs its replacements on the expansion root, so it can stay.
+            // A half-built state keeps nothing of its cuts.
+            if (!previous.Broken)
+            {
+                var wanted = next.Rules.Where(r => r.Effect is ObjectEffect.Cut or ObjectEffect.CutCollision)
+                    .Select(WorldStateSignatures.OfCut).ToList();
+                foreach (var lease in previous.Cuts)
+                {
+                    if (lease.Signature == null || !wanted.Remove(lease.Signature)) continue;
+                    carry.Cuts.Add(lease);
+                    foreach (var (collider, _, _, _) in lease.Colliders)
+                        if (collider != null) carry.HeldColliders.Add(collider.Pointer);
+                }
+            }
             return carry;
         }
 
@@ -441,18 +472,36 @@ namespace MapExpansions.Lifecycle
             long copiesMs = clock.ElapsedMilliseconds;
 
             var offColliders = new HashSet<IntPtr>();
+            // The kept cuts' colliders are still held from the previous state; the lease takes them over without a new scan.
+            result.DetachedColliders.UnionWith(carry.HeldColliders);
+            var keptCuts = new List<StateCuts.Lease>(carry.Cuts);
             // A full pass over the world for every rule would stall the game for seconds on each state change.
             var mainNearby = state.Rules.Count > 0 && BuildPipeline.Index != null ? new SceneIndex.AreaSnapshot(BuildPipeline.Index.Main) : null;
             foreach (var r in state.Rules)
             {
                 if (r.Effect is ObjectEffect.Cut or ObjectEffect.CutCollision)
                 {
-                    result.Cuts.Add(StateCuts.Apply(b, BuildPipeline.Index, r, offColliders));
+                    string signature = WorldStateSignatures.OfCut(r);
+                    var kept = keptCuts.FirstOrDefault(k => k.Signature == signature);
+                    if (kept != null)
+                    {
+                        keptCuts.Remove(kept);
+                        result.Cuts.Add(kept);
+                        continue;
+                    }
+                    var lease = StateCuts.Apply(b, BuildPipeline.Index, r, offColliders);
+                    lease.Signature = signature;
+                    result.Cuts.Add(lease);
                     continue;
                 }
                 if (r.Effect == ObjectEffect.ClearDetails)
                 {
                     result.Details.Add(StateDetails.Apply(b, BuildPipeline.Index, r, $"'{b.Id}/{state.Id}' rule '{r.Key}'"));
+                    continue;
+                }
+                if (r.Effect == ObjectEffect.Paint)
+                {
+                    result.Paints.Add(StatePaint.Apply(b, BuildPipeline.Index, r, $"'{b.Id}/{state.Id}' rule '{r.Key}'"));
                     continue;
                 }
                 result.Rules.Add(r);
@@ -494,7 +543,7 @@ namespace MapExpansions.Lifecycle
             }
             if (cover.HasValue) World.WeatherCover.AddState(CoverOwner(b, state), cover.Value);
             result.Timing = $"lookup {lookupMs} ms, {fresh.Count} copies {copiesMs - lookupMs} ms, {state.Rules.Count} rules {rulesMs - copiesMs} ms, " +
-                            $"properties {propertiesMs - rulesMs} ms, navigation {clock.ElapsedMilliseconds - propertiesMs} ms; kept {carry.Copies.Count} copies, {carry.Properties.Count} extensions";
+                            $"properties {propertiesMs - rulesMs} ms, navigation {clock.ElapsedMilliseconds - propertiesMs} ms; kept {carry.Copies.Count} copies, {carry.Cuts.Count} cuts, {carry.Properties.Count} extensions";
         }
 
         /// <summary>
@@ -731,6 +780,7 @@ namespace MapExpansions.Lifecycle
             UnplacedDormantLogged.Clear();
             StateCuts.Reset();
             StateDetails.Reset();
+            StatePaint.Reset();
             ColliderKeepAlive.Reset();
         }
 

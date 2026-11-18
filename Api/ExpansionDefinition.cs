@@ -268,6 +268,13 @@ namespace MapExpansions
         /// only; <see cref="ObjectRule.Name"/> selects the terrain by name, empty for every terrain under the area.
         /// </summary>
         ClearDetails,
+
+        /// <summary>
+        /// Paints <see cref="ObjectRule.PaintLayer"/> onto each selected main terrain, along <see cref="ObjectRule.PaintPath"/>
+        /// or over the ellipse that fills the rule's area, with a soft uneven edge, and puts the old weights back when the
+        /// state goes. For a trodden path or a gravel patch. World states only.
+        /// </summary>
+        Paint,
     }
 
     /// <summary>Selects objects by name in one world, optionally limited to an area.</summary>
@@ -348,10 +355,23 @@ namespace MapExpansions
         /// </summary>
         public float LiningInset { get; set; } = 0.01f;
 
+        /// <summary>For <see cref="ObjectEffect.Paint"/>: name of the terrain layer to paint, such as "Terrain_Dirt".</summary>
+        public string PaintLayer { get; set; }
+
+        /// <summary>For <see cref="ObjectEffect.Paint"/>: how far the layer replaces the old ones at full cover, 0 to 1.</summary>
+        public float PaintStrength { get; set; } = 1f;
+
+        /// <summary>For <see cref="ObjectEffect.Paint"/>: world x/z points of a path; empty paints the area instead.</summary>
+        public List<Vector2> PaintPath { get; private set; } = new();
+
+        /// <summary>For <see cref="ObjectEffect.Paint"/> along <see cref="PaintPath"/>: width of the path in metres.</summary>
+        public float PaintWidth { get; set; } = 0.9f;
+
         /// <summary>A copy of this rule with its own lists, for a layer to change.</summary>
         internal ObjectRule Clone()
         {
             var r = (ObjectRule)MemberwiseClone();
+            r.PaintPath = new List<Vector2>(PaintPath);
             r.Openings = new List<Bounds>(Openings);
             r.Bands = new List<(float From, string Material)>(Bands);
             r.Windows = new List<Bounds>(Windows);

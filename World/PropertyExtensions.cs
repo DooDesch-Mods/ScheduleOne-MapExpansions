@@ -294,7 +294,7 @@ namespace MapExpansions.World
                 Signature = Lifecycle.WorldStateSignatures.Of(def),
                 CarrierCopies = Lifecycle.WorldStateSignatures.Carriers(def),
             };
-            int reusedTiles = 0;
+            int reusedTiles = 0, wokenTiles = 0;
             try
             {
                 if (def.GridOrigin.HasValue) grid = lease.OwnGrid = CreateGrid(expansion, def, prop, baseGrid);
@@ -309,6 +309,13 @@ namespace MapExpansions.World
                     go.transform.localPosition = new Vector3(coord.X * Grid.TileSize, 0f, coord.Y * Grid.TileSize);
                     var tile = go.GetComponent<Tile>();
                     if (tile == null) { Object.Destroy(go); throw new InvalidOperationException("cloned tile has no Tile component"); }
+                    // The template's collider is in the property's OptimizedColliderGroup, which switches it off while the
+                    // player is more than 30 m away; a clone made then starts switched off, belongs to no group and would
+                    // never come on, so no placement ghost could find the tile.
+                    int woken = 0;
+                    foreach (var c in go.GetComponentsInChildren<Collider>(true))
+                        if (!c.enabled) { c.enabled = true; woken++; }
+                    if (woken > 0) wokenTiles++;
                     lease.Tiles.Add((grid, tile));
                     tile.InitializePropertyTile(coord.X, coord.Y, template.AvailableOffset, grid);
                     tile.BuildableOccupants.Clear();
@@ -345,7 +352,7 @@ namespace MapExpansions.World
                 Physics.SyncTransforms();
                 foreach (var bounds in def.Bounds)
                     if (!prop.DoBoundsContainPoint(bounds.center)) throw new InvalidOperationException("property bounds readback failed");
-                Core.Log.Msg($"property extension: '{expansion}/{def.Id}' on '{def.PropertyCode}': {lease.Tiles.Count} added tiles, {reusedTiles} existing tiles reused, {lease.Boxes.Count} bounds, {lease.Docks.Count} docks, grid GUID {grid?.GUID}");
+                Core.Log.Msg($"property extension: '{expansion}/{def.Id}' on '{def.PropertyCode}': {lease.Tiles.Count} added tiles, {reusedTiles} existing tiles reused, {wokenTiles} tiles cloned from a distance-culled template and switched on, {lease.Boxes.Count} bounds, {lease.Docks.Count} docks, grid GUID {grid?.GUID}");
                 return lease;
             }
             catch (Exception original)

@@ -70,6 +70,20 @@ namespace MapExpansions.World
             return detached;
         }
 
+        /// <summary>Every collider a group switches by the player's distance.</summary>
+        public static HashSet<IntPtr> GroupMembers()
+        {
+            var members = new HashSet<IntPtr>();
+            foreach (var g in Object.FindObjectsOfType<OptimizedColliderGroup>(true))
+            {
+                var cols = g?.Colliders;
+                if (cols == null) continue;
+                for (int i = 0; i < cols.Length; i++)
+                    if (cols[i] != null) members.Add(cols[i].Pointer);
+            }
+            return members;
+        }
+
         private static int TakeOut(HashSet<IntPtr> colliders, Action<Collider, OptimizedColliderGroup> taken)
         {
             int detached = 0;

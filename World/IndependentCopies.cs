@@ -37,6 +37,9 @@ namespace MapExpansions.World
                 if (mesh == null) throw new InvalidOperationException($"renderer '{MeshCarver.Path(src.transform)}' has no extractable selected submeshes");
                 assets.Add(b.Own(mesh));
                 var replacement = Renderer(src, dst.transform, mesh, "MapExpansions independent visual");
+                // The copy's renderer, not the original's, says whether it shows: a rule of another state can hold the
+                // original off while the copy was switched on for its own place.
+                replacement.enabled = dst.enabled;
                 foreach (var group in copy.GetComponentsInChildren<LODGroup>(true))
                 {
                     var levels = group.GetLODs();

@@ -1,4 +1,5 @@
 using Il2CppInterop.Runtime;
+using Il2CppScheduleOne.Tools;
 using MapExpansions.Lifecycle;
 using Unity.AI.Navigation;
 using UnityEngine;
@@ -140,6 +141,131 @@ namespace MapExpansions.Navigation
         }
 
         /// <summary>
+        /// The NavMesh builder reads a mesh collider's vertices on the CPU and skips an unreadable mesh with a console
+        /// error. Most of the game's building meshes are unreadable, copied walls included, so a storey's walls would be
+        /// missing from its bake and NPCs would path through them. For one synchronous bake each such collider gets a
+        /// readable twin read back from the GPU, and the original object sits on a layer outside the bake's mask.
+        /// </summary>
+        private sealed class ReadableTwinsBakeHold : IDisposable
+        {
+            private readonly List<(GameObject go, int layer)> _moved = new();
+            private readonly List<GameObject> _twins = new();
+            private readonly List<Mesh> _meshes = new();
+
+            internal ReadableTwinsBakeHold(string id, Bounds bounds)
+            {
+                try
+                {
+                    int excluded = LayerMask.NameToLayer("Ignore Raycast");
+                    if (excluded < 0) throw new InvalidOperationException("layer 'Ignore Raycast' does not exist");
+                    var copies = new Dictionary<IntPtr, Mesh>();
+                    var names = new List<string>();
+                    int kept = 0;
+                    foreach (var c in Physics.OverlapBox(bounds.center, bounds.extents, Quaternion.identity, Mask, QueryTriggerInteraction.Ignore))
+                    {
+                        var mc = c != null && c.enabled ? c.TryCast<MeshCollider>() : null;
+                        var mesh = mc != null ? mc.sharedMesh : null;
+                        if (mesh == null || mesh.isReadable) continue;
+                        var go = mc.gameObject;
+                        // Moving the object's layer takes every collider on it out of the bake; another one there would go missing.
+                        if (go.GetComponents<Collider>().Any(o => o != null && o.Pointer != mc.Pointer && o.enabled && !o.isTrigger))
+                        {
+                            kept++;
+                            Core.Log.Warning($"state nav: '{id}' leaves the unreadable collider '{World.MeshCarver.Path(mc.transform)}' to the builder, which skips it: its object holds more colliders");
+                            continue;
+                        }
+                        if (!copies.TryGetValue(mesh.Pointer, out var copy))
+                        {
+                            try { copy = World.MeshCarver.ReadableCopy(mesh, mesh.name + " (MapExpansions nav bake)"); }
+                            catch (Exception e)
+                            {
+                                Core.Log.Warning($"state nav: '{id}' could not read '{mesh.name}' back from the GPU; the builder skips '{World.MeshCarver.Path(mc.transform)}': {e.Message}");
+                                copy = null;
+                            }
+                            copies[mesh.Pointer] = copy;
+                            if (copy != null) _meshes.Add(copy);
+                        }
+                        if (copy == null)
+                        {
+                            kept++;
+                            continue;
+                        }
+                        var twin = new GameObject($"MapExpansions nav twin {go.name}") { layer = go.layer };
+                        twin.transform.SetParent(go.transform, false);
+                        var tc = twin.AddComponent<MeshCollider>();
+                        tc.convex = mc.convex;
+                        tc.sharedMesh = copy;
+                        _twins.Add(twin);
+                        _moved.Add((go, go.layer));
+                        go.layer = excluded;
+                        names.Add(go.name);
+                    }
+                    if (_twins.Count > 0 || kept > 0)
+                        Core.Log.Msg($"state nav: '{id}' bakes {_twins.Count} unreadable mesh colliders through readable twins ({_meshes.Count} meshes read back), {kept} stay unreadable: " +
+                                     string.Join(", ", names.GroupBy(x => x).Select(x => x.Count() > 1 ? $"{x.Key} x{x.Count()}" : x.Key)));
+                }
+                catch
+                {
+                    Dispose();
+                    throw;
+                }
+            }
+
+            public void Dispose()
+            {
+                foreach (var (go, layer) in _moved)
+                    if (go != null) go.layer = layer;
+                _moved.Clear();
+                foreach (var t in _twins)
+                    if (t != null) Object.DestroyImmediate(t);
+                _twins.Clear();
+                foreach (var m in _meshes)
+                    if (m != null) Object.Destroy(m);
+                _meshes.Clear();
+            }
+        }
+
+        /// <summary>
+        /// The main world switches its buildings' colliders off while the local player is more than 30 m away
+        /// (OptimizedColliderGroup). A day change runs where the player sleeps, often at another property, and a bake
+        /// then finds no floor under a copied storey. For one synchronous bake the groups' switched-off colliders in the
+        /// volume stand on; afterwards they follow their group again.
+        /// </summary>
+        private sealed class ColliderGroupsAwakeHold : IDisposable
+        {
+            private readonly List<Collider> _woken = new();
+
+            internal ColliderGroupsAwakeHold(string id, Bounds bounds)
+            {
+                var reach = bounds;
+                reach.Expand(1f);
+                int groups = 0;
+                foreach (var g in Object.FindObjectsOfType<OptimizedColliderGroup>(true))
+                {
+                    var cols = g?.Colliders;
+                    if (cols == null || g.collidersEnabled) continue;
+                    int before = _woken.Count;
+                    for (int i = 0; i < cols.Length; i++)
+                    {
+                        var c = cols[i];
+                        if (c == null || c.enabled || !c.gameObject.activeInHierarchy || !reach.Contains(c.transform.position)) continue;
+                        c.enabled = true;
+                        _woken.Add(c);
+                    }
+                    if (_woken.Count > before) groups++;
+                }
+                Core.Log.Msg($"state nav: '{id}' bake switches on {_woken.Count} distance-culled colliders of {groups} collider groups");
+            }
+
+            public void Dispose()
+            {
+                foreach (var c in _woken)
+                    if (c != null) c.enabled = false;
+                _woken.Clear();
+            }
+        }
+
+        /// <summary>
         /// Marks floor the main world already walks on as not walkable for one state bake, so the state's mesh leaves it
         /// to the world's mesh. The volumes reach half a metre below each box so the floor surface lies inside them.
         /// </summary>
@@ -267,8 +393,17 @@ namespace MapExpansions.Navigation
                 int blocked = 0;
                 int area = NavMesh.GetAreaFromName(InteriorArea);
                 if (area < 0) throw new InvalidOperationException($"state '{id}' needs the NavMesh area '{InteriorArea}', which this game does not define");
+                using var awake = new ColliderGroupsAwakeHold(id, bounds);
                 using var placedItems = new PlacedItemsBakeHold(id, bounds);
+                using var twins = new ReadableTwinsBakeHold(id, bounds);
                 using var existing = new ExistingFloorHold(id, existingFloor, parent);
+#if DEBUG
+                if (Debug.NavTest.BakeWatch is Vector3 watch)
+                {
+                    var r = Debug.NavTest.BakeWatchRadius;
+                    Core.Log.Msg($"[dev] mxnav watch: '{id}' bake sees at {watch} within {r} m: {Obstacles(watch, watch, parent, r)}");
+                }
+#endif
                 foreach (int agent in agents)
                 {
                     var go = new GameObject($"MapExpansions.{id}.StateNav.{agent}");
@@ -298,6 +433,7 @@ namespace MapExpansions.Navigation
                     }
                 }
                 existing.Dispose();
+                twins.Dispose();
                 // Each existing floor box meets the new floor along its open edges; one seam per step keeps the join when a
                 // placed item later carves some of them away.
                 for (int i = 0; i < existingFloor.Count; i++)
@@ -329,7 +465,10 @@ namespace MapExpansions.Navigation
                         for (int i = 1; i < probes.Count; i++)
                         {
                             if (NavMesh.CalculatePath(probes[0], probes[i], filter, path) && path.status == NavMeshPathStatus.PathComplete) continue;
-                            Core.Log.Warning($"state nav: '{id}' has no complete path to probe {i} {probes[i]} for agent {agent}; obstacles on the line from the doorway: {Obstacles(probes[0], probes[i], parent)}");
+                            var corners = path.corners;
+                            string stop = corners == null || corners.Length == 0 ? "no path at all"
+                                : $"the path stops at {corners[corners.Length - 1]}, bake colliders there: {Obstacles(corners[corners.Length - 1], corners[corners.Length - 1], parent, 0.8f)}";
+                            Core.Log.Warning($"state nav: '{id}' has no complete path to probe {i} {probes[i]} for agent {agent}; {stop}; obstacles on the line from the doorway: {Obstacles(probes[0], probes[i], parent)}");
                             blocked++;
                         }
                     }
@@ -351,20 +490,20 @@ namespace MapExpansions.Navigation
         private const string InteriorArea = "PropertyInterior";
 
         /// <summary>Names the bake-source colliders on a walking line at knee height, so a failed probe says what stands there.</summary>
-        private static string Obstacles(Vector3 from, Vector3 to, Transform expansion)
+        private static string Obstacles(Vector3 from, Vector3 to, Transform expansion, float radius = 0.4f)
         {
             try
             {
                 var lift = Vector3.up * 0.5f;
                 var names = new List<string>();
-                foreach (var c in Physics.OverlapCapsule(from + lift, to + lift, 0.4f, Mask, QueryTriggerInteraction.Ignore))
+                foreach (var c in Physics.OverlapCapsule(from + lift, to + lift, radius, Mask, QueryTriggerInteraction.Ignore))
                 {
                     if (c == null) continue;
                     var t = c.transform;
                     string path = t.name;
                     for (var p = t.parent; p != null && path.Length < 120; p = p.parent) path = p.name + "/" + path;
                     if (expansion != null && t.IsChildOf(expansion)) path = "[expansion] " + path;
-                    names.Add(path);
+                    names.Add(path + " " + c.bounds.min.ToString("F2") + ".." + c.bounds.max.ToString("F2"));
                 }
                 return names.Count == 0 ? "none found" : string.Join("; ", names.Distinct().Take(10));
             }

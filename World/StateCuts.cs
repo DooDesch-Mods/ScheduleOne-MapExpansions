@@ -10,9 +10,20 @@ namespace MapExpansions.World
     {
         private static readonly HashSet<IntPtr> RenderersInUse = new();
         private static readonly HashSet<IntPtr> CollidersInUse = new();
+        /// <summary>Source colliders a cut switched off while they were on; replacements stand in for them.</summary>
+        private static readonly HashSet<IntPtr> CutOff = new();
+
+        /// <summary>Whether a state cut switched this collider off while it was on.</summary>
+        internal static bool HoldsOff(IntPtr collider) => CutOff.Contains(collider);
+
+        /// <summary>Whether a state cut switched this renderer off while it was on; a cut skips renderers that are off.</summary>
+        internal static bool HoldsRendererOff(IntPtr renderer) => RenderersInUse.Contains(renderer);
+
         internal sealed class Lease : IDisposable
         {
             internal BuiltExpansion Owner;
+            /// <summary>The rule's signature; the next state keeps the lease when it has a rule with the same one.</summary>
+            internal string Signature;
             internal readonly List<(Renderer renderer, bool enabled)> Renderers = new();
             internal readonly List<(Collider collider, bool enabled, Mesh mesh, bool convex)> Colliders = new();
             internal readonly List<GameObject> Objects = new();
@@ -38,6 +49,7 @@ namespace MapExpansions.World
                     if (c.TryCast<MeshCollider>() is MeshCollider mc) { mc.sharedMesh = mesh; mc.convex = convex; }
                     c.enabled = enabled;
                     CollidersInUse.Remove(c.Pointer);
+                    CutOff.Remove(c.Pointer);
                 }
                 Colliders.Clear();
                 foreach (var asset in Assets)
@@ -127,6 +139,7 @@ namespace MapExpansions.World
                         { go.SetActive(false); Object.Destroy(go); continue; }
                         lease.Colliders.Add((c, c.enabled, mc.sharedMesh, mc.convex));
                         CollidersInUse.Add(c.Pointer);
+                        if (c.enabled) CutOff.Add(c.Pointer);
                         c.enabled = false;
                         changed++;
                     }
@@ -183,6 +196,7 @@ namespace MapExpansions.World
                     throw new InvalidOperationException($"state cut box '{MeshCarver.Path(t)}' is not cardinally rotated and lies in the cut area");
             lease.Colliders.Add((source, source.enabled, null, false));
             CollidersInUse.Add(source.Pointer);
+            if (source.enabled) CutOff.Add(source.Pointer);
             void Slab(Vector3 a, Vector3 z)
             {
                 var size = z - a;
@@ -203,6 +217,6 @@ namespace MapExpansions.World
             return true;
         }
 
-        internal static void Reset() { RenderersInUse.Clear(); CollidersInUse.Clear(); }
+        internal static void Reset() { RenderersInUse.Clear(); CollidersInUse.Clear(); CutOff.Clear(); }
     }
 }

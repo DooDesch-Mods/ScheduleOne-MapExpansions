@@ -35,7 +35,7 @@ namespace MapExpansions
     public static class MapExpansionsApi
     {
         /// <summary>Version of this API. Raised when a public member changes.</summary>
-        public const string ApiVersion = "0.7.0";
+        public const string ApiVersion = "0.8.0";
 
         /// <summary>
         /// Raised when an expansion is placed and joined in the main world, once per world load. The argument is the
