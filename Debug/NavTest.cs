@@ -17,9 +17,13 @@ namespace MapExpansions.Debug
     /// mxnav sample x y z                   nearest NavMesh point per agent type
     /// mxnav path ax ay az bx by bz         path status and length for the Humanoid agent
     /// mxnav walk id|nearest x y z          walk an NPC there with its schedule off, watching for warps
+    /// mxnav watch x y z [r] | watch off    list the bake-layer colliders at a point in the frame of each state bake
     /// </summary>
     internal static class NavTest
     {
+        /// <summary>Set by "mxnav watch x y z [r]": a state bake logs the bake-layer colliders there just before it builds.</summary>
+        internal static Vector3? BakeWatch;
+        internal static float BakeWatchRadius = 0.6f;
         internal static NPC Watched;
         internal static int WatchedWarps;
 
@@ -31,8 +35,17 @@ namespace MapExpansions.Debug
                 case "sample" when parts.Length > 4: Sample(V(parts, 2)); break;
                 case "path" when parts.Length > 7: Path(V(parts, 2), V(parts, 5)); break;
                 case "walk" when parts.Length > 5: Walk(parts[2], V(parts, 3)); break;
+                case "watch" when parts.Length > 2 && parts[2] == "off":
+                    BakeWatch = null;
+                    Core.Log.Msg("[dev] mxnav watch off");
+                    break;
+                case "watch" when parts.Length > 4:
+                    BakeWatch = V(parts, 2);
+                    BakeWatchRadius = parts.Length > 5 ? F(parts[5]) : 0.6f;
+                    Core.Log.Msg($"[dev] mxnav watch: every state bake lists its source colliders within {BakeWatchRadius} m of {BakeWatch}");
+                    break;
                 default:
-                    Core.Log.Warning("[dev] mxnav sample|path|walk (see NavTest docs)");
+                    Core.Log.Warning("[dev] mxnav sample|path|walk|watch (see NavTest docs)");
                     break;
             }
         }

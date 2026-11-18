@@ -44,6 +44,12 @@ namespace MapExpansions.Lifecycle
             }))),
         });
 
+        /// <summary>The fields a state cut reads; equal signatures cut the same source geometry the same way.</summary>
+        internal static string OfCut(ObjectRule r) => Join(new[]
+        {
+            r.Key, r.Side.ToString(), r.Name, r.Parent, r.Effect.ToString(), B(r.Area), Join(r.Openings.Select(B)),
+        });
+
         /// <summary>The copies whose blocks carry surfaces of this extension.</summary>
         internal static IReadOnlyCollection<string> Carriers(PropertyExtensionDefinition e) =>
             e.Surfaces.Where(s => !string.IsNullOrEmpty(s.CopyId)).Select(s => s.CopyId).Distinct(StringComparer.Ordinal).ToList();

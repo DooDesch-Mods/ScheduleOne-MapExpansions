@@ -4,6 +4,8 @@ namespace MapExpansions.Lifecycle
     /// What a transition between two world states keeps standing. An extension stays when the next state has it with
     /// the same id and the same definition, so its used tiles, surfaces and docks never have to be removed. A surface
     /// on a copy's block also needs that copy unchanged in the next state; the copy then stays with the extension.
+    /// Every other copy the next state has with the same id and the same definition stays as well: cloning it again
+    /// would build the same thing, and a build stage that carries forty copies over spent seconds on that each night.
     /// </summary>
     internal static class WorldStatePlan
     {
@@ -47,6 +49,8 @@ namespace MapExpansions.Lifecycle
                 foreach (var copy in extension.CarrierCopies)
                     if (before.ContainsKey(copy)) result.Copies.Add(copy);
             }
+            foreach (var copy in before)
+                if (after.TryGetValue(copy.Key, out var now) && now == copy.Value) result.Copies.Add(copy.Key);
             return result;
         }
 

@@ -19,6 +19,8 @@ namespace MapExpansions.World
         internal sealed class Lease : IDisposable
         {
             internal BuiltExpansion Owner;
+            /// <summary>The rule's signature; the next state keeps the lease when it has a rule with the same one.</summary>
+            internal string Signature;
             internal readonly List<(Renderer renderer, bool enabled)> Renderers = new();
             internal readonly List<(Collider collider, bool enabled, Mesh mesh, bool convex)> Colliders = new();
             internal readonly List<GameObject> Objects = new();

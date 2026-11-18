@@ -1,3 +1,4 @@
+using Il2CppScheduleOne.DevUtilities;
 using Il2CppScheduleOne.Misc;
 using UnityEngine;
 
@@ -156,8 +157,15 @@ namespace MapExpansions.World
 
         private static void Apply(Group group, bool on)
         {
+            // A vanilla lamp's OptimizedLight rewrites light.enabled from its own Enabled flag on every player
+            // movement step, so a lamp switched off only through the Light comes back on as soon as the player walks.
             foreach (var light in group.Lights)
-                if (light != null) light.enabled = on;
+            {
+                if (light == null) continue;
+                var optimized = light.GetComponent<OptimizedLight>();
+                if (optimized != null) optimized.Enabled = on;
+                else light.enabled = on;
+            }
             foreach (var surface in group.Surfaces)
             {
                 var material = on ? surface.On : surface.Off;

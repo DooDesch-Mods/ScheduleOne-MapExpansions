@@ -1,4 +1,5 @@
 using Il2CppInterop.Runtime;
+using Il2CppScheduleOne.Tools;
 using MapExpansions.Lifecycle;
 using Unity.AI.Navigation;
 using UnityEngine;
@@ -140,6 +141,46 @@ namespace MapExpansions.Navigation
         }
 
         /// <summary>
+        /// The main world switches its buildings' colliders off while the local player is more than 30 m away
+        /// (OptimizedColliderGroup). A day change runs where the player sleeps, often at another property, and a bake
+        /// then finds no floor under a copied storey. For one synchronous bake the groups' switched-off colliders in the
+        /// volume stand on; afterwards they follow their group again.
+        /// </summary>
+        private sealed class ColliderGroupsAwakeHold : IDisposable
+        {
+            private readonly List<Collider> _woken = new();
+
+            internal ColliderGroupsAwakeHold(string id, Bounds bounds)
+            {
+                var reach = bounds;
+                reach.Expand(1f);
+                int groups = 0;
+                foreach (var g in Object.FindObjectsOfType<OptimizedColliderGroup>(true))
+                {
+                    var cols = g?.Colliders;
+                    if (cols == null || g.collidersEnabled) continue;
+                    int before = _woken.Count;
+                    for (int i = 0; i < cols.Length; i++)
+                    {
+                        var c = cols[i];
+                        if (c == null || c.enabled || !c.gameObject.activeInHierarchy || !reach.Contains(c.transform.position)) continue;
+                        c.enabled = true;
+                        _woken.Add(c);
+                    }
+                    if (_woken.Count > before) groups++;
+                }
+                Core.Log.Msg($"state nav: '{id}' bake switches on {_woken.Count} distance-culled colliders of {groups} collider groups");
+            }
+
+            public void Dispose()
+            {
+                foreach (var c in _woken)
+                    if (c != null) c.enabled = false;
+                _woken.Clear();
+            }
+        }
+
+        /// <summary>
         /// Marks floor the main world already walks on as not walkable for one state bake, so the state's mesh leaves it
         /// to the world's mesh. The volumes reach half a metre below each box so the floor surface lies inside them.
         /// </summary>
@@ -267,8 +308,16 @@ namespace MapExpansions.Navigation
                 int blocked = 0;
                 int area = NavMesh.GetAreaFromName(InteriorArea);
                 if (area < 0) throw new InvalidOperationException($"state '{id}' needs the NavMesh area '{InteriorArea}', which this game does not define");
+                using var awake = new ColliderGroupsAwakeHold(id, bounds);
                 using var placedItems = new PlacedItemsBakeHold(id, bounds);
                 using var existing = new ExistingFloorHold(id, existingFloor, parent);
+#if DEBUG
+                if (Debug.NavTest.BakeWatch is Vector3 watch)
+                {
+                    var r = Debug.NavTest.BakeWatchRadius;
+                    Core.Log.Msg($"[dev] mxnav watch: '{id}' bake sees at {watch} within {r} m: {Obstacles(watch, watch, parent, r)}");
+                }
+#endif
                 foreach (int agent in agents)
                 {
                     var go = new GameObject($"MapExpansions.{id}.StateNav.{agent}");
@@ -329,7 +378,10 @@ namespace MapExpansions.Navigation
                         for (int i = 1; i < probes.Count; i++)
                         {
                             if (NavMesh.CalculatePath(probes[0], probes[i], filter, path) && path.status == NavMeshPathStatus.PathComplete) continue;
-                            Core.Log.Warning($"state nav: '{id}' has no complete path to probe {i} {probes[i]} for agent {agent}; obstacles on the line from the doorway: {Obstacles(probes[0], probes[i], parent)}");
+                            var corners = path.corners;
+                            string stop = corners == null || corners.Length == 0 ? "no path at all"
+                                : $"the path stops at {corners[corners.Length - 1]}, bake colliders there: {Obstacles(corners[corners.Length - 1], corners[corners.Length - 1], parent, 0.8f)}";
+                            Core.Log.Warning($"state nav: '{id}' has no complete path to probe {i} {probes[i]} for agent {agent}; {stop}; obstacles on the line from the doorway: {Obstacles(probes[0], probes[i], parent)}");
                             blocked++;
                         }
                     }
@@ -351,20 +403,20 @@ namespace MapExpansions.Navigation
         private const string InteriorArea = "PropertyInterior";
 
         /// <summary>Names the bake-source colliders on a walking line at knee height, so a failed probe says what stands there.</summary>
-        private static string Obstacles(Vector3 from, Vector3 to, Transform expansion)
+        private static string Obstacles(Vector3 from, Vector3 to, Transform expansion, float radius = 0.4f)
         {
             try
             {
                 var lift = Vector3.up * 0.5f;
                 var names = new List<string>();
-                foreach (var c in Physics.OverlapCapsule(from + lift, to + lift, 0.4f, Mask, QueryTriggerInteraction.Ignore))
+                foreach (var c in Physics.OverlapCapsule(from + lift, to + lift, radius, Mask, QueryTriggerInteraction.Ignore))
                 {
                     if (c == null) continue;
                     var t = c.transform;
                     string path = t.name;
                     for (var p = t.parent; p != null && path.Length < 120; p = p.parent) path = p.name + "/" + path;
                     if (expansion != null && t.IsChildOf(expansion)) path = "[expansion] " + path;
-                    names.Add(path);
+                    names.Add(path + " " + c.bounds.min.ToString("F2") + ".." + c.bounds.max.ToString("F2"));
                 }
                 return names.Count == 0 ? "none found" : string.Join("; ", names.Distinct().Take(10));
             }

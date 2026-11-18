@@ -38,6 +38,8 @@ namespace MapExpansions.World
             public Transform Anchors;
             /// <summary>A game prefab spawned as it is: no original in the main world, nothing batched, nothing to light from there.</summary>
             public bool Fresh;
+            /// <summary>The copy's batched renderers were replaced by independent meshes and stay off; they claim no part of a batch.</summary>
+            public bool Independent;
         }
 
         /// <summary>What one definition became on this peer.</summary>
@@ -346,6 +348,7 @@ namespace MapExpansions.World
             try
             {
                 WakeColliders(b, d, owner, src, go);
+                WakeRenderers(b, d, owner, src, go);
                 if (d.VisualOnly && !InstanceFinder.IsServer) WakeUnspawned(b, d, owner, src, go);
                 // The lamp's own switch also sets its glowing material, which stripping would freeze at the original's current state.
                 if (d.LightsOn.HasValue)
@@ -404,7 +407,7 @@ namespace MapExpansions.World
                 // Copies of different owners may share an id ("door"); the owner keeps their prefab slots apart.
                 var key = $"copy:{b.Id}/{keyScope ?? KeyOf(owner) + "/" + d.Id}/{i}";
                 var t = nob.transform;
-                var part = new Part { Key = key, Expansion = b.Id, Owner = owner, CopyId = d.Id, Template = nob.gameObject, Position = t.position, Rotation = t.rotation, Scale = t.lossyScale, ToMain = toMain, Anchors = anchors };
+                var part = new Part { Key = key, Expansion = b.Id, Owner = owner, CopyId = d.Id, Template = nob.gameObject, Position = t.position, Rotation = t.rotation, Scale = t.lossyScale, ToMain = toMain, Anchors = anchors, Independent = d.IndependentMesh };
                 t.SetParent(templates, true);
                 int nested = SpawnablePrefabs.Detach(nob);
                 SpawnablePrefabs.OpenObserver(nob.GetComponent<NetworkObserver>());
@@ -831,7 +834,7 @@ namespace MapExpansions.World
                 Core.Log.Warning($"copies: '{b.Id}' {owner} '{d.Id}': {from.Length} colliders on the original, {to.Length} on the copy; colliders the original has off stay off");
                 return;
             }
-            var groups = ColliderKeepAlive.GroupMembers();
+            HashSet<IntPtr> groups = null;
             int off = 0, group = 0, rule = 0, cut = 0;
             for (int i = 0; i < from.Length; i++)
             {
@@ -840,12 +843,52 @@ namespace MapExpansions.World
                 var key = from[i].Pointer;
                 if (ObjectRules.HoldsOff(key)) rule++;
                 else if (StateCuts.HoldsOff(key)) cut++;
-                else if (groups.Contains(key)) group++;
+                else if ((groups ??= GroupMembersThisFrame()).Contains(key)) group++;
                 else continue;
                 to[i].enabled = true;
             }
             int woke = group + rule + cut;
             Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {from.Length} colliders, {off} off on the original, {woke} switched on in the copy (collider group {group}, rule {rule}, cut {cut}), {off - woke} off in vanilla stay off");
+        }
+
+        private static int _groupFrame = -1;
+        private static HashSet<IntPtr> _groupMembers;
+
+        // The scan finds every collider group of the scene and cost about 100 ms; a state change builds a dozen copies
+        // in one frame, and the groups do not change in between.
+        private static HashSet<IntPtr> GroupMembersThisFrame()
+        {
+            if (_groupMembers == null || _groupFrame != Time.frameCount)
+            {
+                _groupMembers = ColliderKeepAlive.GroupMembers();
+                _groupFrame = Time.frameCount;
+            }
+            return _groupMembers;
+        }
+
+        /// Another world state's rule can hold the original's renderers off where its replacement stands (a porch roof
+        /// that gives way to a balcony). A copy taken in that moment would stay invisible for good (a carport roof built
+        /// from that porch roof), so every renderer the copy has off only because of such a rule is switched on.
+        private static void WakeRenderers(BuiltExpansion b, CopyDefinition d, string owner, Transform src, GameObject go)
+        {
+            var from = src.GetComponentsInChildren<Renderer>(true);
+            var to = go.GetComponentsInChildren<Renderer>(true);
+            if (from.Length != to.Length)
+            {
+                Core.Log.Warning($"copies: '{b.Id}' {owner} '{d.Id}': {from.Length} renderers on the original, {to.Length} on the copy; renderers a rule holds off on the original stay off");
+                return;
+            }
+            int off = 0, rule = 0;
+            for (int i = 0; i < from.Length; i++)
+            {
+                if (from[i] == null || to[i] == null || to[i].enabled) continue;
+                off++;
+                if (!ObjectRules.HoldsOff(from[i].Pointer)) continue;
+                to[i].enabled = true;
+                rule++;
+            }
+            if (off > 0)
+                Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {from.Length} renderers, {off} off on the original, {rule} held by a rule switched on in the copy, {off - rule} off in vanilla stay off");
         }
 
         /// FishNet holds a scene object inactive on a client until the host's spawn message for it arrives. A visual copy
@@ -934,6 +977,12 @@ namespace MapExpansions.World
         /// The first object of each name in the main scene, depth first in hierarchy order. Roots of expansions and the
         /// copies made from main-world objects are skipped.
         /// </summary>
+        /// <summary>
+        /// Objects found by earlier walks. A world state's transition asks for the same templates every night, and the walk
+        /// over the main scene took a quarter of a transition. An entry whose object is gone or renamed is searched again.
+        /// </summary>
+        private static readonly Dictionary<string, Transform> FoundInMain = new(StringComparer.Ordinal);
+
         private static Dictionary<string, Transform> FindInMain(HashSet<string> names)
         {
             var found = new Dictionary<string, Transform>(StringComparer.Ordinal);
@@ -943,6 +992,10 @@ namespace MapExpansions.World
                 Core.Log.Error("copies: the main scene is not loaded; no main-world object can be copied");
                 return found;
             }
+            foreach (var n in names)
+                if (FoundInMain.TryGetValue(n, out var known) && known != null && known.name == n && known.gameObject.scene.handle == scene.handle)
+                    found[n] = known;
+            if (found.Count == names.Count) return found;
             var stack = new Stack<Transform>();
             foreach (var root in scene.GetRootGameObjects().Reverse())
             {
@@ -955,7 +1008,7 @@ namespace MapExpansions.World
                 var t = stack.Pop();
                 visited++;
                 string n = t.name;
-                if (names.Contains(n) && !found.ContainsKey(n)) found[n] = t;
+                if (names.Contains(n) && !found.ContainsKey(n)) found[n] = FoundInMain[n] = t;
                 for (int i = t.childCount - 1; i >= 0; i--) stack.Push(t.GetChild(i));
             }
             foreach (var n in names.Where(n => !found.ContainsKey(n)))
@@ -1054,7 +1107,7 @@ namespace MapExpansions.World
                 Core.Log.Msg($"copies: prefab '{p.Key}' stands at {p.Instance.transform.position}");
                 return;
             }
-            var (batched, roots, own) = StaticBatches.Follow(p.Instance.transform, p.ToMain.inverse, p.Key);
+            var (batched, roots, own) = StaticBatches.Follow(p.Instance.transform, p.ToMain.inverse, p.Key, p.Independent);
             if (batched + own > 0)
                 Core.Log.Msg($"copies: networked part '{p.Key}': {batched} batched renderers draw where the part stands, over {roots} roots; {own} had their root in the part");
             if (p.Anchors == null)
