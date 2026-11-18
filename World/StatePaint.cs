@@ -117,6 +117,27 @@ namespace MapExpansions.World
             Active.Clear();
         }
 
+        /// <summary>
+        /// The path's points joined by a Catmull-Rom curve through each of them, eight steps per leg, so a path bends
+        /// round its points instead of turning at them.
+        /// </summary>
+        private static List<Vector2> Smooth(List<Vector2> points)
+        {
+            if (points.Count < 3) return new List<Vector2>(points);
+            var curve = new List<Vector2>();
+            for (int i = 0; i + 1 < points.Count; i++)
+            {
+                Vector2 p0 = points[Mathf.Max(i - 1, 0)], p1 = points[i], p2 = points[i + 1], p3 = points[Mathf.Min(i + 2, points.Count - 1)];
+                for (int s = 0; s < 8; s++)
+                {
+                    float t = s / 8f, t2 = t * t, t3 = t2 * t;
+                    curve.Add(0.5f * (2f * p1 + (p2 - p0) * t + (2f * p0 - 5f * p1 + 4f * p2 - p3) * t2 + (3f * p1 - p0 - 3f * p2 + p3) * t3));
+                }
+            }
+            curve.Add(points[points.Count - 1]);
+            return curve;
+        }
+
         private static Rect PaintRect(ObjectRule rule)
         {
             if (rule.PaintPath.Count == 0)
@@ -135,7 +156,7 @@ namespace MapExpansions.World
         /// Cover of the paint at a world point, 0 to 1: full inside, falling off over the outer quarter of the half
         /// width, with Perlin noise on the edge so it does not read as a stamped shape.
         /// </summary>
-        private static float Cover(ObjectRule rule, float x, float z)
+        private static float Cover(ObjectRule rule, List<Vector2> path, float x, float z)
         {
             float edge;
             if (rule.PaintPath.Count == 0)
@@ -150,14 +171,22 @@ namespace MapExpansions.World
             {
                 float best = float.MaxValue;
                 var q = new Vector2(x, z);
-                if (rule.PaintPath.Count == 1) best = Vector2.Distance(q, rule.PaintPath[0]);
-                for (int i = 0; i + 1 < rule.PaintPath.Count; i++)
+                if (path.Count == 1) best = Vector2.Distance(q, path[0]);
+                for (int i = 0; i + 1 < path.Count; i++)
                 {
-                    Vector2 a = rule.PaintPath[i], d = rule.PaintPath[i + 1] - a;
+                    Vector2 a = path[i], d = path[i + 1] - a;
                     float t = d.sqrMagnitude < 1e-6f ? 0f : Mathf.Clamp01(Vector2.Dot(q - a, d) / d.sqrMagnitude);
                     best = Mathf.Min(best, Vector2.Distance(q, a + d * t));
                 }
-                edge = rule.PaintWidth * 0.5f - best;
+                // A trodden path is not one width along its length: it swells and narrows by a fifth over a few metres,
+                // and its edge frays in two scales of noise, over a wider soft band than an area gets.
+                float swell = 0.8f + 0.4f * Mathf.PerlinNoise(x * 0.45f + 71.3f, z * 0.45f + 3.9f);
+                edge = rule.PaintWidth * 0.5f * swell - best;
+                float fray = (Mathf.PerlinNoise(x * 1.7f + 31.3f, z * 1.7f + 17.9f) - 0.5f) * 0.8f
+                    + (Mathf.PerlinNoise(x * 4.3f + 11.7f, z * 4.3f + 41.1f) - 0.5f) * 0.4f;
+                float band = Mathf.Max(rule.PaintWidth * 0.4f, 0.25f);
+                float trodden = Mathf.Clamp01((edge + fray * band) / band);
+                return trodden * trodden * (0.8f + 0.2f * Mathf.PerlinNoise(x * 3.1f + 5.1f, z * 3.1f + 9.7f)) * Mathf.Clamp01(rule.PaintStrength);
             }
             float noise = (Mathf.PerlinNoise(x * 1.7f + 31.3f, z * 1.7f + 17.9f) - 0.5f) * 0.5f;
             float soft = Mathf.Max(rule.PaintWidth > 0f ? rule.PaintWidth * 0.25f : 0.4f, 0.2f);
@@ -183,6 +212,7 @@ namespace MapExpansions.World
             if (td.alphamapTextureCount > 1)
                 throw new InvalidOperationException($"{owner}: terrain '{t.name}' has {td.alphamapTextureCount} splat textures; painting handles one");
 
+            var path = Smooth(rule.PaintPath);
             var original = Read(td, texture, region);
             var pixels = new Color32[original.Length];
             var changed = new bool[original.Length];
@@ -195,7 +225,7 @@ namespace MapExpansions.World
                     float wx = tp.x + (region.x + x + 0.5f) / res * ts.x;
                     int i = y * region.width + x;
                     var src = original[i];
-                    float a = Cover(rule, wx, wz);
+                    float a = Cover(rule, path, wx, wz);
                     if (a <= 0.004f) { pixels[i] = src; continue; }
                     texels++;
                     changed[i] = true;

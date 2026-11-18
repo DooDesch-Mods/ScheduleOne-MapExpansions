@@ -168,6 +168,7 @@ namespace MapExpansions.Debug
                         bool on = parts.Length > 2 && parts[^1] == "on";
                         Hide(string.Join(" ", parts, 1, parts.Length - (on ? 2 : 1)), on);
                         break;
+                    case "mxsplat" when parts.Length > 2: Splat(F(parts[1]), F(parts[2])); break;
                     case "mxterrain" when parts.Length > 1: TerrainInfo(parts[1], parts.Length > 2 ? F(parts[2]) : -1f); break;
                     case "mxwalk" when parts.Length > 2: MelonCoroutines.Start(Walk(F(parts[1]), F(parts[2]))); break;
                     case "mxray" when parts.Length > 6: Ray(V(parts, 1), V(parts, 4)); break;
@@ -1211,6 +1212,34 @@ namespace MapExpansions.Debug
         }
 
         /// <summary>Lists the render settings of terrains whose name contains the filter; a pixel error of 0 or more is set.</summary>
+        // The weight of every paint layer of the terrains under a point, to match a painted strip to the ground beside it.
+        private static void Splat(float x, float z)
+        {
+            int n = 0;
+            foreach (var t in Object.FindObjectsOfType<Terrain>(true))
+            {
+                var td = t != null ? t.terrainData : null;
+                if (td == null) continue;
+                var p = t.transform.position;
+                float u = (x - p.x) / td.size.x, v = (z - p.z) / td.size.z;
+                if (u < 0f || u > 1f || v < 0f || v > 1f) continue;
+                n++;
+                var layers = td.terrainLayers;
+                var weights = new List<string>();
+                for (int i = 0; i < td.alphamapTextureCount; i++)
+                {
+                    Color c;
+                    try { c = td.GetAlphamapTexture(i).GetPixelBilinear(u, v); }
+                    catch (Exception e) { Core.Log.Warning($"[dev] mxsplat '{t.name}': reading splat texture {i} failed: {e.Message}"); continue; }
+                    float[] w = { c.r, c.g, c.b, c.a };
+                    for (int k = 0; k < 4 && i * 4 + k < layers.Length; k++)
+                        weights.Add($"{layers[i * 4 + k]?.name} {w[k]:0.00}");
+                }
+                Core.Log.Msg($"[dev] mxsplat ({x:0.0}, {z:0.0}) on '{t.name}': {string.Join(", ", weights)}");
+            }
+            if (n == 0) Core.Log.Warning($"[dev] mxsplat: no terrain under ({x:0.0}, {z:0.0})");
+        }
+
         private static void TerrainInfo(string filter, float pixelError)
         {
             int n = 0;

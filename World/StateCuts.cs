@@ -16,6 +16,9 @@ namespace MapExpansions.World
         /// <summary>Whether a state cut switched this collider off while it was on.</summary>
         internal static bool HoldsOff(IntPtr collider) => CutOff.Contains(collider);
 
+        /// <summary>Whether a state cut switched this renderer off while it was on; a cut skips renderers that are off.</summary>
+        internal static bool HoldsRendererOff(IntPtr renderer) => RenderersInUse.Contains(renderer);
+
         internal sealed class Lease : IDisposable
         {
             internal BuiltExpansion Owner;

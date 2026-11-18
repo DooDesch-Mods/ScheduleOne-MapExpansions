@@ -866,29 +866,33 @@ namespace MapExpansions.World
             return _groupMembers;
         }
 
-        /// Another world state's rule can hold the original's renderers off where its replacement stands (a porch roof
-        /// that gives way to a balcony). A copy taken in that moment would stay invisible for good (a carport roof built
-        /// from that porch roof), so every renderer the copy has off only because of such a rule is switched on.
+        /// Another world state's rule or cut can hold the original's renderers off where its replacement stands (a porch
+        /// roof that gives way to a balcony, the outer walls cut at the floor line of a storey built on them). A copy taken
+        /// in that moment would stay invisible for good (a carport roof built from that porch roof, an upper storey whose
+        /// window frames stand without their wall), so every renderer the copy has off only because of such a rule or
+        /// cut is switched on.
         private static void WakeRenderers(BuiltExpansion b, CopyDefinition d, string owner, Transform src, GameObject go)
         {
             var from = src.GetComponentsInChildren<Renderer>(true);
             var to = go.GetComponentsInChildren<Renderer>(true);
             if (from.Length != to.Length)
             {
-                Core.Log.Warning($"copies: '{b.Id}' {owner} '{d.Id}': {from.Length} renderers on the original, {to.Length} on the copy; renderers a rule holds off on the original stay off");
+                Core.Log.Warning($"copies: '{b.Id}' {owner} '{d.Id}': {from.Length} renderers on the original, {to.Length} on the copy; renderers a rule or cut holds off on the original stay off");
                 return;
             }
-            int off = 0, rule = 0;
+            int off = 0, rule = 0, cut = 0;
             for (int i = 0; i < from.Length; i++)
             {
                 if (from[i] == null || to[i] == null || to[i].enabled) continue;
                 off++;
-                if (!ObjectRules.HoldsOff(from[i].Pointer)) continue;
+                var key = from[i].Pointer;
+                if (ObjectRules.HoldsOff(key)) rule++;
+                else if (StateCuts.HoldsRendererOff(key)) cut++;
+                else continue;
                 to[i].enabled = true;
-                rule++;
             }
             if (off > 0)
-                Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {from.Length} renderers, {off} off on the original, {rule} held by a rule switched on in the copy, {off - rule} off in vanilla stay off");
+                Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': {from.Length} renderers, {off} off on the original, {rule + cut} switched on in the copy (rule {rule}, cut {cut}), {off - rule - cut} off in vanilla stay off");
         }
 
         /// FishNet holds a scene object inactive on a client until the host's spawn message for it arrives. A visual copy
