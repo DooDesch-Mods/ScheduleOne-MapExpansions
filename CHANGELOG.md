@@ -4,7 +4,7 @@ All notable changes to MapExpansions are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to Semantic Versioning.
 
-## [1.5.0] - 2026-11-22
+## [1.5.0] - 2026-11-18
 
 ### Fixed
 - Rain and players no longer pass through copied walls and roofs whose original was far away or hidden at the copy.
