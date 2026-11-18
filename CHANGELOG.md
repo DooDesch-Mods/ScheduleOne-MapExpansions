@@ -4,6 +4,22 @@ All notable changes to MapExpansions are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to Semantic Versioning.
 
+## [1.5.0] - 2026-11-22
+
+### Fixed
+- Rain and players no longer pass through copied walls and roofs whose original was far away or hidden at the copy.
+- Copied lamps, floors and switches keep their state across night changes; a lamp switched off at a copied switch stays off.
+- Co-op: loose copied objects no longer fall forever for a joining player, and host and client move the same object.
+- Painted dock markings such as LOADING BAY show in full on a slope.
+- NPCs no longer walk through copied walls.
+
+### For mod authors
+- New `ObjectEffect.Paint` with `PaintLayer`, `PaintStrength`, `PaintPath` and `PaintWidth` paints ground under a
+  rule's objects or along a path; leaving the state restores only what it painted.
+- Layer files store copies, boxes and rules per world state; `mapedit state`, `mapedit restate` and `mapedit reload`
+  edit and rebuild a state live.
+- `MapExpansionsApi.ApiVersion` is 0.8.0.
+
 ## [1.4.1] - 2026-11-17
 
 ### Fixed
