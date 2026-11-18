@@ -252,6 +252,8 @@ namespace MapExpansions.World
             int released = 0;
             if (p.Built.Local != null)
             {
+                foreach (var drag in p.Built.Local.GetComponentsInChildren<Il2CppScheduleOne.Dragging.SceneDraggable>(true))
+                    GuidLeases.Release(drag, $"copy '{d.Id}' draggable '{drag.name}'");
                 released = StaticBatches.Release(p.Built.Local.transform);
                 p.Built.Local.SetActive(false);
                 Object.Destroy(p.Built.Local);
@@ -379,10 +381,12 @@ namespace MapExpansions.World
                 if (d.IndependentMesh) IndependentCopies.Extract(b, src, go, d.OwnMesh, assets);
                 if (surfaces != null && !reserve) SwitchedLamps.Follow($"'{b.Id}' {owner} '{d.Id}'", b.Id, owner, go, d.LightSwitch, surfaces);
                 if (!d.VisualOnly) LocalSwitches(b, d, owner, go);
+                if (!d.VisualOnly) Draggables(b, d, owner, keyScope, go);
             }
             catch { Object.DestroyImmediate(go); throw; }
             go.transform.SetPositionAndRotation(pose.GetColumn(3), pose.rotation);
             go.transform.localScale = pose.lossyScale;
+            if (!d.VisualOnly) HoldWhileSourceOff(b, d, owner, src, go);
             var built = new Built { Def = d, Move = move };
             // A fresh copy has the original's hierarchy, so its lamps pair up with the original's in order.
             var srcLights = src.GetComponentsInChildren<ToggleableLight>(true);
@@ -692,6 +696,63 @@ namespace MapExpansions.World
                 Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': switch '{modular.name}' lets go of {lamps} lamps, {linked} linked switches and {events.Count} saved listeners outside the copy" +
                              (events.Count > 0 ? $" ({string.Join(", ", events)})" : ""));
             }
+        }
+
+        /// <summary>
+        /// A copied loose prop (crate, trash can) keeps the original's baked GUID, and the game drags and syncs these props
+        /// by GUID: a drag on the copy would move the original on every other peer. Each draggable of the copy gets a GUID
+        /// made from the expansion, the copy and its place in the copy, the same on every peer, before the copy wakes and
+        /// registers it.
+        /// </summary>
+        private static void Draggables(BuiltExpansion b, CopyDefinition d, string owner, string keyScope, GameObject go)
+        {
+            var drags = go.GetComponentsInChildren<Il2CppScheduleOne.Dragging.SceneDraggable>(true);
+            for (int i = 0; i < drags.Length; i++)
+            {
+                var guid = Places.StableGuid(b.Id, "draggable", $"{keyScope ?? KeyOf(owner) + "/" + d.Id}/{i}");
+                GuidLeases.RequireFree(new Il2CppSystem.Guid(guid.ToString()), $"copy '{d.Id}' draggable '{drags[i].name}'");
+                drags[i].BakedGUID = guid.ToString();
+                Core.Log.Msg($"copies: '{b.Id}' {owner} '{d.Id}': draggable '{drags[i].name}' gets GUID {guid}");
+            }
+        }
+
+        /// <summary>
+        /// A loose copy (crate, trash can) rests on the main world's ground, which the game switches off together with the
+        /// original's top object while a joining player watches the intro (IntroManager.DisableDuringIntro, back on when the
+        /// character creator opens). The original sleeps with it;
+        /// the copy hangs outside that hierarchy and would fall forever. Each moving rigidbody of the copy stays kinematic in
+        /// place until the original's top object is active again.
+        /// </summary>
+        private static void HoldWhileSourceOff(BuiltExpansion b, CopyDefinition d, string owner, Transform src, GameObject go)
+        {
+            var root = src.root.gameObject;
+            if (root.activeInHierarchy) return;
+            var bodies = new List<Rigidbody>();
+            foreach (var body in go.GetComponentsInChildren<Rigidbody>(true))
+                if (!body.isKinematic) { body.isKinematic = true; bodies.Add(body); }
+            if (bodies.Count == 0) return;
+            var label = $"'{b.Id}' {owner} '{d.Id}'";
+            Core.Log.Msg($"copies: {label}: {bodies.Count} rigidbodies held in place while '{root.name}' is off (a joining player is still in the intro)");
+            MelonCoroutines.Start(ReleaseWhenOn(label, root, bodies));
+        }
+
+        private static IEnumerator ReleaseWhenOn(string label, GameObject root, List<Rigidbody> bodies)
+        {
+            while (root != null && !root.activeInHierarchy) yield return null;
+            if (root == null)
+            {
+                Core.Log.Msg($"copies: {label}: the scene closed while its rigidbodies were held");
+                yield break;
+            }
+            int released = 0;
+            foreach (var body in bodies)
+            {
+                if (body == null) continue;
+                body.isKinematic = false;
+                body.WakeUp();
+                released++;
+            }
+            Core.Log.Msg($"copies: {label}: '{root.name}' is on, {released} of {bodies.Count} held rigidbodies move again");
         }
 
         /// <summary>Turns off every saved listener of an event whose target lies outside the copy; returns what it turned off.</summary>
