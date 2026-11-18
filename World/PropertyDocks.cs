@@ -5,6 +5,7 @@ using Il2CppScheduleOne.Delivery;
 using Il2CppScheduleOne.Map;
 using MapExpansions.Lifecycle;
 using UnityEngine;
+using UnityEngine.Rendering.Universal;
 using Property = Il2CppScheduleOne.Property.Property;
 using Object = UnityEngine.Object;
 
@@ -154,6 +155,7 @@ namespace MapExpansions.World
                 OverridePoint(parking.EntryPoint, def.Entry);
                 OverridePoint(parking.ExitPoint, def.Exit);
                 OverridePoint(parking.HiddenVehicleAccessPoint, def.HiddenVehicleAccess);
+                FitMarkingsToGround(copy, $"{expansion}/{extension}/{def.Id}");
                 var docks = property.LoadingDocks?.ToList() ?? new List<LoadingDock>();
                 docks.Add(dock);
                 property.LoadingDocks = new Il2CppReferenceArray<LoadingDock>(docks.ToArray());
@@ -180,6 +182,77 @@ namespace MapExpansions.World
                 try { lease.Remove(); }
                 catch (Exception cleanup) { throw new AggregateException("property dock build and cleanup failed", original, cleanup); }
                 throw;
+            }
+        }
+
+        /// <summary>Space kept between the ground and each face of a marking's projection box, in metres.</summary>
+        private const float MarkingMargin = 0.05f;
+        /// <summary>Spacing of the terrain samples under a marking, in metres.</summary>
+        private const float MarkingSample = 0.25f;
+
+        /// <summary>
+        /// The painted "LOADING BAY" marking is a URP decal whose projection box is only a few centimetres deep, sized for
+        /// the template's flat ground. Where a copy stands on sloped ground the terrain leaves the box and the paint is
+        /// missing there, so each downward decal's box is deepened to hold the terrain under its footprint. Its angle
+        /// fade keeps the paint off steep faces such as posts and tyres inside the deeper box.
+        /// </summary>
+        private static void FitMarkingsToGround(GameObject copy, string label)
+        {
+            var decals = copy.GetComponentsInChildren<DecalProjector>(true);
+            if (decals.Length == 0) { Core.Log.Warning($"property dock: '{label}' has no decal marking; nothing fitted to the ground"); return; }
+            var terrains = Terrain.activeTerrains;
+            foreach (var decal in decals)
+            {
+                var t = decal.transform;
+                if (Vector3.Dot(t.forward, Vector3.down) < 0.9f)
+                {
+                    Core.Log.Msg($"property dock: '{label}' decal '{t.name}' does not project down; left as it is");
+                    continue;
+                }
+                var size = decal.size;
+                var pivot = decal.pivot;
+                // Forward points down, so the box's top face lies at the smaller forward depth.
+                float top = (t.position + t.forward * (pivot.z - size.z * 0.5f)).y;
+                float bottom = (t.position + t.forward * (pivot.z + size.z * 0.5f)).y;
+                int nx = Mathf.Clamp(Mathf.CeilToInt(size.x / MarkingSample), 1, 64);
+                int ny = Mathf.Clamp(Mathf.CeilToInt(size.y / MarkingSample), 1, 64);
+                float high = float.MinValue, low = float.MaxValue;
+                int missed = 0;
+                for (int j = 0; j <= ny; j++)
+                    for (int i = 0; i <= nx; i++)
+                    {
+                        var local = new Vector3(pivot.x + size.x * ((float)i / nx - 0.5f), pivot.y + size.y * ((float)j / ny - 0.5f), 0f);
+                        var world = t.position + t.rotation * local;
+                        float? ground = null;
+                        foreach (var terrain in terrains)
+                        {
+                            if (terrain == null || terrain.terrainData == null) continue;
+                            var p = terrain.transform.position;
+                            var s = terrain.terrainData.size;
+                            if (world.x < p.x || world.z < p.z || world.x > p.x + s.x || world.z > p.z + s.z) continue;
+                            ground = terrain.SampleHeight(world) + p.y;
+                            break;
+                        }
+                        if (!ground.HasValue) { missed++; continue; }
+                        high = Mathf.Max(high, ground.Value);
+                        low = Mathf.Min(low, ground.Value);
+                    }
+                if (high == float.MinValue)
+                {
+                    Core.Log.Warning($"property dock: '{label}' decal '{t.name}' stands over no terrain; left as it is");
+                    continue;
+                }
+                if (missed > 0) Core.Log.Warning($"property dock: '{label}' decal '{t.name}' has {missed} samples over no terrain; fitted to the rest");
+                float raise = Mathf.Max(0f, high + MarkingMargin - top);
+                float lower = Mathf.Max(0f, bottom - (low - MarkingMargin));
+                if (raise <= 0f && lower <= 0f)
+                {
+                    Core.Log.Msg($"property dock: '{label}' decal '{t.name}' already holds the ground ({low:F2}..{high:F2})");
+                    continue;
+                }
+                decal.size = new Vector3(size.x, size.y, size.z + raise + lower);
+                decal.pivot = new Vector3(pivot.x, pivot.y, pivot.z + (lower - raise) * 0.5f);
+                Core.Log.Msg($"property dock: '{label}' decal '{t.name}' deepened from {size.z:F2} m to {decal.size.z:F2} m for ground {low:F2}..{high:F2}");
             }
         }
 

@@ -141,6 +141,91 @@ namespace MapExpansions.Navigation
         }
 
         /// <summary>
+        /// The NavMesh builder reads a mesh collider's vertices on the CPU and skips an unreadable mesh with a console
+        /// error. Most of the game's building meshes are unreadable, copied walls included, so a storey's walls would be
+        /// missing from its bake and NPCs would path through them. For one synchronous bake each such collider gets a
+        /// readable twin read back from the GPU, and the original object sits on a layer outside the bake's mask.
+        /// </summary>
+        private sealed class ReadableTwinsBakeHold : IDisposable
+        {
+            private readonly List<(GameObject go, int layer)> _moved = new();
+            private readonly List<GameObject> _twins = new();
+            private readonly List<Mesh> _meshes = new();
+
+            internal ReadableTwinsBakeHold(string id, Bounds bounds)
+            {
+                try
+                {
+                    int excluded = LayerMask.NameToLayer("Ignore Raycast");
+                    if (excluded < 0) throw new InvalidOperationException("layer 'Ignore Raycast' does not exist");
+                    var copies = new Dictionary<IntPtr, Mesh>();
+                    var names = new List<string>();
+                    int kept = 0;
+                    foreach (var c in Physics.OverlapBox(bounds.center, bounds.extents, Quaternion.identity, Mask, QueryTriggerInteraction.Ignore))
+                    {
+                        var mc = c != null && c.enabled ? c.TryCast<MeshCollider>() : null;
+                        var mesh = mc != null ? mc.sharedMesh : null;
+                        if (mesh == null || mesh.isReadable) continue;
+                        var go = mc.gameObject;
+                        // Moving the object's layer takes every collider on it out of the bake; another one there would go missing.
+                        if (go.GetComponents<Collider>().Any(o => o != null && o.Pointer != mc.Pointer && o.enabled && !o.isTrigger))
+                        {
+                            kept++;
+                            Core.Log.Warning($"state nav: '{id}' leaves the unreadable collider '{World.MeshCarver.Path(mc.transform)}' to the builder, which skips it: its object holds more colliders");
+                            continue;
+                        }
+                        if (!copies.TryGetValue(mesh.Pointer, out var copy))
+                        {
+                            try { copy = World.MeshCarver.ReadableCopy(mesh, mesh.name + " (MapExpansions nav bake)"); }
+                            catch (Exception e)
+                            {
+                                Core.Log.Warning($"state nav: '{id}' could not read '{mesh.name}' back from the GPU; the builder skips '{World.MeshCarver.Path(mc.transform)}': {e.Message}");
+                                copy = null;
+                            }
+                            copies[mesh.Pointer] = copy;
+                            if (copy != null) _meshes.Add(copy);
+                        }
+                        if (copy == null)
+                        {
+                            kept++;
+                            continue;
+                        }
+                        var twin = new GameObject($"MapExpansions nav twin {go.name}") { layer = go.layer };
+                        twin.transform.SetParent(go.transform, false);
+                        var tc = twin.AddComponent<MeshCollider>();
+                        tc.convex = mc.convex;
+                        tc.sharedMesh = copy;
+                        _twins.Add(twin);
+                        _moved.Add((go, go.layer));
+                        go.layer = excluded;
+                        names.Add(go.name);
+                    }
+                    if (_twins.Count > 0 || kept > 0)
+                        Core.Log.Msg($"state nav: '{id}' bakes {_twins.Count} unreadable mesh colliders through readable twins ({_meshes.Count} meshes read back), {kept} stay unreadable: " +
+                                     string.Join(", ", names.GroupBy(x => x).Select(x => x.Count() > 1 ? $"{x.Key} x{x.Count()}" : x.Key)));
+                }
+                catch
+                {
+                    Dispose();
+                    throw;
+                }
+            }
+
+            public void Dispose()
+            {
+                foreach (var (go, layer) in _moved)
+                    if (go != null) go.layer = layer;
+                _moved.Clear();
+                foreach (var t in _twins)
+                    if (t != null) Object.DestroyImmediate(t);
+                _twins.Clear();
+                foreach (var m in _meshes)
+                    if (m != null) Object.Destroy(m);
+                _meshes.Clear();
+            }
+        }
+
+        /// <summary>
         /// The main world switches its buildings' colliders off while the local player is more than 30 m away
         /// (OptimizedColliderGroup). A day change runs where the player sleeps, often at another property, and a bake
         /// then finds no floor under a copied storey. For one synchronous bake the groups' switched-off colliders in the
@@ -310,6 +395,7 @@ namespace MapExpansions.Navigation
                 if (area < 0) throw new InvalidOperationException($"state '{id}' needs the NavMesh area '{InteriorArea}', which this game does not define");
                 using var awake = new ColliderGroupsAwakeHold(id, bounds);
                 using var placedItems = new PlacedItemsBakeHold(id, bounds);
+                using var twins = new ReadableTwinsBakeHold(id, bounds);
                 using var existing = new ExistingFloorHold(id, existingFloor, parent);
 #if DEBUG
                 if (Debug.NavTest.BakeWatch is Vector3 watch)
@@ -347,6 +433,7 @@ namespace MapExpansions.Navigation
                     }
                 }
                 existing.Dispose();
+                twins.Dispose();
                 // Each existing floor box meets the new floor along its open edges; one seam per step keeps the join when a
                 // placed item later carves some of them away.
                 for (int i = 0; i < existingFloor.Count; i++)
