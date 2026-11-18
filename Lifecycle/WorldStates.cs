@@ -19,6 +19,7 @@ namespace MapExpansions.Lifecycle
             internal readonly List<ObjectRule> Rules = new();
             internal readonly List<StateCuts.Lease> Cuts = new();
             internal readonly List<StateDetails.Lease> Details = new();
+            internal readonly List<StatePaint.Lease> Paints = new();
             internal readonly List<ObjectMoves.Lease> Moves = new();
             internal readonly List<MainCopies.Placed> Copies = new();
             internal readonly List<PropertyExtensionLease> Properties = new();
@@ -90,6 +91,15 @@ namespace MapExpansions.Lifecycle
                     {
                         Details[i].Dispose();
                         Details.RemoveAt(i);
+                    }
+                    catch (Exception e) { errors.Add(e); }
+                }
+                for (int i = Paints.Count - 1; i >= 0; i--)
+                {
+                    try
+                    {
+                        Paints[i].Dispose();
+                        Paints.RemoveAt(i);
                     }
                     catch (Exception e) { errors.Add(e); }
                 }
@@ -292,7 +302,7 @@ namespace MapExpansions.Lifecycle
             var ruleIds = new HashSet<string>();
             foreach (var rule in state.Rules)
             {
-                if (!ObjectRules.CanRevert(rule.Effect) && rule.Effect is not (ObjectEffect.Cut or ObjectEffect.CutCollision or ObjectEffect.ClearDetails)) errors.Add($"state '{state.Id}' uses irreversible rule {rule.Effect}");
+                if (!ObjectRules.CanRevert(rule.Effect) && rule.Effect is not (ObjectEffect.Cut or ObjectEffect.CutCollision or ObjectEffect.ClearDetails or ObjectEffect.Paint)) errors.Add($"state '{state.Id}' uses irreversible rule {rule.Effect}");
                 if (rule.Side != WorldSide.Main) errors.Add($"state '{state.Id}' rule must select the main world");
                 rule.Key = string.IsNullOrEmpty(rule.Id) ? rule.MadeId() : rule.Id;
                 if (!ruleIds.Add(rule.Key)) errors.Add($"state '{state.Id}' repeats rule '{rule.Key}'");
@@ -487,6 +497,11 @@ namespace MapExpansions.Lifecycle
                 if (r.Effect == ObjectEffect.ClearDetails)
                 {
                     result.Details.Add(StateDetails.Apply(b, BuildPipeline.Index, r, $"'{b.Id}/{state.Id}' rule '{r.Key}'"));
+                    continue;
+                }
+                if (r.Effect == ObjectEffect.Paint)
+                {
+                    result.Paints.Add(StatePaint.Apply(b, BuildPipeline.Index, r, $"'{b.Id}/{state.Id}' rule '{r.Key}'"));
                     continue;
                 }
                 result.Rules.Add(r);
@@ -765,6 +780,7 @@ namespace MapExpansions.Lifecycle
             UnplacedDormantLogged.Clear();
             StateCuts.Reset();
             StateDetails.Reset();
+            StatePaint.Reset();
             ColliderKeepAlive.Reset();
         }
 
