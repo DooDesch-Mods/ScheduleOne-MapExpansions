@@ -4,6 +4,12 @@ All notable changes to MapExpansions are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to Semantic Versioning.
 
+## [1.5.1] - 2026-11-23
+
+### Fixed
+- Workers crossing between two parts of a building no longer raise a "walking back and forth" warning every minute.
+- Walking in and out of a roofed wing no longer writes two log lines each time.
+
 ## [1.5.0] - 2026-11-18
 
 ### Fixed
