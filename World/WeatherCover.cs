@@ -27,6 +27,7 @@ namespace MapExpansions.World
         private const float Clearance = 0.3f;
 
         private const float RescanSeconds = 1f;
+        private const string OpenSky = "camera under open sky";
 
         /// <summary>Static world geometry; vehicles, characters, items and triggers are not a roof.</summary>
         private static readonly int RoofMask = LayerMask.GetMask("Default", "Terrain");
@@ -54,6 +55,21 @@ namespace MapExpansions.World
         private static float _nextScan;
         private static bool _noManagerReported;
         private static int _calls, _queries, _covered;
+
+        /// <summary>
+        /// Every walk under a roof and back out changes the effects and the sound. The first change of each kind is
+        /// logged, the rest only counted, so a player's log keeps its real warnings readable. Dev console:
+        /// <c>mxcover log on</c> logs every change.
+        /// </summary>
+        internal static bool LogEveryChange;
+        private static int _changes;
+        private static readonly HashSet<string> LoggedKinds = new();
+
+        private static void Change(string kind, string message)
+        {
+            if (LogEveryChange) Core.Log.Msg(message);
+            else if (LoggedKinds.Add(kind)) Core.Log.Msg(message + "; further changes of this kind are counted, not logged");
+        }
 
         public static int AreaCount => Areas.Count;
 
@@ -121,10 +137,11 @@ namespace MapExpansions.World
         {
             ShowEffects("teardown");
             WeatherReach.Reset();
-            if (Areas.Count + StateAreas.Count > 0) Core.Log.Msg($"weather cover: teardown, {Areas.Count} areas and {StateAreas.Count} world state areas gone; {_covered} of {_queries} cover queries were under a roof");
+            if (Areas.Count + StateAreas.Count > 0) Core.Log.Msg($"weather cover: teardown, {Areas.Count} areas and {StateAreas.Count} world state areas gone; {_covered} of {_queries} cover queries were under a roof, {_changes} roof changes of the camera");
             Areas.Clear();
             StateAreas.Clear();
-            _calls = _queries = _covered = 0;
+            _calls = _queries = _covered = _changes = 0;
+            LoggedKinds.Clear();
             _soundBlend = 0f;
             _soundReported = false;
         }
@@ -173,14 +190,14 @@ namespace MapExpansions.World
             if (_soundBlend < 0.001f)
             {
                 _soundBlend = 0f;
-                if (_soundReported) Core.Log.Msg("weather cover: camera under open sky, the weather sounds as outside again");
+                if (_soundReported) Change("sound-outside", "weather cover: camera under open sky, the weather sounds as outside again");
                 _soundReported = false;
             }
             if (covered)
             {
                 if (!_cameraCovered || Time.unscaledTime >= _nextScan) HideEffects();
             }
-            else if (_cameraCovered) ShowEffects("camera under open sky");
+            else if (_cameraCovered) ShowEffects(OpenSky);
         }
 
         private static void HideEffects()
@@ -203,8 +220,12 @@ namespace MapExpansions.World
                 Hidden.Add(r);
                 hidden++;
             }
-            if (entering) Core.Log.Msg($"weather cover: camera under a roof, {hidden} rain and cloud renderers off");
-            else if (hidden > 0) Core.Log.Msg($"weather cover: {hidden} rain and cloud renderers appeared under the roof; off as well");
+            if (entering)
+            {
+                _changes++;
+                Change("effects-off", $"weather cover: camera under a roof, {hidden} rain and cloud renderers off");
+            }
+            else if (hidden > 0) Change("effects-appeared", $"weather cover: {hidden} rain and cloud renderers appeared under the roof; off as well");
         }
 
         private static bool IsEffect(Transform t)
@@ -227,14 +248,22 @@ namespace MapExpansions.World
                 restored++;
             }
             Hidden.Clear();
-            Core.Log.Msg($"weather cover: {why}, {restored} rain and cloud renderers on again" + (gone > 0 ? $", {gone} destroyed meanwhile" : ""));
+            var message = $"weather cover: {why}, {restored} rain and cloud renderers on again" + (gone > 0 ? $", {gone} destroyed meanwhile" : "");
+            // Leaving a roof happens on every walk outside; teardown and a lost camera stay in the log each time.
+            if (why == OpenSky)
+            {
+                _changes++;
+                Change("effects-on", message);
+            }
+            else Core.Log.Msg(message);
         }
 
         public static string Describe(Vector3 p) =>
             $"weather cover: {Areas.Count} areas, {StateAreas.Count} world state areas; at {p} " +
             $"{(InArea(p) ? "in an expansion" : InStateArea(p) ? "in a world state area" : "outside the expansions")}, " +
             $"{(IsCovered(p) ? "under a roof" : "open sky")}; camera effects {(_cameraCovered ? "off" : "on")}; " +
-            $"{_covered} of {_queries} entity queries under a roof, {_calls} cover queries in all; " +
+            $"{_covered} of {_queries} entity queries under a roof, {_calls} cover queries in all; {_changes} roof changes" +
+            $"{(LogEveryChange ? " (each logged)" : "")}; " +
             $"sound blend {_soundBlend:0.00}{(MuffleSound ? "" : " (muffling off)")}, {GameSound()}";
 
         /// <summary>The enclosure blend the game's weather effects use and the loudest weather sound playing now.</summary>
@@ -279,7 +308,7 @@ namespace MapExpansions.World
                     enclosureBlend = _soundBlend;
                     if (_soundReported) return;
                     _soundReported = true;
-                    Core.Log.Msg("weather cover: camera under a roof, the weather sounds as inside a building");
+                    Change("sound-inside", "weather cover: camera under a roof, the weather sounds as inside a building");
                 }
                 catch (Exception e)
                 {
