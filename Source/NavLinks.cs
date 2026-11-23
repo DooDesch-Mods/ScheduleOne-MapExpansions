@@ -24,35 +24,75 @@ namespace MapExpansions.Source
         private static readonly List<(Vector3 a, Vector3 b, float width)> Ends = new();
         private static int _crossings;
 
-        // Crossings per NPC: the first one is logged, then only a burst that looks like a walk in a loop.
-        private const int BurstCrossings = 10;
-        private const float BurstSeconds = 60f;
-        private sealed class Tally { internal float WindowStart; internal int InWindow; internal int Total; internal bool Warned; }
+        // Crossings per NPC. A worker crosses the same seams all day on its way between stations, so the count alone
+        // says nothing. An NPC that walks back over the seam it just crossed while it still heads for the same spot
+        // is pacing; that is warned once per NPC and destination.
+        private const int PacingReversals = 4;
+        private const float SameSpot = 1f;
+        // A link is as wide as its seam, so the way back over it starts and ends up to its width away from the way there.
+        private const float SameEnd = 1f;
+        private sealed class Tally
+        {
+            internal int Total, Reversals;
+            internal Vector3 LastFrom, LastTo, LastDestination;
+            internal readonly List<Vector3> WarnedDestinations = new();
+        }
         private static readonly Dictionary<string, Tally> Tallies = new();
 
-        private static void Record(string npc, Vector3 from, Vector3 to)
+        private static void Record(string npc, Vector3 from, Vector3 to, Vector3 destination)
         {
             _crossings++;
             if (!Tallies.TryGetValue(npc, out var tally))
             {
-                Tallies[npc] = tally = new Tally { WindowStart = Time.time };
-                Core.Log.Msg($"nav link: {npc} crossed a seam for the first time ({from} -> {to})");
+                Tallies[npc] = tally = new Tally { LastFrom = from, LastTo = to, LastDestination = destination, Total = 1 };
+                Core.Log.Msg($"nav link: {npc} crossed a seam for the first time ({from} -> {to}); further crossings are counted, not logged");
+                return;
             }
             tally.Total++;
-            if (Time.time - tally.WindowStart > BurstSeconds)
-            {
-                tally.WindowStart = Time.time;
-                tally.InWindow = 0;
-                tally.Warned = false;
-            }
-            tally.InWindow++;
-            if (tally.InWindow >= BurstCrossings && !tally.Warned)
-            {
-                tally.Warned = true;
-                Core.Log.Warning($"nav link: {npc} crossed seams {tally.InWindow} times in {Time.time - tally.WindowStart:0} s " +
-                                 $"(last {from} -> {to}, {tally.Total} in total); it may be walking back and forth");
-            }
+            bool back = (from - tally.LastTo).sqrMagnitude < SameEnd * SameEnd && (to - tally.LastFrom).sqrMagnitude < SameEnd * SameEnd;
+            bool sameGoal = (destination - tally.LastDestination).sqrMagnitude < SameSpot * SameSpot;
+            tally.Reversals = back && sameGoal ? tally.Reversals + 1 : 0;
+            tally.LastFrom = from;
+            tally.LastTo = to;
+            tally.LastDestination = destination;
+            if (tally.Reversals < PacingReversals) return;
+            foreach (var warned in tally.WarnedDestinations)
+                if ((warned - destination).sqrMagnitude < SameSpot * SameSpot) return;
+            tally.WarnedDestinations.Add(destination);
+            Core.Log.Warning($"nav link: {npc} crossed the seam {from} -> {to} back and forth {tally.Reversals + 1} times in a row toward {destination} " +
+                             $"({tally.Total} crossings in total); it may be stuck walking back and forth");
         }
+
+#if DEBUG
+        /// <summary>
+        /// Feeds two made-up NPCs through the pacing warning: a worker walking back and forth over one seam between a
+        /// pot and a table (the crossings of a Sweatshop Botanist), and an NPC crossing the same seam back and forth
+        /// toward one spot. Only the second must warn, and only once.
+        /// </summary>
+        internal static void PacingSelfTest()
+        {
+            const string worker = "mxpacing worker", pacer = "mxpacing pacer";
+            var there = (from: new Vector3(-58.55f, -.25f, 140.5f), to: new Vector3(-57.92f, -.2f, 141.7f));
+            var back = (from: new Vector3(-57.92f, -.2f, 141.7f), to: new Vector3(-58.18f, -.25f, 140.5f));
+            var pot = new Vector3(-57.55f, -.2f, 141.98f);
+            var table = new Vector3(-59.75f, -.24f, 139.92f);
+            int crossings = _crossings;
+            for (int i = 0; i < 20; i++)
+            {
+                var leg = i % 2 == 0 ? there : back;
+                Record(worker, leg.from, leg.to, i % 2 == 0 ? pot : table);
+                Record(pacer, leg.from, leg.to, pot);
+            }
+            int workerWarned = Tallies[worker].WarnedDestinations.Count, pacerWarned = Tallies[pacer].WarnedDestinations.Count;
+            Tallies.Remove(worker);
+            Tallies.Remove(pacer);
+            _crossings = crossings;
+            Core.Log.Msg($"[dev] mxpacing: 20 crossings each; worker warned {workerWarned} times, pacer warned {pacerWarned} times");
+        }
+#endif
+
+        /// <summary>Seam crossings so far, and how many NPCs made them.</summary>
+        internal static string Describe() => $"{_crossings} seam crossings by {Tallies.Count} NPCs";
 
         public static int Count => Ends.Count;
 
@@ -138,9 +178,11 @@ namespace MapExpansions.Source
         public static void Clear()
         {
             foreach (var inst in Instances) inst.Remove();
-            Core.Log.Msg($"nav links: removed {Instances.Count} link instances ({Ends.Count} seams)");
+            Core.Log.Msg($"nav links: removed {Instances.Count} link instances ({Ends.Count} seams), {Describe()}");
             Instances.Clear();
             Ends.Clear();
+            Tallies.Clear();
+            _crossings = 0;
         }
 
         /// <summary>True when the link an agent stands on starts and ends at one of our seams, in either direction.</summary>
@@ -185,7 +227,7 @@ namespace MapExpansions.Source
                     if ((t.position - end).sqrMagnitude < 0.0025f)
                     {
                         agent.CompleteOffMeshLink();
-                        Record(__instance.gameObject.name, link.startPos, link.endPos);
+                        Record(__instance.gameObject.name, link.startPos, link.endPos, agent.destination);
 #if DEBUG
                         Core.Log.Msg($"nav link: {__instance.gameObject.name} crossed a seam {link.startPos} -> {link.endPos} toward {agent.destination}, path {agent.pathStatus}, {agent.path?.corners?.Length ?? 0} corners ({_crossings} crossings)");
 #endif

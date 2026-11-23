@@ -20,6 +20,7 @@ namespace MapExpansions.Debug
     /// Dev console commands for testing expansions. Compiled out of Release.
     ///
     /// mxstate                         state of every expansion, its connections, regions and navigation links
+    /// mxpacing                        replay a worker's seam crossings and a pacing NPC's through the pacing warning
     /// mxwhere                         player position, region and the expansion under it
     /// mxtp x y z | id:location        teleport the player to a world point or to a named place of an expansion
     /// mxcam ex ey ez tx ty tz | off   park the camera at a world position looking at a world point
@@ -28,6 +29,7 @@ namespace MapExpansions.Debug
     /// mxfog [feature|volumetric] on|off the screen fog render feature, the volumetric fog, or both
     /// mxcover [sound on|off|enclosures] weather cover at the camera and its sound; sound off compares the unmuffled
     ///                                 rain, enclosures lists the game's enclosure boxes nearby
+    /// mxcover log on|off              log every roof change of the camera, or only the first of each kind (default)
     /// mxcover audio                   every audio zone and the colliders it cached, destroyed ones named
     /// mxcoplanar x1 y1 z1 x2 y2 z2 [filter] surfaces in one plane that overlap and flicker against each other; a filter
     ///                                    ("a|b") also lists the vanilla pairs among its renderers
@@ -104,6 +106,7 @@ namespace MapExpansions.Debug
                 switch (cmd)
                 {
                     case "mxstate": State(); break;
+                    case "mxpacing": NavLinks.PacingSelfTest(); break;
                     case "mxwhere": Where(); break;
                     case "mxnpc" when parts.Length > 1: Npc(parts[1]); break;
                     case "mxtp": Tp(parts); break;
@@ -159,6 +162,10 @@ namespace MapExpansions.Debug
                     case "mxtangents" when parts.Length > 6: Tangents(V(parts, 1), V(parts, 4)); break;
                     case "mxgrid" when parts.Length > 4 && parts[2] == "at": GridAt(parts[1], V(parts, 3)); break;
                     case "mxgrid" when parts.Length > 1: GridEdges(parts[1], parts.Length > 2 && parts[2] == "check"); break;
+                    case "mxcover" when parts.Length > 2 && parts[1] == "log":
+                        World.WeatherCover.LogEveryChange = parts[2] == "on";
+                        Core.Log.Msg($"[dev] mxcover log: every roof change {(World.WeatherCover.LogEveryChange ? "logged" : "counted, the first of each kind logged")}");
+                        break;
                     case "mxcover" when parts.Length > 2 && parts[1] == "sound":
                         World.WeatherCover.MuffleSound = parts[2] == "on";
                         Core.Log.Msg($"[dev] mxcover sound: muffling under a roof {(World.WeatherCover.MuffleSound ? "on" : "off")}");
@@ -217,7 +224,7 @@ namespace MapExpansions.Debug
             foreach (var r in RegionRegistry.All)
                 Core.Log.Msg($"[dev] mxstate: region {(int)r.Region} '{r.Definition.Name}' of '{r.ExpansionId}', stand-in {r.StandIn}, " +
                              $"zone {(r.Zone != null ? "present" : "missing")}");
-            Core.Log.Msg($"[dev] mxstate: {NavLinks.Count} NavMesh links, vehicle graph mask extra {Navigation.VehicleNavigation.ExtraMask}");
+            Core.Log.Msg($"[dev] mxstate: {NavLinks.Count} NavMesh links, {NavLinks.Describe()}, vehicle graph mask extra {Navigation.VehicleNavigation.ExtraMask}");
         }
 
         /// <summary>Lists what a save of the property refers to: grid and dock GUIDs in the order the game keeps them.</summary>
